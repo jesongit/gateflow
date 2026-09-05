@@ -18,6 +18,12 @@
  *    re-read state matching the transition's `from`. Invalid marker comments,
  *    markers from unknown actors, the append marker and the issue-body schema
  *    block never trigger anything.
+ *  - An EDIT of the tracker marker comment while the issue sits in WORKING /
+ *    BLOCKED is the T4 / T5 channel: the gate deterministically parses the
+ *    tracker's `**Status:**` machine value (Blocked -> ai:blocked, In
+ *    Progress -> ai:working). "Completed" never transitions: completion goes
+ *    exclusively through the completion-report marker (T6). Non-machine
+ *    values and missing values are logged no-ops.
  *  - The current state is derived from labels re-read via the GitHub API
  *    immediately before every migration; the event payload snapshot is never
  *    trusted (protocol section 7).
@@ -41,6 +47,7 @@ import {
 } from './commands';
 import { inspectCommentMarkers, parseIssueSchemaBlock } from './markers';
 import { isLegalTransition, readSnapshot, type WorkflowSnapshot } from './states';
+import { parseTrackerStatus } from './tracker';
 import { isTrustedAgent, isTrustedHuman } from './permissions';
 import type { GitHubClient, IssueRef } from './github';
 
@@ -318,7 +325,27 @@ async function handleMarkerComment(
         log,
       );
       return;
-    case MARKERS.executionTracker:
+    case MARKERS.executionTracker: {
+      // A tracker comment EDIT while the issue sits in WORKING / BLOCKED is
+      // the T4 / T5 channel: the gate deterministically parses the tracker's
+      // Status machine value. Tracker creation (and any tracker edit while
+      // READY, e.g. after a missed creation event) stays the T3 path below.
+      if (
+        input.eventAction === 'edited' &&
+        snapshot.status === 'in-workflow' &&
+        (snapshot.state === STATES.working || snapshot.state === STATES.blocked)
+      ) {
+        await applyTrackerStatusEdit(
+          ref,
+          snapshot,
+          input.commentBody ?? '',
+          publisher,
+          input.actor,
+          client,
+          log,
+        );
+        return;
+      }
       await applyMarkerTransition(
         ref,
         snapshot,
@@ -332,6 +359,7 @@ async function handleMarkerComment(
         log,
       );
       return;
+    }
     case MARKERS.completionReport:
       await applyMarkerTransition(
         ref,
@@ -561,6 +589,103 @@ async function applyMarkerTransition(
   log.info(
     `${transitionId} on #${ref.issueNumber}: ${snapshot.label} -> ${toLabel} ` +
       `(${fromState} -> ${toState}, ${description} by ${publisherKind} "${actor}").`,
+  );
+}
+
+/**
+ * T4 / T5: a tracker comment edit while the issue sits in WORKING / BLOCKED.
+ * The gate deterministically parses the tracker's `**Status:**` machine value
+ * (protocol section 2.1; parsing rules in tracker.ts / 实现备注):
+ *   WORKING  + "Blocked"     -> T4: ai:working  -> ai:blocked
+ *   BLOCKED  + "In Progress" -> T5: ai:blocked -> ai:working
+ * Everything else is a logged no-op, in particular:
+ *  - "Completed" NEVER triggers a transition from any state: completion is
+ *    triggered exclusively by the completion-report marker (T6);
+ *  - same-value edits ("In Progress" while WORKING, "Blocked" while BLOCKED)
+ *    make duplicate event deliveries idempotent;
+ *  - a missing or non-machine Status value is never guessed at.
+ * The caller guarantees a trusted publisher and a fresh re-read (the same
+ * checks T1 / T3 / T6 go through); the label swap re-reads nothing again.
+ */
+async function applyTrackerStatusEdit(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  body: string,
+  publisherKind: string,
+  actor: string,
+  client: GitHubClient,
+  log: GateLogger,
+): Promise<void> {
+  if (snapshot.status !== 'in-workflow') {
+    log.warning(
+      `Tracker status edit on #${ref.issueNumber}: issue state is ${describeSnapshot(snapshot)}; ` +
+        'no transition.',
+    );
+    return;
+  }
+
+  const inspection = parseTrackerStatus(body);
+  if (inspection.kind === 'absent') {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": no parsable ` +
+        '**Status:** line; T4 / T5 need the exact machine value (In Progress / Blocked / ' +
+        'Completed); no transition.',
+    );
+    return;
+  }
+  if (inspection.kind === 'unknown') {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status ` +
+        `"${inspection.raw}" is not a machine value (In Progress / Blocked / Completed); ` +
+        'no transition.',
+    );
+    return;
+  }
+  const status = inspection.status;
+
+  if (status === 'Completed') {
+    log.info(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "Completed" ` +
+        'never triggers a transition; completion goes exclusively through the completion-report ' +
+        'marker (T6).',
+    );
+    return;
+  }
+
+  if (status === 'Blocked' && snapshot.state === STATES.working) {
+    if (!isLegalTransition(STATES.working, STATES.blocked)) {
+      log.warning('Frozen transition table rejects T4; no transition.');
+      return;
+    }
+    // Add-then-remove ordering, same as every other label swap.
+    await client.addLabels(ref, [LABELS.blocked]);
+    await client.removeLabel(ref, snapshot.label);
+    log.info(
+      `T4 on #${ref.issueNumber}: ${snapshot.label} -> ${LABELS.blocked} ` +
+        `(WORKING -> BLOCKED, tracker Status "Blocked" edited by ${publisherKind} "${actor}").`,
+    );
+    return;
+  }
+
+  if (status === 'In Progress' && snapshot.state === STATES.blocked) {
+    if (!isLegalTransition(STATES.blocked, STATES.working)) {
+      log.warning('Frozen transition table rejects T5; no transition.');
+      return;
+    }
+    await client.addLabels(ref, [LABELS.working]);
+    await client.removeLabel(ref, snapshot.label);
+    log.info(
+      `T5 on #${ref.issueNumber}: ${snapshot.label} -> ${LABELS.working} ` +
+        `(BLOCKED -> WORKING, tracker Status "In Progress" edited by ${publisherKind} "${actor}").`,
+    );
+    return;
+  }
+
+  // Same-value edits: the event is a duplicate delivery or a routine progress
+  // update that already matches the current state.
+  log.info(
+    `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "${status}" ` +
+      `already matches the current state ${snapshot.state} (${snapshot.label}); no transition.`,
   );
 }
 

@@ -256,3 +256,8 @@ AI **不能**：
 - **2026-09-05（Phase 2 实装）：4.3 "代码块中的不算" 的实现口径**：以行首 ``` 围栏（fenced code block）为开关，围栏内的 marker 出现一律不计数（既不算独占整行、也不算重复出现）；围栏外仍按"独占整行 + 全评论至多一次出现"判定。引用（quote）marker 文本因此不会触发迁移。
 - 2026-09-05（Phase 2 实装）：Gate 实现版本号 `GATE_VERSION` 升至 `0.2.0`；冻结的 `schema: 1` 与 marker `:v1` 后缀不变，非协议升级。
 - 2026-09-05（Phase 2 实装）：`/choose` / `/change` 的前提状态按 3.2 表格执行，即**仅 REVIEW**；Gate 只做格式与身份校验，参数原样转交 Consumer，不做任何状态迁移（与冻结表一致，无偏差）。
+- **2026-09-05（Phase 6 实装）：T4 / T5 的 Tracker Status 解析细节（正文第 9 节留白项的落实）。**
+  - 触发事件：仅 `issue_comment.edited`，且被编辑评论通过 4.3 的 marker 校验（唯一、独占整行的 execution-tracker marker），发布 actor ∈ Trusted Human ∪ Trusted Agent；迁移前照例按第 7 节经 API 重读 labels。`created` 事件不触发 T4 / T5（创建 Tracker 走 T3）；READY 状态下的 Tracker 编辑仍按 T3 语义处理（READY → WORKING）。
+  - 解析规则：按行扫描评论 body，使用与 4.3 相同的 ``` 围栏约定（围栏内的行一律不计数，引用模板不触发）；取第一条 trim 后以字面量 `**Status:**` 开头的行，冒号后文本 trim 后与三个机器值 `In Progress` / `Blocked` / `Completed` 做**大小写敏感全等比较**。行首不是 `**Status:**` 字面量（如列表项、`Status:` 无加粗）不算 Status 行；找不到 Status 行 → log + no-op；值非机器值（含大小写不符、空值）→ log + no-op，绝不猜测。存在多条 Status 行时取第一条（模板恰有一条，第一条为权威）。
+  - 迁移映射：WORKING + `Blocked` → T4（加 `ai:blocked` 移除 `ai:working`）；BLOCKED + `In Progress` → T5（加 `ai:working` 移除 `ai:blocked`），加标签先于移除标签（与其余迁移一致）。同值编辑（WORKING 下 `In Progress`、BLOCKED 下 `Blocked`）为 log no-op，保证事件重复投递幂等；`Completed` 在任何状态下都**不触发迁移**（完成只走 completion-report marker 的 T6；BLOCKED 状态必须先由人处理后改回 `In Progress` 恢复 WORKING，再发布 Report）。
+- 2026-09-05（Phase 6 实装）：Gate 实现版本号 `GATE_VERSION` 升至 `0.3.0`；冻结的 `schema: 1` 与 marker `:v1` 后缀不变，非协议升级。

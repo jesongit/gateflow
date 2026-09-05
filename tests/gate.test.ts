@@ -879,3 +879,248 @@ describe('Phase 2: reaction feedback is best-effort and never load-bearing', () 
     expect(log.warnings.some((m) => m.includes('no comment id'))).toBe(true);
   });
 });
+
+/* ------------------------------------------------ Phase 6: tracker status */
+
+describe('Phase 6: tracker status transitions (T4 WORKING->BLOCKED, T5 BLOCKED->WORKING)', () => {
+  const trackerBodyWith = (status: string): string =>
+    [
+      '<!-- ai-workflow:execution-tracker:v1 -->',
+      '',
+      '## Execution Tracker',
+      '',
+      `**Status:** ${status}`,
+      '',
+      '### Phase 1',
+      '',
+      '- [x] first',
+      '- [ ] second',
+    ].join('\n');
+
+  it('T4: tracker edit to Status: Blocked at WORKING transitions WORKING -> BLOCKED', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Blocked') }),
+      h.client,
+      log,
+    );
+
+    expect(h.calls.getLabels).toBe(1); // re-read happened before the migration
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.blocked] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.working }]);
+    expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
+    expect(h.calls.addReaction).toEqual([]); // marker/status path never reacts
+    expect(log.warnings).toEqual([]);
+    expect(log.infos.some((m) => m.startsWith('T4 on #7'))).toBe(true);
+  });
+
+  it('T4 works from a configured Trusted Agent too (same rule as T1/T3/T6)', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+
+    await runGate(
+      makeInput({
+        eventAction: 'edited',
+        actor: 'ai-bot',
+        trustedAgentsInput: 'ai-bot',
+        commentBody: trackerBodyWith('Blocked'),
+      }),
+      h.client,
+      makeLogger(),
+    );
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.blocked] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.working }]);
+  });
+
+  it('T5: tracker edit to Status: In Progress at BLOCKED transitions BLOCKED -> WORKING', async () => {
+    const h = makeHarness({ labels: [LABELS.blocked] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('In Progress') }),
+      h.client,
+      log,
+    );
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.working] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.blocked }]);
+    expect(log.infos.some((m) => m.startsWith('T5 on #7'))).toBe(true);
+  });
+
+  it('Status: Completed never transitions (completion goes only through the report marker T6)', async () => {
+    for (const labels of [[LABELS.working], [LABELS.blocked]]) {
+      const h = makeHarness({ labels });
+      const log = makeLogger();
+
+      await runGate(
+        makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Completed') }),
+        h.client,
+        log,
+      );
+
+      expect(writeCount(h)).toBe(0);
+      expect(log.infos.some((m) => m.includes('exclusively through the completion-report'))).toBe(
+        true,
+      );
+    }
+  });
+
+  it('a non-machine Status value is a logged no-op (never guessed)', async () => {
+    for (const raw of ['in progress', 'Paused', '']) {
+      const h = makeHarness({ labels: [LABELS.working] });
+      const log = makeLogger();
+
+      await runGate(
+        makeInput({ eventAction: 'edited', commentBody: trackerBodyWith(raw) }),
+        h.client,
+        log,
+      );
+
+      expect(writeCount(h)).toBe(0);
+      expect(log.warnings.some((m) => m.includes('not a machine value'))).toBe(true);
+    }
+  });
+
+  it('a tracker edit without any parsable Status line is a no-op', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({
+        eventAction: 'edited',
+        commentBody:
+          '<!-- ai-workflow:execution-tracker:v1 -->\n\n## Execution Tracker\n\n- [x] first',
+      }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('no parsable'))).toBe(true);
+  });
+
+  it('same-value edits are idempotent no-ops (duplicate delivery)', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+    const log = makeLogger();
+
+    // Routine progress edit while WORKING keeps WORKING.
+    await runGate(
+      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('In Progress') }),
+      h.client,
+      log,
+    );
+    expect(writeCount(h)).toBe(0);
+
+    // Duplicate Blocked delivery after T4 already ran: re-read says BLOCKED.
+    h.setLabelStore([LABELS.blocked]);
+    await runGate(
+      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Blocked') }),
+      h.client,
+      log,
+    );
+
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
+    expect(log.infos.some((m) => m.includes('already matches the current state'))).toBe(true);
+  });
+
+  it('an edit by an external user is plain text: no transition, zero API reads', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({
+        eventAction: 'edited',
+        actor: 'external-user',
+        commentBody: trackerBodyWith('Blocked'),
+      }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.getIssue).toBe(0);
+    expect(h.calls.getLabels).toBe(0);
+    expect(log.warnings.some((m) => m.includes('never permission'))).toBe(true);
+  });
+
+  it('a tracker edit at WORKING follows the fresh re-read, not the stale payload', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+    h.issueLabels = [LABELS.working]; // stale event snapshot
+    h.setLabelStore([LABELS.ready]); // e.g. the issue was reset meanwhile
+
+    await runGate(
+      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Blocked') }),
+      h.client,
+      makeLogger(),
+    );
+
+    // State is READY -> the T3 path applies, which requires... READY: fires.
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.working] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.ready }]);
+  });
+
+  it('the tracker creation event (created) never runs T4/T5: stays the T3 path', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ eventAction: 'created', commentBody: trackerBodyWith('Blocked') }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('requires state READY'))).toBe(true);
+  });
+
+  it('editing a non-tracker comment (plan marker) does not trigger T4/T5', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({
+        eventAction: 'edited',
+        commentBody:
+          '## Execution Plan\n\nRephrased wording.\n\n<!-- ai-workflow:plan:v1 -->',
+      }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('requires state PLANNING'))).toBe(true);
+  });
+
+  it('editing a plain comment without any marker does nothing at all', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+
+    await runGate(
+      makeInput({ eventAction: 'edited', commentBody: '**Status:** Blocked (progress notes)' }),
+      h.client,
+      makeLogger(),
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.getIssue).toBe(0);
+    expect(h.calls.getLabels).toBe(0);
+  });
+
+  it('tracker status edits on a closed issue are ignored (closed is terminal)', async () => {
+    const h = makeHarness({ labels: [LABELS.working], state: 'closed' });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Blocked') }),
+      h.client,
+      log,
+    );
+
+    expect(h.calls.getIssue).toBe(1);
+    expect(h.calls.getLabels).toBe(0);
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings).toEqual([]);
+  });
+});
