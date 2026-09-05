@@ -1,6 +1,6 @@
 # 使用手册（Usage）
 
-> 本页先提供**协议速查表**（已冻结）；"日常使用"章节是场景 A~J 的中文操作手册（每个场景：你做什么 → 谁响应 → 状态怎么变）；"安装"章节为 Phase 8（templates/workflow.yml + scripts/bootstrap.mjs）与 Phase 9（发布 Action）占位。
+> 本页先提供**协议速查表**（已冻结）；"安装"章节给出把工作流接入新项目的四步流程（bootstrap 脚本 → workflow 模板 → GitHub MCP → Skills）；"日常使用"章节是场景 A~J 的中文操作手册（每个场景：你做什么 → 谁响应 → 状态怎么变）。
 > 完整协议见 [protocol.md](protocol.md)。
 
 ## 1. 协议速查表
@@ -50,16 +50,65 @@ ai:planning → ai:review → ai:ready → ai:working → ai:done
 
 `L0 Requirement`（只有想法）→ Consumer 全程规划；`L1 Direction`（有方向）→ 验证方向补全；`L2 Solution`（方案已定）→ 只补遗漏不重新选型；`L3 Execution Plan`（完整计划）→ Readiness Check 后直接进入待审批，禁止重新设计。
 
-## 2. 安装（占位 — Phase 8/9 完善）
+## 2. 安装（接入新项目的四步流程）
 
-将包含以下内容（届时更新本节；**bootstrap 脚本尚未实现**，以下为 Phase 8 目标形态）：
+> 一键入口是 [scripts/bootstrap.mjs](../scripts/bootstrap.mjs)：零新增依赖（Node ≥ 20 自带 fetch），**幂等，可重复执行**。
+> 它只做三件事：创建缺失的 `ai:*` 标签、生成缺失的 workflow 文件、打印剩余手动步骤。
+> **不覆盖保证**：已存在的同名 labels 一律跳过（颜色 / 描述一字不改）；`.github/workflows/` 下同名 workflow 文件已存在时警告并跳过（绝不覆盖）；已有 issue templates 与 PR workflow 完全不触碰。
 
-- 在目标仓库放置 `.github/workflows/ai-workflow.yml`（模板：`templates/workflow.yml`）；
-  - **并发要求（Phase 8 前手动配置时必须遵守）**：同一 Issue 的所有 Gate run 必须共享 concurrency group `ai-workflow-<issue_number>` 且 `cancel-in-progress: false`。Gate 在每次迁移前会通过 API 重读 labels 做最终校验，但串行化本身由 workflow 并发组保证；Phase 1 阶段模板尚未提供，README 有详细说明。
-- 运行 `scripts/bootstrap.mjs` 创建 6 个 `ai:*` 标签并检查环境；
-- 在 AI Client（Codex / Claude Code / Cursor / VS Code）配置 GitHub 官方 MCP Server（最小 toolsets：repos / issues / pull_requests）；
-- 安装 producer / consumer / executor 三个 Skill（全局或项目级）；
-- Action 发布后直接 `uses: owner/github-ai-workflow@v0`。
+### Step 1：运行 bootstrap
+
+把本仓库（github-ai-workflow）与目标仓库都检出到本地，然后**在目标仓库的检出目录里**运行（workflow 文件会写入当前目录）：
+
+```bash
+# 最简形式：token 走 GITHUB_TOKEN 环境变量
+node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target
+
+# 显式传 token 与 Action 引用（Action 发布前 / fork 场景）
+node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target \
+  --token <token> --action-ref owner/github-ai-workflow@v0
+
+# 先看看会做什么（只打印，不做任何修改、不访问网络）
+node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target --dry-run
+```
+
+| 参数 | 缺省 | 说明 |
+| --- | --- | --- |
+| `--repo owner/name` | `GITHUB_REPOSITORY` 环境变量 | 目标仓库 |
+| `--token <token>` | `GITHUB_TOKEN` 环境变量 | 需要目标仓库写权限（创建标签）；两者都没有时报错退出 |
+| `--action-ref <ref>` | `jesongit/github-ai-workflow@v0` | workflow 中 `uses:` 的引用（Phase 9 发布时以实际 owner 为准，可参数覆盖） |
+| `--workflow-file <name>` | `ai-workflow.yml` | 生成的 workflow 文件名 |
+| `--dry-run` | 关 | 只打印将做什么 |
+| `--help` | — | 打印用法 |
+
+幂等性来源：标签创建前先拉取已有标签列表做同名比对（GitHub API 侧再加 422 兜底）；workflow 文件用 `existsSync` + 独占写入（`wx`）双保险，且生成前需要交互确认（非交互终端直接跳过，绝不默默写文件）。重复运行只会看到一串 `[skip]`。
+
+### Step 2：workflow 文件（bootstrap 生成的内容）
+
+生成物就是 [templates/workflow.yml](../templates/workflow.yml)，要点：
+
+- **事件**：`issues [opened, labeled, closed]` + `issue_comment [created, edited]`——与协议第 8 节事件矩阵一致（不监听 `reopened`，V0 不处理）；
+- **权限**：`issues: write`（Gate 写 `ai:*` 标签与 reaction）、`contents: read`；
+- **串行保证**：`concurrency.group: ai-workflow-<issue_number>` + `cancel-in-progress: false`——同一 Issue 的所有 Gate run 排队执行（协议第 7 节）。Gate 在每次迁移前仍会通过 API 重读 labels 做最终校验，但串行化本身由这个并发组保证，**请不要删除**；
+- **`uses:` 占位**：`jesongit/github-ai-workflow@v0`（Phase 9 发布时以实际 owner 为准；bootstrap `--action-ref` 可替换）；
+- **显式输入**：`trusted-humans` / `trusted-agents` 默认为空 = 仅 repo owner 可执行命令、无 Trusted Agent（语义见模板内注释与 [protocol.md](protocol.md) 第 6 节；Owner PAT 直连 MCP 的快速自用模式下无需设置）。
+
+提交并推送该文件后，Gate 即对目标仓库生效。
+
+### Step 3：配置 GitHub MCP（手动）
+
+在你的 AI Client（Codex / Claude Code / Cursor / VS Code 等）配置 GitHub 官方 MCP Server：
+
+- 最小 toolsets：`repos` / `issues` / `pull_requests`——覆盖 Producer 创建 Issue、Consumer 读仓库 / 发 Plan、Executor 创建 PR 的需要；
+- 只使用 Producer / Consumer（不执行）时，可进一步收紧到只读 + issues 写；
+- 不要把全部 toolsets 打开给 AI；快速自用模式可直接用你的 PAT，长期建议给 AI 独立 Bot 身份（见 [protocol.md](protocol.md) 第 6 节）。
+- 参考：<https://github.com/github/github-mcp-server>
+
+### Step 4：安装三个 Skills（手动）
+
+把 [skills/producer](../skills/producer/SKILL.md)、[skills/consumer](../skills/consumer/SKILL.md)、[skills/executor](../skills/executor/SKILL.md) 安装到你的 AI Client（全局安装或项目级引用均可）。
+
+完成后即可进入 [§3 日常使用](#3-日常使用)：和 AI 聊完说一句"发成 Issue"，或在已有 Issue 上评论 `/ai-plan`，然后 `/approve` → "执行 #N"。
 
 ## 3. 日常使用
 

@@ -24531,6 +24531,36 @@ function isLegalTransition(from, to) {
   return TRANSITIONS.some((t) => t.from === from && t.to === to);
 }
 
+// src/tracker.ts
+var TRACKER_STATUSES = ["In Progress", "Blocked", "Completed"];
+var STATUS_PATTERN = /^\*\*Status:\*\*\s*(.*)$/;
+function parseTrackerStatus(body) {
+  if (!body) {
+    return { kind: "absent" };
+  }
+  let insideFence = false;
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      insideFence = !insideFence;
+      continue;
+    }
+    if (insideFence) {
+      continue;
+    }
+    const match = STATUS_PATTERN.exec(trimmed);
+    if (match === null) {
+      continue;
+    }
+    const raw = (match[1] ?? "").trim();
+    if (TRACKER_STATUSES.includes(raw)) {
+      return { kind: "valid", status: raw };
+    }
+    return { kind: "unknown", raw };
+  }
+  return { kind: "absent" };
+}
+
 // src/permissions.ts
 function parseLoginList(input) {
   if (!input) {
@@ -24716,7 +24746,19 @@ async function handleMarkerComment(input, ref, client, log) {
         log
       );
       return;
-    case MARKERS.executionTracker:
+    case MARKERS.executionTracker: {
+      if (input.eventAction === "edited" && snapshot.status === "in-workflow" && (snapshot.state === STATES.working || snapshot.state === STATES.blocked)) {
+        await applyTrackerStatusEdit(
+          ref,
+          snapshot,
+          input.commentBody ?? "",
+          publisher,
+          input.actor,
+          client,
+          log
+        );
+        return;
+      }
       await applyMarkerTransition(
         ref,
         snapshot,
@@ -24730,6 +24772,7 @@ async function handleMarkerComment(input, ref, client, log) {
         log
       );
       return;
+    }
     case MARKERS.completionReport:
       await applyMarkerTransition(
         ref,
@@ -24873,6 +24916,61 @@ async function applyMarkerTransition(ref, snapshot, fromState, toState, transiti
     `${transitionId} on #${ref.issueNumber}: ${snapshot.label} -> ${toLabel} (${fromState} -> ${toState}, ${description} by ${publisherKind} "${actor}").`
   );
 }
+async function applyTrackerStatusEdit(ref, snapshot, body, publisherKind, actor, client, log) {
+  if (snapshot.status !== "in-workflow") {
+    log.warning(
+      `Tracker status edit on #${ref.issueNumber}: issue state is ${describeSnapshot(snapshot)}; no transition.`
+    );
+    return;
+  }
+  const inspection = parseTrackerStatus(body);
+  if (inspection.kind === "absent") {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": no parsable **Status:** line; T4 / T5 need the exact machine value (In Progress / Blocked / Completed); no transition.`
+    );
+    return;
+  }
+  if (inspection.kind === "unknown") {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "${inspection.raw}" is not a machine value (In Progress / Blocked / Completed); no transition.`
+    );
+    return;
+  }
+  const status = inspection.status;
+  if (status === "Completed") {
+    log.info(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "Completed" never triggers a transition; completion goes exclusively through the completion-report marker (T6).`
+    );
+    return;
+  }
+  if (status === "Blocked" && snapshot.state === STATES.working) {
+    if (!isLegalTransition(STATES.working, STATES.blocked)) {
+      log.warning("Frozen transition table rejects T4; no transition.");
+      return;
+    }
+    await client.addLabels(ref, [LABELS.blocked]);
+    await client.removeLabel(ref, snapshot.label);
+    log.info(
+      `T4 on #${ref.issueNumber}: ${snapshot.label} -> ${LABELS.blocked} (WORKING -> BLOCKED, tracker Status "Blocked" edited by ${publisherKind} "${actor}").`
+    );
+    return;
+  }
+  if (status === "In Progress" && snapshot.state === STATES.blocked) {
+    if (!isLegalTransition(STATES.blocked, STATES.working)) {
+      log.warning("Frozen transition table rejects T5; no transition.");
+      return;
+    }
+    await client.addLabels(ref, [LABELS.working]);
+    await client.removeLabel(ref, snapshot.label);
+    log.info(
+      `T5 on #${ref.issueNumber}: ${snapshot.label} -> ${LABELS.working} (BLOCKED -> WORKING, tracker Status "In Progress" edited by ${publisherKind} "${actor}").`
+    );
+    return;
+  }
+  log.info(
+    `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "${status}" already matches the current state ${snapshot.state} (${snapshot.label}); no transition.`
+  );
+}
 async function react(client, ref, commentId, content, log) {
   if (commentId === void 0) {
     log.warning(
@@ -24989,7 +25087,7 @@ function createGitHubClient(octokit) {
 }
 
 // src/index.ts
-var GATE_VERSION = "0.2.0";
+var GATE_VERSION = "0.3.0";
 function readInputs() {
   return {
     trustedHumans: getInput("trusted-humans"),

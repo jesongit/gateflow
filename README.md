@@ -36,7 +36,7 @@ AI Conversation
 | [docs/architecture.md](docs/architecture.md) | 整体架构、组件职责、数据流、V0 明确不做的清单 |
 | [docs/protocol.md](docs/protocol.md) | **协议冻结**：Labels / 状态机 / Commands / Markers / Maturity / Permissions / 并发规则 |
 | [docs/security.md](docs/security.md) | 权限边界、为什么审批交给确定性 Gate、Marker 伪造与 Prompt Injection 防线 |
-| [docs/usage.md](docs/usage.md) | 协议速查表 + 场景 A~J 日常操作手册 + 安装（Phase 8 占位） |
+| [docs/usage.md](docs/usage.md) | 协议速查表 + 四步安装指南（bootstrap）+ 场景 A~J 日常操作手册 |
 | [计划总文档](github-native-ai-workflow-v0-development-and-usage-guide.md) | 详细开发计划与使用手册（Phase 0~11） |
 
 ## 仓库结构
@@ -59,16 +59,30 @@ github-ai-workflow/
 ├── tests/                  # vitest 单测
 ├── skills/                 # producer / consumer / executor 三个 AI Skill
 ├── fixtures/               # Consumer 成熟度测试输入（raw-idea / raw-bug / direction / solution / full-plan）
-├── templates/              # workflow 模板（Phase 8）
-├── scripts/                # bootstrap 脚本（Phase 8）
+├── templates/workflow.yml  # 目标仓库的 Gate workflow 模板（事件 / 并发组 / Action 输入）
+├── scripts/bootstrap.mjs   # 目标仓库初始化脚本（创建 ai:* 标签 + 生成 workflow，幂等不覆盖）
 └── docs/                   # architecture / protocol / security / usage
 ```
 
 ## 快速开始
 
-> 本仓库尚不能"开箱安装到目标项目"：workflow 模板、bootstrap 脚本与 Action 发布在 Phase 8 / 9 提供。当前已有的能力：**Gate 完整实现（五个命令 + 六状态状态机 + Marker 校验）**，**Producer / Consumer 两个 Skill 已定义**（Markdown 协议文档，配合 GitHub MCP 使用）。
+把工作流接入一个新项目只需要四步（完整说明见 [docs/usage.md](docs/usage.md) 第 2 节）：
 
-当前开发阶段：
+```bash
+# 在目标仓库的检出目录里运行（--dry-run 可先预览将做什么）：
+node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target
+```
+
+1. **bootstrap 一键初始化**（幂等，可重复执行）：创建 6 个 `ai:*` 标签——已存在的同名标签跳过、绝不修改；生成 `.github/workflows/ai-workflow.yml`——已存在则警告跳过、绝不覆盖，不触碰已有 issue templates 与 PR workflow；
+2. **workflow 模板**（`templates/workflow.yml`）：监听 `issues [opened, labeled, closed]` + `issue_comment [created, edited]`，串行并发组 `ai-workflow-<issue_number>`（`cancel-in-progress: false`），显式传入 `trusted-humans` / `trusted-agents`（默认空 = 仅 repo owner / 无 Trusted Agent）；
+3. **配置 GitHub MCP**：最小 toolsets `repos` / `issues` / `pull_requests`；
+4. **安装 Skills**：`skills/producer`、`skills/consumer`、`skills/executor` 装入你的 AI Client。
+
+> Action 发布（Phase 9）前，模板中的 `uses: jesongit/github-ai-workflow@v0` 是占位引用，可用 bootstrap `--action-ref` 指向实际 owner/repo@ref。
+
+不装 Action 也能先理解流程（详见 [docs/usage.md](docs/usage.md) 第三节）：配置 MCP + 安装 Skills 后，和 AI 聊需求 → "把刚才讨论整理成 <repo> 的 Issue"（Producer）→ "规划 <repo>#<n>"（Consumer 出 Plan）→ Issue 上 `/approve`（Gate 迁状态）→ "执行 <repo>#<n>"（Executor 按计划开发并汇报）。
+
+本仓库自身开发：
 
 ```bash
 npm install        # 安装依赖
@@ -77,21 +91,13 @@ npm run typecheck  # tsc --noEmit（strict）
 npm test           # vitest
 ```
 
-手动体验工作流的路径（不装 Action 也能理解流程，详见 [docs/usage.md](docs/usage.md) 第三节）：
-
-1. 在 AI Client 配置 GitHub MCP（toolsets：repos / issues），安装 `skills/producer`、`skills/consumer`；
-2. 和 AI 聊需求 → "把刚才讨论整理成 <repo> 的 Issue"（Producer 创建 Issue + schema 块 + `ai:planning`）；
-3. 对 AI 说"规划 <repo>#<n>"（Consumer 读仓库、判成熟度、发布 Plan）；
-4. 在 Issue 上 `/change` / `/choose` / `/approve`（Gate Action 就绪前，这些命令由人按协议语义执行）；
-5. 执行阶段（Executor）在 Phase 6/7 提供。
-
 ## 并发与一致性（重要）
 
-Gate 自身是确定性的，但**串行化必须由 workflow 层保证**（Phase 8 提供 `templates/workflow.yml`）：
+Gate 自身是确定性的，但**串行化必须由 workflow 层保证**（`templates/workflow.yml` 已内置，bootstrap 生成的文件同样带上）：
 
 - 同一 Issue 的所有 Gate run 必须落在同一个 concurrency group：`group: ai-workflow-<issue_number>`，且 `cancel-in-progress: false`（排队执行，不取消）。
 - 无论是否配置并发组，Gate 在**每次状态迁移前都会通过 GitHub API 重新读取当前 labels**，绝不信任 event payload 中的快照；重读结果与命令前提不符时按无效命令处理（no-op + log 原因）。
-- 在 Phase 8 模板可用之前，如手动编写 workflow，请务必自行加上 concurrency 配置，否则两个并发 run 仍可能交错执行。
+- 如手工编写 workflow 而不用模板，请务必自行加上相同的 concurrency 配置，否则两个并发 run 仍可能交错执行。
 
 ## 当前状态
 
@@ -100,3 +106,6 @@ Gate 自身是确定性的，但**串行化必须由 workflow 层保证**（Phas
 - Phase 2（Gate 完整命令 + Marker 校验）：已完成。五个命令全部生效：`/ai-plan`（T0）、`/approve`（T2）、`/choose` / `/change`（仅 REVIEW，✅ 后转交 Consumer，不迁移）、`/cancel`；接受的命令加 ✅，非 Trusted Human 命令加 👎（invalid owner command）后静默；marker 校验实装：独占整行 + 单 marker + 围栏代码块剔除，plan / tracker / report marker 分别触发 T1 / T3 / T6（发布者须为 Trusted Human ∪ Trusted Agent），append marker 与 Issue body schema 块只记录不迁移。reaction 为 best-effort，失败不影响主流程。偏差记录见 [docs/protocol.md](docs/protocol.md) 文末"实现备注"。
 - Phase 3（Producer Skill）：已完成。[skills/producer/SKILL.md](skills/producer/SKILL.md) 定义 Chat → Work Item：仅在用户明确要求时发布；CREATE（body 模板 + 文末 schema 块 + 直接打 `ai:planning`）与 APPEND（append marker 评论，只新增不改历史）；Draft 必须经 Human 确认后才经 GitHub MCP 写入。
 - Phase 4 / 5（Consumer Planning Skill + Plan Review 闭环）：已完成。[skills/consumer/SKILL.md](skills/consumer/SKILL.md) 定义 Issue → Execution Plan：读 Issue 与真实仓库、判断 Effective Maturity（hint 只是提示，可降级）、按最小补全原则发布 Plan（plan marker，Gate 迁 `ai:review`）；消费 `/choose` / `/change`（Gate ✅ 后不迁移）发布 Plan vN+1 新评论（最小变更、不覆盖旧版）；`/approve` 后停止，执行移交 Executor。成熟度测试输入见 [fixtures/](fixtures/)（raw-idea / raw-bug / direction / solution / full-plan 五档）。日常操作手册见 [docs/usage.md](docs/usage.md)。
+- Phase 6（Tracker 状态迁移 T4/T5）：已完成。Gate 从 Execution Tracker 的 `**Status:**` 机器值确定性解析 `WORKING ↔ BLOCKED`（仅 tracker marker 评论的 edited 事件、受信发布者、迁移前 API 重读；`Completed` 不触发迁移，完成只走 T6）。偏差与解析口径见 [docs/protocol.md](docs/protocol.md) 文末"实现备注"。
+- Phase 7（Executor Skill + Completion Report）：已完成。[skills/executor/SKILL.md](skills/executor/SKILL.md) 定义 Approved Plan → TodoList（tracker marker，T3）→ 开发并持续更新 Tracker → Validation → Completion Report（T6 → `ai:done`，Issue 保持 Open，最终由 Owner 检查后 Close）。
+- Phase 8（安装与 Bootstrap）：已完成。[templates/workflow.yml](templates/workflow.yml)（目标仓库的 Gate workflow 模板：协议事件矩阵 + 串行并发组 + 显式 `trusted-humans` / `trusted-agents` 输入）与 [scripts/bootstrap.mjs](scripts/bootstrap.mjs)（零新增依赖、幂等可重复执行：校验仓库 → 创建缺失的 6 个 `ai:*` 标签（同名跳过、绝不修改已有标签）→ 经确认生成 workflow 文件（已存在警告跳过、绝不覆盖）→ 打印 MCP / Skills 手动安装提示；支持 `--dry-run`）。四步安装流程见 [docs/usage.md](docs/usage.md) §2。Action 发布在 Phase 9。

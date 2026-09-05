@@ -1,0 +1,40 @@
+# AI Workflow Gate：目标仓库接入用的 workflow 模板（可由 scripts/bootstrap.mjs 自动生成，也可手工复制）。
+# 它在 Issue / 评论事件上运行确定性 Gate：校验 actor 身份、严格解析命令与 Marker、迁移 ai:* 标签；AI 永远不参与授权判断。
+# 安装步骤与参数说明见 docs/usage.md §2；协议（命令 / 状态机 / Marker / 并发规则）见 docs/protocol.md。
+
+name: AI Workflow Gate
+
+on:
+  issues:
+    types: [opened, labeled, closed]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # 同一 Issue 的所有 Gate run 必须串行（协议第 7 节）：共享并发组 + 排队不取消。
+    concurrency:
+      group: ai-workflow-${{ github.event.issue.number }}
+      cancel-in-progress: false
+
+    steps:
+      - name: AI Workflow Gate
+        # 占位引用：Phase 9 发布时以实际 owner/repo@ref 为准；bootstrap.mjs --action-ref 可替换。
+        uses: jesongit/github-ai-workflow@v0
+        with:
+          # 缺省使用 workflow 自身 token；要求 permissions.issues: write（上方已授予）。
+          github-token: ${{ github.token }}
+          # Trusted Humans：除 repo owner（V0 默认）外额外可信的 GitHub login（逗号分隔）。
+          # 只有 Trusted Human 能执行 /ai-plan /approve /choose /change /cancel。
+          # 留空 = 仅 repo owner 可执行命令。
+          trusted-humans: ''
+          # Trusted Agents：独立 Bot / GitHub App 身份（逗号分隔）。与 Trusted Human 是
+          # 两个概念且永不合并：它只影响 marker 触发类迁移（T1/T3/T6）的发布者合法性，
+          # 永远不能执行任何命令。留空 = 无 Trusted Agent（V0 默认；Owner PAT 直连
+          # GitHub MCP 时 actor 就是 Owner 本人，无需设置）。
+          trusted-agents: ''
