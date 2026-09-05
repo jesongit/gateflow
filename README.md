@@ -36,7 +36,8 @@ AI Conversation
 | [docs/architecture.md](docs/architecture.md) | 整体架构、组件职责、数据流、V0 明确不做的清单 |
 | [docs/protocol.md](docs/protocol.md) | **协议冻结**：Labels / 状态机 / Commands / Markers / Maturity / Permissions / 并发规则 |
 | [docs/security.md](docs/security.md) | 权限边界、为什么审批交给确定性 Gate、Marker 伪造与 Prompt Injection 防线 |
-| [docs/usage.md](docs/usage.md) | 协议速查表 + 四步安装指南（bootstrap）+ 场景 A~J 日常操作手册 |
+| [docs/usage.md](docs/usage.md) | 协议速查表 + 四步安装摘要 + 场景 A~J 日常操作手册 |
+| [docs/integration.md](docs/integration.md) | **接入项目仓库详细指南**：从零到跑通第一个 Issue 闭环（Gate 本体三种可引用模式、bootstrap 逐步操作、MCP / Skills 配置、验收冒烟测试、FAQ、卸载） |
 | [docs/release.md](docs/release.md) | 发布手册：发布步骤清单、版本策略（package.json / GATE_VERSION / 协议 schema）、`@v0` 浮动 tag 策略、发布前 checklist |
 | [计划总文档](github-native-ai-workflow-v0-development-and-usage-guide.md) | 详细开发计划与使用手册（Phase 0~11） |
 
@@ -67,19 +68,18 @@ gateflow/
 
 ## 快速开始
 
-把工作流接入一个新项目只需要四步（完整说明见 [docs/usage.md](docs/usage.md) 第 2 节）：
+把工作流接入一个新项目只需要四步（**逐步详细指南见 [docs/integration.md](docs/integration.md)**，摘要见 [docs/usage.md](docs/usage.md) 第 2 节）：
 
 ```bash
-# 在目标仓库的检出目录里运行（--dry-run 可先预览将做什么）：
-node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target
+# 在目标仓库的检出目录里运行（workflow 文件写入当前目录，生成后需你手动 commit + push；
+# token 也可走 GITHUB_TOKEN 环境变量；--dry-run 可先预览将做什么，同样需要 token 存在）：
+node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHUB_TOKEN"
 ```
 
-1. **bootstrap 一键初始化**（幂等，可重复执行）：创建 6 个 `ai:*` 标签——已存在的同名标签跳过、绝不修改；生成 `.github/workflows/ai-workflow.yml`——已存在则警告跳过、绝不覆盖，不触碰已有 issue templates 与 PR workflow；
-2. **workflow 模板**（`templates/workflow.yml`）：监听 `issues [opened, labeled, closed]` + `issue_comment [created, edited]`，串行并发组 `ai-workflow-<issue_number>`（`cancel-in-progress: false`），显式传入 `trusted-humans` / `trusted-agents`（默认空 = 仅 repo owner / 无 Trusted Agent）；
-3. **配置 GitHub MCP**：最小 toolsets `repos` / `issues` / `pull_requests`；
-4. **安装 Skills**：`skills/producer`、`skills/consumer`、`skills/executor` 装入你的 AI Client。
-
-> Action 正式发布前，模板中的 `uses: jesongit/gateflow@v0` 是占位引用，可用 bootstrap `--action-ref` 指向实际 owner/repo@ref；发布步骤与 `@v0` 浮动 tag 策略见 [docs/release.md](docs/release.md)。
+1. **让 GateFlow 本体可被引用**（`uses:` 必须能解析，三选一）：发布为 **public** 仓库（推荐；Action 不含密钥，运行时用目标仓库自己的 `${{ github.token }}`；发布步骤与 `@v0` 浮动 tag 策略见 [docs/release.md](docs/release.md)）/ 私有仓库 + Settings → Actions → Access 共享策略（同用户 / 同组织，目标仓库须同为私有）/ 内嵌到目标仓库 `.github/actions/gateflow/`（`uses: ./.github/actions/gateflow`）——详见 integration.md 第 2 章；
+2. **bootstrap 一键初始化**（幂等，可重复执行）：创建 6 个 `ai:*` 标签——已存在的同名标签跳过、绝不修改；生成 `.github/workflows/ai-workflow.yml`——已存在则警告跳过、绝不覆盖，不触碰已有 issue templates 与 PR workflow；
+3. **配置 GitHub MCP**：官方远端 server，最小 toolsets `repos` / `issues` / `pull_requests`（Claude Code 配置示例见 integration.md §6.1）；
+4. **安装 Skills**：`skills/producer`、`skills/consumer`、`skills/executor` 装入你的 AI Client（全局 `~/.claude/skills/` 或项目级 `.claude/skills/`），然后按 integration.md 第 7 章跑验收闭环。
 
 不装 Action 也能先理解流程（详见 [docs/usage.md](docs/usage.md) 第三节）：配置 MCP + 安装 Skills 后，和 AI 聊需求 → "把刚才讨论整理成 <repo> 的 Issue"（Producer）→ "规划 <repo>#<n>"（Consumer 出 Plan）→ Issue 上 `/approve`（Gate 迁状态）→ "执行 <repo>#<n>"（Executor 按计划开发并汇报）。
 

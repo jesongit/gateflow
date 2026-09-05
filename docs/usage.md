@@ -1,6 +1,6 @@
 # 使用手册（Usage）
 
-> 本页先提供**协议速查表**（已冻结）；"安装"章节给出把工作流接入新项目的四步流程（bootstrap 脚本 → workflow 模板 → GitHub MCP → Skills）；"日常使用"章节是场景 A~J 的中文操作手册（每个场景：你做什么 → 谁响应 → 状态怎么变）。
+> 本页先提供**协议速查表**（已冻结）；"安装"章节是接入新项目的四步流程**摘要**（逐步的详细接入指南见 [integration.md](integration.md)）；"日常使用"章节是场景 A~J 的中文操作手册（每个场景：你做什么 → 谁响应 → 状态怎么变）。
 > 完整协议见 [protocol.md](protocol.md)。
 
 ## 1. 协议速查表
@@ -50,63 +50,49 @@ ai:planning → ai:review → ai:ready → ai:working → ai:done
 
 `L0 Requirement`（只有想法）→ Consumer 全程规划；`L1 Direction`（有方向）→ 验证方向补全；`L2 Solution`（方案已定）→ 只补遗漏不重新选型；`L3 Execution Plan`（完整计划）→ Readiness Check 后直接进入待审批，禁止重新设计。
 
-## 2. 安装（接入新项目的四步流程）
+## 2. 安装（接入新项目的四步流程·摘要）
 
-> 一键入口是 [scripts/bootstrap.mjs](../scripts/bootstrap.mjs)：零新增依赖（Node ≥ 20 自带 fetch），**幂等，可重复执行**。
-> 它只做三件事：创建缺失的 `ai:*` 标签、生成缺失的 workflow 文件、打印剩余手动步骤。
+> **逐步详细指南见 [integration.md](integration.md)**：面向第一次接入的人，覆盖 GateFlow 本体的三种可引用模式（public / 私有 + Access 策略 / 内嵌）、bootstrap 每步命令与输出对照、MCP 与 Skills 配置、验收冒烟测试、故障排查 FAQ、卸载回退。本节只留速览。
+>
+> 一键入口是 [scripts/bootstrap.mjs](../scripts/bootstrap.mjs)：零新增依赖（Node ≥ 20 自带 fetch），**幂等，可重复执行**。它只做三件事：创建缺失的 `ai:*` 标签、生成缺失的 workflow 文件、打印剩余手动步骤。
 > **不覆盖保证**：已存在的同名 labels 一律跳过（颜色 / 描述一字不改）；`.github/workflows/` 下同名 workflow 文件已存在时警告并跳过（绝不覆盖）；已有 issue templates 与 PR workflow 完全不触碰。
 
-### Step 1：运行 bootstrap
+### Step 1：让 GateFlow 本体可被引用（三选一）
 
-把本仓库（gateflow）与目标仓库都检出到本地，然后**在目标仓库的检出目录里**运行（workflow 文件会写入当前目录）：
+workflow 里的 `uses: jesongit/gateflow@v0` 必须能在 GitHub 上解析成功：
+
+- **模式 A（推荐）**：把 gateflow 发布为 **public** 仓库（最短发布路径见 integration.md §2.A，完整步骤见 [release.md](release.md) §1）。Action 代码不含密钥——Gate 运行时用的是目标仓库自己的 `${{ github.token }}`，公开无安全损失；
+- **模式 B**：gateflow 保持 **private**，在其 Settings → Actions → General → **Access** 打开共享策略（同用户 / 同组织可访问；要求目标仓库同为私有；默认 "Not accessible"，不开必失败）；
+- **模式 C**：**内嵌**——把 `action.yml` + `dist/index.js` 复制进目标仓库 `.github/actions/gateflow/`，bootstrap 时 `--action-ref ./.github/actions/gateflow`（生成 `uses: ./.github/actions/gateflow` 本地引用）。适合完全不想公开、又没有组织的场景。
+
+### Step 2：bootstrap 自动接入
+
+**在目标仓库的检出目录里**运行（workflow 文件写入当前目录，不会自动推送）：
 
 ```bash
-# 最简形式：token 走 GITHUB_TOKEN 环境变量
-node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target
-
-# 显式传 token 与 Action 引用（Action 发布前 / fork 场景）
-node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target \
-  --token <token> --action-ref owner/gateflow@v0
-
-# 先看看会做什么（只打印，不做任何修改、不访问网络）
-node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --dry-run
+# 先预览（注意：--dry-run 也要求 --token / GITHUB_TOKEN 存在；dry-run 本身不访问网络、不修改）
+node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHUB_TOKEN" --dry-run
+# 真跑：创建 6 个 ai:* 标签 + 经交互确认生成 .github/workflows/ai-workflow.yml
+node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHUB_TOKEN"
 ```
 
-| 参数 | 缺省 | 说明 |
-| --- | --- | --- |
-| `--repo owner/name` | `GITHUB_REPOSITORY` 环境变量 | 目标仓库 |
-| `--token <token>` | `GITHUB_TOKEN` 环境变量 | 需要目标仓库写权限（创建标签）；两者都没有时报错退出 |
-| `--action-ref <ref>` | `jesongit/gateflow@v0` | workflow 中 `uses:` 的引用（Phase 9 发布时以实际 owner 为准，可参数覆盖） |
-| `--workflow-file <name>` | `ai-workflow.yml` | 生成的 workflow 文件名 |
-| `--dry-run` | 关 | 只打印将做什么 |
-| `--help` | — | 打印用法 |
+参数与输出逐行说明见 integration.md §3（或 `node scripts/bootstrap.mjs --help`）；生成文件的逐段注释见 integration.md 步骤 2.4 与 [templates/workflow.yml](../templates/workflow.yml) 内注释。
 
 幂等性来源：标签创建前先拉取已有标签列表做同名比对（GitHub API 侧再加 422 兜底）；workflow 文件用 `existsSync` + 独占写入（`wx`）双保险，且生成前需要交互确认（非交互终端直接跳过，绝不默默写文件）。重复运行只会看到一串 `[skip]`。
 
-### Step 2：workflow 文件（bootstrap 生成的内容）
+### Step 3：commit + push（注意 workflow 权限）
 
-生成物就是 [templates/workflow.yml](../templates/workflow.yml)，要点：
+```bash
+git add .github/workflows/ai-workflow.yml && git commit && git push
+```
 
-- **事件**：`issues [opened, labeled, closed]` + `issue_comment [created, edited]`——与协议第 8 节事件矩阵一致（不监听 `reopened`，V0 不处理）；
-- **权限**：`issues: write`（Gate 写 `ai:*` 标签与 reaction）、`contents: read`；
-- **串行保证**：`concurrency.group: ai-workflow-<issue_number>` + `cancel-in-progress: false`——同一 Issue 的所有 Gate run 排队执行（协议第 7 节）。Gate 在每次迁移前仍会通过 API 重读 labels 做最终校验，但串行化本身由这个并发组保证，**请不要删除**；
-- **`uses:` 占位**：`jesongit/gateflow@v0`（Phase 9 发布时以实际 owner 为准；bootstrap `--action-ref` 可替换）；
-- **显式输入**：`trusted-humans` / `trusted-agents` 默认为空 = 仅 repo owner 可执行命令、无 Trusted Agent（语义见模板内注释与 [protocol.md](protocol.md) 第 6 节；Owner PAT 直连 MCP 的快速自用模式下无需设置）。
+HTTPS + PAT 推送含 workflow 文件的提交需要 classic PAT 勾 **`workflow`** scope（fine-grained 需 **Workflows: write**），否则 push 被拒——详见 integration.md 步骤 2.5 与第 8 章 FAQ。
 
-提交并推送该文件后，Gate 即对目标仓库生效。
+### Step 4：配置 GitHub MCP + 安装 Skills（手动）+ 验收
 
-### Step 3：配置 GitHub MCP（手动）
-
-在你的 AI Client（Codex / Claude Code / Cursor / VS Code 等）配置 GitHub 官方 MCP Server：
-
-- 最小 toolsets：`repos` / `issues` / `pull_requests`——覆盖 Producer 创建 Issue、Consumer 读仓库 / 发 Plan、Executor 创建 PR 的需要；
-- 只使用 Producer / Consumer（不执行）时，可进一步收紧到只读 + issues 写；
-- 不要把全部 toolsets 打开给 AI；快速自用模式可直接用你的 PAT，长期建议给 AI 独立 Bot 身份（见 [protocol.md](protocol.md) 第 6 节）。
-- 参考：<https://github.com/github/github-mcp-server>
-
-### Step 4：安装三个 Skills（手动）
-
-把 [skills/producer](../skills/producer/SKILL.md)、[skills/consumer](../skills/consumer/SKILL.md)、[skills/executor](../skills/executor/SKILL.md) 安装到你的 AI Client（全局安装或项目级引用均可）。
+- GitHub MCP：官方远端 server（`https://api.githubcopilot.com/mcp/`，PAT 走 Authorization 头，`X-MCP-Toolsets: repos,issues,pull_requests` 收敛 toolsets；Claude Code 配置示例见 integration.md §6.1）；
+- 安装三个 Skills：[skills/producer](../skills/producer/SKILL.md)、[skills/consumer](../skills/consumer/SKILL.md)、[skills/executor](../skills/executor/SKILL.md) 装入你的 AI Client（全局 `~/.claude/skills/` 或项目级 `.claude/skills/`，目录布局见 integration.md §6.2）；
+- 按 integration.md 第 7 章跑一遍验收（`/ai-plan` → 规划 → `/approve` → 执行 → Completion Report → Close）。
 
 完成后即可进入 [§3 日常使用](#3-日常使用)：和 AI 聊完说一句"发成 Issue"，或在已有 Issue 上评论 `/ai-plan`，然后 `/approve` → "执行 #N"。
 

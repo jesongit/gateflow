@@ -109,7 +109,7 @@ git push -f origin v0       # 强制更新远端 v0
 3. **配置 GitHub MCP**：最小 toolsets `repos` / `issues` / `pull_requests`；
 4. **安装三个 Skills**：`skills/producer`、`skills/consumer`、`skills/executor` 装入你的 AI Client。
 
-发布前（Action 还没公开发布时），目标仓库可用 `--action-ref owner/gateflow@<ref>` 把 `uses:` 指向私有检出 / fork。
+Action 正式发布前（或不想公开 gateflow 仓库时），`uses:` 的可引用性遵循三种模式：public 发布 / 私有仓库 + Access 共享策略 / 内嵌进目标仓库（`--action-ref ./.github/actions/gateflow`，本地 action 引用）。私有检出 / fork 默认无法被其他仓库引用（GitHub 默认 "Not accessible"），模式选择与操作见 [integration.md](integration.md) 第 2 章。
 
 ---
 
