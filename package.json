@@ -1,0 +1,22 @@
+{
+  "name": "github-ai-workflow",
+  "version": "0.0.1",
+  "private": true,
+  "description": "GitHub-native AI Workflow V0: deterministic TypeScript gate, frozen protocol, and Markdown skills. State lives in GitHub (Issues, Comments, Labels); AI never performs authorization decisions.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/github": "^9.1.1",
+    "@types/node": "^26.4.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}

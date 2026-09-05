@@ -1,0 +1,26 @@
+name: 'GitHub AI Workflow Gate'
+description: >-
+  Deterministic gate for the GitHub-native AI workflow. Validates actor
+  identity, strictly parses comment commands, checks markers and performs the
+  frozen label-based state transitions. The protocol is frozen in
+  docs/protocol.md (schema 1). Field details are finalized in Phase 1.
+
+inputs:
+  trusted-humans:
+    description: >-
+      Comma-separated GitHub logins treated as Trusted Humans in addition to
+      the repository owner (V0 default). Trusted Humans are the only actors
+      allowed to run commands: /ai-plan, /approve, /choose, /change, /cancel.
+    required: false
+    default: ''
+  trusted-agents:
+    description: >-
+      Comma-separated GitHub logins treated as Trusted Agents (independent bot
+      or GitHub App identities). Trusted Agent is a separate concept from
+      Trusted Human and is never allowed to run commands. V0 default: empty.
+    required: false
+    default: ''
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

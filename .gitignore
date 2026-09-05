@@ -1,0 +1,3 @@
+# Dependencies only. dist/ is intentionally NOT ignored:
+# GitHub JavaScript Actions require the bundled dist/index.js to be committed.
+node_modules/

@@ -1,0 +1,2 @@
+# Normalize all text files to LF to avoid CRLF churn between Windows and CI.
+* text=auto eol=lf
