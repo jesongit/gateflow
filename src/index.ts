@@ -1,23 +1,93 @@
 /**
- * Entry point of the GitHub AI Workflow Gate action.
+ * Entry point of the GitHub AI Workflow Gate action (Phase 1).
  *
- * Phase 0 placeholder: this stub is intentionally minimal and only proves the
- * build pipeline (esbuild -> dist/index.js). The real event router, permission
- * checks, command parser and label transitions are implemented in Phase 1
- * (src/gate.ts, src/commands.ts, src/states.ts, src/markers.ts,
- * src/permissions.ts, src/github.ts).
+ * Responsibilities kept deliberately thin:
+ *  - bail out safely when not running inside GitHub Actions;
+ *  - translate the github-context payload into a GateInput;
+ *  - run the deterministic gate (src/gate.ts) against one shared GitHubClient;
+ *  - surface only infrastructure failures via setFailed (protocol/business
+ *    no-ops are logged, never failed).
  */
 import * as core from '@actions/core';
+import { context, getOctokit } from '@actions/github';
+import { runGate, type GateInput, type GateLogger } from './gate';
+import { createGitHubClient, type GitHubClient } from './github';
 
-export const GATE_VERSION = '0.0.1';
+export const GATE_VERSION = '0.1.0';
 
-/** Runs the gate. Phase 0: log-only skeleton, performs no action. */
-export function run(): void {
-  core.info(`github-ai-workflow gate ${GATE_VERSION}: Phase 0 skeleton, nothing to do.`);
+/** Action inputs, read once per call. */
+function readInputs(): { trustedHumans: string; trustedAgents: string; token: string } {
+  return {
+    trustedHumans: core.getInput('trusted-humans'),
+    trustedAgents: core.getInput('trusted-agents'),
+    token: core.getInput('github-token', { required: true }),
+  };
 }
 
-// Only auto-execute when actually running inside GitHub Actions,
-// so that importing this module from tests stays side-effect free.
+/**
+ * Builds the GateInput from the current github context.
+ * Returns null (with a warning log) when the payload carries no issue,
+ * e.g. a misconfigured workflow trigger — that is config noise, not a failure.
+ */
+export function readGateInput(): GateInput | null {
+  const payload = context.payload as {
+    action?: string;
+    issue?: { number?: number; user?: { login?: string } };
+    comment?: { id?: number; user?: { login?: string }; body?: string };
+    sender?: { login?: string };
+  };
+
+  const issueNumber = payload.issue?.number;
+  if (typeof issueNumber !== 'number') {
+    core.warning(
+      `Event ${context.eventName} carries no issue payload; nothing to do. ` +
+        'Check the workflow "on:" configuration.',
+    );
+    return null;
+  }
+
+  const actor =
+    payload.comment?.user?.login ?? payload.sender?.login ?? payload.issue?.user?.login ?? '';
+  const inputs = readInputs();
+
+  return {
+    eventName: context.eventName,
+    eventAction: payload.action,
+    actor,
+    repoOwner: context.repo.owner,
+    repo: context.repo.repo,
+    issueNumber,
+    commentId: payload.comment?.id,
+    commentBody: payload.comment?.body,
+    trustedHumansInput: inputs.trustedHumans,
+    trustedAgentsInput: inputs.trustedAgents,
+  };
+}
+
+/** The logger the gate uses inside Actions (GitHub Actions log). */
+function actionsLogger(): GateLogger {
+  return {
+    info: (message) => core.info(message),
+    warning: (message) => core.warning(message),
+  };
+}
+
+/** Runs one gate invocation. Exported for tests; side-effect free by itself. */
+export async function run(client?: GitHubClient): Promise<void> {
+  const input = readGateInput();
+  if (input === null) {
+    return;
+  }
+  const gh = client ?? createGitHubClient(getOctokit(readInputs().token));
+  await runGate(input, gh, actionsLogger());
+}
+
 if (process.env.GITHUB_ACTIONS === 'true') {
-  run();
+  run().catch((err: unknown) => {
+    // Infrastructure error (API unreachable, auth, missing token): fail loudly.
+    // Everything else is handled and logged inside the gate.
+    core.setFailed(err instanceof Error ? err.message : String(err));
+  });
+} else {
+  core.info(`github-ai-workflow gate ${GATE_VERSION}: not running inside GitHub Actions, exiting.`);
 }

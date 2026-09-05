@@ -47,7 +47,13 @@ github-ai-workflow/
 ├── package.json / tsconfig.json
 ├── action.yml              # Gate Action 入口声明
 ├── src/                    # Gate 源码（TypeScript strict）
-│   ├── index.ts            # 入口 stub（Phase 1 重写）
+│   ├── index.ts            # Action 入口：构造 GateInput 并调用 gate（非 Actions 环境安全退出）
+│   ├── gate.ts             # 主流程：Event → Permission → State → Command → Validate → Transition
+│   ├── commands.ts         # 严格命令解析（trim 全等匹配；/choose、/change 为 Phase 2）
+│   ├── states.ts           # 状态快照 + 迁移合法性（以 protocol.ts 为单一事实来源）
+│   ├── permissions.ts      # Trusted Human / Trusted Agent 判定（两概念永不合并）
+│   ├── markers.ts          # Comment Marker 识别骨架（Phase 2 完整校验）
+│   ├── github.ts           # Octokit API 封装（业务逻辑不散落 API 调用）
 │   └── protocol.ts         # 冻结协议常量（与 docs/protocol.md 同步）
 ├── dist/index.js           # esbuild 产物（GitHub JS Action 要求提交）
 ├── tests/                  # vitest 单测
@@ -70,7 +76,16 @@ npm run typecheck  # tsc --noEmit（strict）
 npm test           # vitest
 ```
 
+## 并发与一致性（重要）
+
+Gate 自身是确定性的，但**串行化必须由 workflow 层保证**（Phase 8 提供 `templates/workflow.yml`）：
+
+- 同一 Issue 的所有 Gate run 必须落在同一个 concurrency group：`group: ai-workflow-<issue_number>`，且 `cancel-in-progress: false`（排队执行，不取消）。
+- 无论是否配置并发组，Gate 在**每次状态迁移前都会通过 GitHub API 重新读取当前 labels**，绝不信任 event payload 中的快照；重读结果与命令前提不符时按无效命令处理（no-op + log 原因）。
+- 在 Phase 8 模板可用之前，如手动编写 workflow，请务必自行加上 concurrency 配置，否则两个并发 run 仍可能交错执行。
+
 ## 当前状态
 
 - Phase 0（建仓库骨架 + 协议冻结）：已完成。协议冻结见 [docs/protocol.md](docs/protocol.md)，协议常量同步在 [src/protocol.ts](src/protocol.ts)。
-- Phase 1（Gate 核心：事件路由、状态读取、Owner 校验、命令解析、Label 迁移、并发）：待开始。
+- Phase 1（Gate 核心）：已完成。纯确定性状态机，不接任何 AI——支持 `/ai-plan`（T0）、`/approve`（T2）、`/cancel`（退出，不关闭 Issue）；非法命令 / 错误状态 / 非 Trusted Human 一律 no-op 并记录原因，不会产生红 X 噪音。`/choose`、`/change`、reaction 反馈、Marker 校验在 Phase 2；workflow 模板在 Phase 8。
+- Phase 2（Gate 完整命令 + Marker 校验）：待开始。

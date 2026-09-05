@@ -55,6 +55,7 @@ ai:planning → ai:review → ai:ready → ai:working → ai:done
 将包含以下内容（届时更新本节）：
 
 - 在目标仓库放置 `.github/workflows/ai-workflow.yml`（模板：`templates/workflow.yml`）；
+  - **并发要求（Phase 8 前手动配置时必须遵守）**：同一 Issue 的所有 Gate run 必须共享 concurrency group `ai-workflow-<issue_number>` 且 `cancel-in-progress: false`。Gate 在每次迁移前会通过 API 重读 labels 做最终校验，但串行化本身由 workflow 并发组保证；Phase 1 阶段模板尚未提供，README 有详细说明。
 - 运行 `scripts/bootstrap.mjs` 创建 6 个 `ai:*` 标签并检查环境；
 - 在 AI Client（Codex / Claude Code / Cursor / VS Code）配置 GitHub 官方 MCP Server（最小 toolsets：repos / issues / pull_requests）；
 - 安装 producer / consumer / executor 三个 Skill（全局或项目级）；

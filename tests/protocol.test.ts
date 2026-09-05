@@ -80,7 +80,7 @@ describe('Phase 0 protocol freeze (docs/protocol.md <-> src/protocol.ts)', () =>
     }
   });
 
-  it('has a gate entry stub with a version', () => {
-    expect(GATE_VERSION).toBe('0.0.1');
+  it('has a gate entry with a version', () => {
+    expect(GATE_VERSION).toBe('0.1.0');
   });
 });
