@@ -5,7 +5,7 @@
 
 ## 1. 一句话定位
 
-GitHub-native AI Workflow V0 是一套"用 GitHub 原生对象（Issue / Comment / Label / PR）作为唯一正式状态存储，用确定性 GitHub Action 做权限与状态迁移，用 Markdown Skill 驱动 AI 做规划与执行"的轻量工作流。
+GateFlow 是一套"用 GitHub 原生对象（Issue / Comment / Label / PR）作为唯一正式状态存储，用确定性 GitHub Action 做权限与状态迁移，用 Markdown Skill 驱动 AI 做规划与执行"的轻量工作流。
 
 没有 Go Server、SQLite、React、Docker、消息队列、Agent Registry、Dashboard（V0 明确不做，见第 6 节）。
 

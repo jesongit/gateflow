@@ -1,6 +1,6 @@
-# GitHub-native AI Workflow V0
+# GateFlow
 
-把 AI 编码协作的原生载体放在 GitHub 上：**GitHub 保存正式工作状态（Issue / Comment / Label / PR），AI 负责理解、规划、执行和汇报，权限、审批和状态迁移由确定性程序（Gate）控制。**
+> GitHub-native AI Workflow V0 —— 把 AI 编码协作的原生载体放在 GitHub 上：**GitHub 保存正式工作状态（Issue / Comment / Label / PR），AI 负责理解、规划、执行和汇报，权限、审批和状态迁移由确定性程序（Gate）控制。**
 
 没有常驻 Server、没有数据库、没有 Web UI。整条 Workflow 只有四部分：
 
@@ -43,7 +43,7 @@ AI Conversation
 ## 仓库结构
 
 ```text
-github-ai-workflow/
+gateflow/
 ├── README.md
 ├── package.json / tsconfig.json
 ├── action.yml              # Gate Action 入口声明
@@ -71,7 +71,7 @@ github-ai-workflow/
 
 ```bash
 # 在目标仓库的检出目录里运行（--dry-run 可先预览将做什么）：
-node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target
+node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target
 ```
 
 1. **bootstrap 一键初始化**（幂等，可重复执行）：创建 6 个 `ai:*` 标签——已存在的同名标签跳过、绝不修改；生成 `.github/workflows/ai-workflow.yml`——已存在则警告跳过、绝不覆盖，不触碰已有 issue templates 与 PR workflow；
@@ -79,7 +79,7 @@ node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target
 3. **配置 GitHub MCP**：最小 toolsets `repos` / `issues` / `pull_requests`；
 4. **安装 Skills**：`skills/producer`、`skills/consumer`、`skills/executor` 装入你的 AI Client。
 
-> Action 正式发布前，模板中的 `uses: jesongit/github-ai-workflow@v0` 是占位引用，可用 bootstrap `--action-ref` 指向实际 owner/repo@ref；发布步骤与 `@v0` 浮动 tag 策略见 [docs/release.md](docs/release.md)。
+> Action 正式发布前，模板中的 `uses: jesongit/gateflow@v0` 是占位引用，可用 bootstrap `--action-ref` 指向实际 owner/repo@ref；发布步骤与 `@v0` 浮动 tag 策略见 [docs/release.md](docs/release.md)。
 
 不装 Action 也能先理解流程（详见 [docs/usage.md](docs/usage.md) 第三节）：配置 MCP + 安装 Skills 后，和 AI 聊需求 → "把刚才讨论整理成 <repo> 的 Issue"（Producer）→ "规划 <repo>#<n>"（Consumer 出 Plan）→ Issue 上 `/approve`（Gate 迁状态）→ "执行 <repo>#<n>"（Executor 按计划开发并汇报）。
 

@@ -11,7 +11,7 @@
 假设发布 `v0.1.0`（首个公开版本）。Action 的最终引用为：
 
 ```text
-jesongit/github-ai-workflow@v0
+jesongit/gateflow@v0
 ```
 
 按顺序执行：
@@ -50,7 +50,7 @@ git push origin v0.1.0
 
 ### Step 5：维护浮动 tag `v0`（关键）
 
-消费者统一写 `uses: jesongit/github-ai-workflow@v0`。`v0` 是一个**浮动 tag**：始终指向最新的 `v0.x` release commit，每次发布后手动移动：
+消费者统一写 `uses: jesongit/gateflow@v0`。`v0` 是一个**浮动 tag**：始终指向最新的 `v0.x` release commit，每次发布后手动移动：
 
 ```bash
 git tag -f v0 v0.1.0        # 指向本次 release commit
@@ -60,13 +60,13 @@ git push -f origin v0       # 强制更新远端 v0
 策略说明：
 
 - **v0.x 期间**：每个 patch / minor 发布后都把 `v0` 重新指到新 release commit。由于协议 `schema: 1` 冻结（§2），minor / patch 更新对消费者是兼容的，浮动跟随是安全的；
-- **消费者写法**：`uses: jesongit/github-ai-workflow@v0`（自动获得 v0.x 内的全部修复与新能力）。想锁死版本可以把 ref 写成完整 tag（如 `@v0.1.0`），但常规使用不需要；
+- **消费者写法**：`uses: jesongit/gateflow@v0`（自动获得 v0.x 内的全部修复与新能力）。想锁死版本可以把 ref 写成完整 tag（如 `@v0.1.0`），但常规使用不需要；
 - **何时停止移动 `v0`**：只有发生协议升级（schema → 2、marker `:v1` → `:v2`，或 Action 输入语义破坏性变更）时，冻结被打破——届时引入新浮动 tag `v1`（消费者显式迁移），`v0` 停留在最后一个 `schema: 1` 版本不再移动。V0 冻结期内这一步不会发生。
 
 ### Step 6：发布后确认
 
 - 在 GitHub 上确认 `v0` tag 指向了新 release commit（仓库的 tags 页）；
-- 在一个目标仓库跑一次 Gate workflow（或重新执行一次历史 run），确认 `uses: jesongit/github-ai-workflow@v0` 解析到新版本、Action 正常启动（log 首行含 `github-ai-workflow gate <GATE_VERSION>`）。
+- 在一个目标仓库跑一次 Gate workflow（或重新执行一次历史 run），确认 `uses: jesongit/gateflow@v0` 解析到新版本、Action 正常启动（log 首行含 `gateflow <GATE_VERSION>`）。
 
 > 本仓库 `package.json` 为 `"private": true`：**不发布 npm 包**，npm 只承担开发依赖与脚本；`version` 字段纯粹作为仓库发布版本与 git tag 对应。
 
@@ -104,12 +104,12 @@ git push -f origin v0       # 强制更新远端 v0
 
 完整四步流程（含每步的命令与参数表）见 [usage.md §2](usage.md#2-安装接入新项目的四步流程)，此处只列清单：
 
-1. **bootstrap 一键初始化**：在目标仓库检出目录运行 `node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target`（幂等；创建 6 个 `ai:*` 标签 + 生成 `.github/workflows/ai-workflow.yml`，已有同名标签 / workflow 一律跳过绝不覆盖；`--dry-run` 可预览）；
+1. **bootstrap 一键初始化**：在目标仓库检出目录运行 `node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target`（幂等；创建 6 个 `ai:*` 标签 + 生成 `.github/workflows/ai-workflow.yml`，已有同名标签 / workflow 一律跳过绝不覆盖；`--dry-run` 可预览）；
 2. **检查并提交 workflow 文件**：确认生成的 `.github/workflows/ai-workflow.yml`（事件矩阵 / 串行并发组 / Action 输入），提交并推送；
 3. **配置 GitHub MCP**：最小 toolsets `repos` / `issues` / `pull_requests`；
 4. **安装三个 Skills**：`skills/producer`、`skills/consumer`、`skills/executor` 装入你的 AI Client。
 
-发布前（Action 还没公开发布时），目标仓库可用 `--action-ref owner/github-ai-workflow@<ref>` 把 `uses:` 指向私有检出 / fork。
+发布前（Action 还没公开发布时），目标仓库可用 `--action-ref owner/gateflow@<ref>` 把 `uses:` 指向私有检出 / fork。
 
 ---
 
@@ -122,7 +122,7 @@ git push -f origin v0       # 强制更新远端 v0
 | 1 | 类型检查 | `npm run typecheck` | `tsc --noEmit` 零错误 |
 | 2 | 单元测试 | `npm test` | vitest 全绿（当前基线：8 个文件 156 个用例） |
 | 3 | 产物同步 | `npm run build` 后 `git status` | `dist/index.js` **无变化**（已提交产物与 src 同步；有变化则先提交刷新） |
-| 4 | 非 Actions 环境安全退出 | `node dist/index.js` | 打印 `github-ai-workflow gate <GATE_VERSION>: not running inside GitHub Actions, exiting.` 后以退出码 0 结束，不抛异常 |
+| 4 | 非 Actions 环境安全退出 | `node dist/index.js` | 打印 `gateflow <GATE_VERSION>: not running inside GitHub Actions, exiting.` 后以退出码 0 结束，不抛异常 |
 | 5 | 安装入口可用 | `node scripts/bootstrap.mjs --help` | 正常打印用法（中文帮助文本完整、退出码 0） |
 | 6 | YAML 可解析 | `python -c "import yaml; yaml.safe_load(open('templates/workflow.yml', encoding='utf-8')); yaml.safe_load(open('action.yml', encoding='utf-8'))"` | 两个 YAML（workflow 模板与 Action 清单）均严格解析通过 |
 

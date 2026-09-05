@@ -58,25 +58,25 @@ ai:planning → ai:review → ai:ready → ai:working → ai:done
 
 ### Step 1：运行 bootstrap
 
-把本仓库（github-ai-workflow）与目标仓库都检出到本地，然后**在目标仓库的检出目录里**运行（workflow 文件会写入当前目录）：
+把本仓库（gateflow）与目标仓库都检出到本地，然后**在目标仓库的检出目录里**运行（workflow 文件会写入当前目录）：
 
 ```bash
 # 最简形式：token 走 GITHUB_TOKEN 环境变量
-node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target
+node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target
 
 # 显式传 token 与 Action 引用（Action 发布前 / fork 场景）
-node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target \
-  --token <token> --action-ref owner/github-ai-workflow@v0
+node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target \
+  --token <token> --action-ref owner/gateflow@v0
 
 # 先看看会做什么（只打印，不做任何修改、不访问网络）
-node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target --dry-run
+node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --dry-run
 ```
 
 | 参数 | 缺省 | 说明 |
 | --- | --- | --- |
 | `--repo owner/name` | `GITHUB_REPOSITORY` 环境变量 | 目标仓库 |
 | `--token <token>` | `GITHUB_TOKEN` 环境变量 | 需要目标仓库写权限（创建标签）；两者都没有时报错退出 |
-| `--action-ref <ref>` | `jesongit/github-ai-workflow@v0` | workflow 中 `uses:` 的引用（Phase 9 发布时以实际 owner 为准，可参数覆盖） |
+| `--action-ref <ref>` | `jesongit/gateflow@v0` | workflow 中 `uses:` 的引用（Phase 9 发布时以实际 owner 为准，可参数覆盖） |
 | `--workflow-file <name>` | `ai-workflow.yml` | 生成的 workflow 文件名 |
 | `--dry-run` | 关 | 只打印将做什么 |
 | `--help` | — | 打印用法 |
@@ -90,7 +90,7 @@ node /path/to/github-ai-workflow/scripts/bootstrap.mjs --repo owner/target --dry
 - **事件**：`issues [opened, labeled, closed]` + `issue_comment [created, edited]`——与协议第 8 节事件矩阵一致（不监听 `reopened`，V0 不处理）；
 - **权限**：`issues: write`（Gate 写 `ai:*` 标签与 reaction）、`contents: read`；
 - **串行保证**：`concurrency.group: ai-workflow-<issue_number>` + `cancel-in-progress: false`——同一 Issue 的所有 Gate run 排队执行（协议第 7 节）。Gate 在每次迁移前仍会通过 API 重读 labels 做最终校验，但串行化本身由这个并发组保证，**请不要删除**；
-- **`uses:` 占位**：`jesongit/github-ai-workflow@v0`（Phase 9 发布时以实际 owner 为准；bootstrap `--action-ref` 可替换）；
+- **`uses:` 占位**：`jesongit/gateflow@v0`（Phase 9 发布时以实际 owner 为准；bootstrap `--action-ref` 可替换）；
 - **显式输入**：`trusted-humans` / `trusted-agents` 默认为空 = 仅 repo owner 可执行命令、无 Trusted Agent（语义见模板内注释与 [protocol.md](protocol.md) 第 6 节；Owner PAT 直连 MCP 的快速自用模式下无需设置）。
 
 提交并推送该文件后，Gate 即对目标仓库生效。

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * github-ai-workflow bootstrap (Phase 8).
+ * gateflow bootstrap (Phase 8).
  *
  * Idempotent setup helper for adopting the workflow in a target repository.
  * Run it from the checkout of the TARGET repository (the workflow file is
@@ -22,7 +22,7 @@
  *
  * Usage examples:
  *   node scripts/bootstrap.mjs --repo owner/target --token $GITHUB_TOKEN
- *   node scripts/bootstrap.mjs --repo owner/target --action-ref owner/github-ai-workflow@main
+ *   node scripts/bootstrap.mjs --repo owner/target --action-ref owner/gateflow@main
  *   node scripts/bootstrap.mjs --repo owner/target --dry-run
  *
  * `--repo` defaults to $GITHUB_REPOSITORY, `--token` to $GITHUB_TOKEN.
@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 
 /** Placeholder reference written in templates/workflow.yml (Phase 9 ships the real owner). */
-const DEFAULT_ACTION_REF = 'jesongit/github-ai-workflow@v0';
+const DEFAULT_ACTION_REF = 'jesongit/gateflow@v0';
 const DEFAULT_WORKFLOW_FILE = 'ai-workflow.yml';
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -52,7 +52,7 @@ const LABELS = [
   { name: 'ai:done', color: '0e8a16', description: 'AI 工作已完成，等待 Owner 最终检查（不等于 Issue 已关闭）' },
 ];
 
-const USAGE = `github-ai-workflow bootstrap —— 为目标仓库初始化 AI Workflow（幂等，可重复执行）
+const USAGE = `gateflow bootstrap —— 为目标仓库初始化 AI Workflow（幂等，可重复执行）
 
 用法：
   node scripts/bootstrap.mjs --repo owner/name [选项]
@@ -333,7 +333,7 @@ async function main() {
     return;
   }
 
-  console.log('== github-ai-workflow bootstrap ==');
+  console.log('== gateflow bootstrap ==');
   console.log(`目标仓库：${opts.repo}`);
   console.log(`Action 引用：${opts.actionRef}`);
   console.log('');

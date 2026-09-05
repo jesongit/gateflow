@@ -1,4 +1,4 @@
-name: 'GitHub AI Workflow Gate'
+name: 'GateFlow'
 description: >-
   Deterministic gate for the GitHub-native AI workflow. Validates actor
   identity, strictly parses comment commands (/ai-plan, /approve, /choose,
@@ -6,7 +6,7 @@ description: >-
   the API and performs the frozen label-based state transitions. The protocol
   is frozen in docs/protocol.md (schema 1). AI never participates in
   authorization decisions.
-author: 'github-ai-workflow'
+author: 'jesongit'
 
 branding:
   icon: 'shield'

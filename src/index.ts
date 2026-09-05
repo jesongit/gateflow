@@ -1,5 +1,5 @@
 /**
- * Entry point of the GitHub AI Workflow Gate action (Phase 2: full command
+ * Entry point of the GateFlow action (Phase 2: full command
  * set, reactions, marker validation).
  *
  * Responsibilities kept deliberately thin:
@@ -93,5 +93,5 @@ if (process.env.GITHUB_ACTIONS === 'true') {
     core.setFailed(err instanceof Error ? err.message : String(err));
   });
 } else {
-  core.info(`github-ai-workflow gate ${GATE_VERSION}: not running inside GitHub Actions, exiting.`);
+  core.info(`gateflow ${GATE_VERSION}: not running inside GitHub Actions, exiting.`);
 }

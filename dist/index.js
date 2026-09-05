@@ -25141,7 +25141,7 @@ if (process.env.GITHUB_ACTIONS === "true") {
     setFailed(err instanceof Error ? err.message : String(err));
   });
 } else {
-  info(`github-ai-workflow gate ${GATE_VERSION}: not running inside GitHub Actions, exiting.`);
+  info(`gateflow ${GATE_VERSION}: not running inside GitHub Actions, exiting.`);
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

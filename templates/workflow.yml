@@ -25,7 +25,7 @@ jobs:
     steps:
       - name: AI Workflow Gate
         # 占位引用：Phase 9 发布时以实际 owner/repo@ref 为准；bootstrap.mjs --action-ref 可替换。
-        uses: jesongit/github-ai-workflow@v0
+        uses: jesongit/gateflow@v0
         with:
           # 缺省使用 workflow 自身 token；要求 permissions.issues: write（上方已授予）。
           github-token: ${{ github.token }}
