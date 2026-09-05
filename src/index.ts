@@ -1,5 +1,6 @@
 /**
- * Entry point of the GitHub AI Workflow Gate action (Phase 1).
+ * Entry point of the GitHub AI Workflow Gate action (Phase 2: full command
+ * set, reactions, marker validation).
  *
  * Responsibilities kept deliberately thin:
  *  - bail out safely when not running inside GitHub Actions;
@@ -13,7 +14,7 @@ import { context, getOctokit } from '@actions/github';
 import { runGate, type GateInput, type GateLogger } from './gate';
 import { createGitHubClient, type GitHubClient } from './github';
 
-export const GATE_VERSION = '0.1.0';
+export const GATE_VERSION = '0.2.0';
 
 /** Action inputs, read once per call. */
 function readInputs(): { trustedHumans: string; trustedAgents: string; token: string } {
@@ -32,7 +33,7 @@ function readInputs(): { trustedHumans: string; trustedAgents: string; token: st
 export function readGateInput(): GateInput | null {
   const payload = context.payload as {
     action?: string;
-    issue?: { number?: number; user?: { login?: string } };
+    issue?: { number?: number; body?: string; user?: { login?: string } };
     comment?: { id?: number; user?: { login?: string }; body?: string };
     sender?: { login?: string };
   };
@@ -59,6 +60,9 @@ export function readGateInput(): GateInput | null {
     issueNumber,
     commentId: payload.comment?.id,
     commentBody: payload.comment?.body,
+    // Observability only: the gate parses this for the Producer schema block
+    // (issues.opened); it never derives state or permissions from it.
+    issueBody: payload.issue?.body,
     trustedHumansInput: inputs.trustedHumans,
     trustedAgentsInput: inputs.trustedAgents,
   };

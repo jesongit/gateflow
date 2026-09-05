@@ -1,22 +1,45 @@
 /**
- * The deterministic gate: Event -> Permission -> Current State -> Command ->
- * Validate -> Transition (docs/protocol.md sections 2, 3, 7, 8).
+ * The deterministic gate: Event -> Permission -> Current State -> Command /
+ * Marker -> Validate -> Transition (docs/protocol.md sections 2, 3, 4, 7, 8).
  *
  * Hard rules enforced here:
- *  - The event actor must be a Trusted Human for any command; everyone else
- *    (including Trusted Agents) is silently ignored.
+ *  - Commands are a Trusted Human monopoly. Any of the five frozen commands
+ *    from anyone else (including Trusted Agents) receives the 👎 reaction
+ *    ("invalid owner command") and is otherwise ignored: no comment, no label
+ *    write, no API read.
+ *  - A command that fails its state precondition is a logged no-op WITHOUT a
+ *    reaction (Phase 1 feedback convention). A successfully accepted command
+ *    (effect performed, or legal hand-off to the Consumer) gets the ✅
+ *    reaction. Reactions are best-effort feedback: never permission, never
+ *    load-bearing; their failure is logged and ignored.
+ *  - Markers are structural hints, never permission. A marker-triggered
+ *    transition (T1 / T3 / T6) requires ALL of: a valid marker (unique,
+ *    owning its line), a publisher in Trusted Human ∪ Trusted Agent, and a
+ *    re-read state matching the transition's `from`. Invalid marker comments,
+ *    markers from unknown actors, the append marker and the issue-body schema
+ *    block never trigger anything.
  *  - The current state is derived from labels re-read via the GitHub API
  *    immediately before every migration; the event payload snapshot is never
  *    trusted (protocol section 7).
- *  - Any invalid command/state combination is a logged no-op. The gate never
- *    throws for protocol/business reasons; only genuine infrastructure
- *    failures (API unreachable, auth errors, ...) propagate to the caller.
- *  - Phase 1 handles /ai-plan (T0), /approve (T2) and /cancel (exit);
- *    /choose and /change plus marker-triggered transitions (T1/T3/T6) and
- *    reaction feedback arrive in later phases.
+ *  - The gate never throws for protocol/business reasons; only genuine
+ *    infrastructure failures (API unreachable, auth errors, ...) propagate
+ *    to the caller.
  */
-import { COMMANDS, LABELS, STATES } from './protocol';
-import { parseCommand, type GateCommand } from './commands';
+import {
+  COMMANDS,
+  LABELS,
+  MARKERS,
+  STATES,
+  STATE_TO_LABEL,
+  type State,
+} from './protocol';
+import {
+  parseCommand,
+  type ChangeArgs,
+  type ChooseArgs,
+  type ParsedCommand,
+} from './commands';
+import { inspectCommentMarkers, parseIssueSchemaBlock } from './markers';
 import { isLegalTransition, readSnapshot, type WorkflowSnapshot } from './states';
 import { isTrustedAgent, isTrustedHuman } from './permissions';
 import type { GitHubClient, IssueRef } from './github';
@@ -42,13 +65,19 @@ export interface GateInput {
   /** Present for issue_comment events. */
   commentId: number | undefined;
   commentBody: string | undefined;
+  /**
+   * Issue body when the event carries one (issues.* events). Only parsed for
+   * the schema metadata block (observability); optional because comment
+   * events and simplified callers legitimately omit it.
+   */
+  issueBody?: string | undefined;
   /** Raw `trusted-humans` action input (comma-separated allowlist). */
   trustedHumansInput: string;
   /** Raw `trusted-agents` action input (V0 default: empty). */
   trustedAgentsInput: string;
 }
 
-/** Comment actions that carry a command. */
+/** Comment actions that carry a command or marker. */
 const COMMAND_ACTIONS: ReadonlySet<string> = new Set(['created', 'edited']);
 
 /** Runs the gate for one event. Resolves normally unless infrastructure fails. */
@@ -76,8 +105,9 @@ export async function runGate(
 
 /**
  * issues.* events. Per the frozen event matrix (protocol section 8) none of
- * them performs a migration in Phase 1: opened does not auto-label, closed is
- * a validated silent stop, reopened is not handled in V0.
+ * them performs a migration: opened does not auto-label (the schema block is
+ * logged as observability metadata only), closed is a validated silent stop,
+ * reopened is not handled in V0.
  */
 async function handleIssueEvent(
   input: GateInput,
@@ -85,12 +115,30 @@ async function handleIssueEvent(
   log: GateLogger,
 ): Promise<void> {
   switch (input.eventAction) {
-    case 'opened':
-      log.info(
-        `issues.opened on #${input.issueNumber}: no auto-labeling. Producer-created issues ` +
-          'already carry ai:planning (T0); external issues stay plain until a Trusted Human runs /ai-plan.',
-      );
+    case 'opened': {
+      // Observability only: the Producer schema block (kind / maturity_hint)
+      // is metadata for the Consumer, NEVER a transition or permission input.
+      const schema = parseIssueSchemaBlock(input.issueBody);
+      if (schema.status === 'valid') {
+        log.info(
+          `issues.opened on #${input.issueNumber}: no auto-labeling. Producer schema block: ` +
+            `kind=${schema.metadata.kind}, maturity_hint=${schema.metadata.maturityHint} ` +
+            '(metadata only, no transition). Producer-created issues already carry ' +
+            'ai:planning (T0); external issues stay plain until a Trusted Human runs /ai-plan.',
+        );
+      } else if (schema.status === 'invalid') {
+        log.warning(
+          `issues.opened on #${input.issueNumber}: issue body schema block invalid ` +
+            `(${schema.reason}); treated as a plain issue. No auto-labeling, no transition.`,
+        );
+      } else {
+        log.info(
+          `issues.opened on #${input.issueNumber}: no auto-labeling. No schema block. ` +
+            'External issues stay plain until a Trusted Human runs /ai-plan.',
+        );
+      }
       return;
+    }
     case 'labeled':
       log.info(`issues.labeled on #${input.issueNumber}: observed, no transition.`);
       return;
@@ -116,38 +164,50 @@ async function handleIssueEvent(
   }
 }
 
-/** issue_comment.created / edited: the only command-carrying path. */
+/** issue_comment.created / edited: the command + marker path. */
 async function handleComment(
   input: GateInput,
   client: GitHubClient,
   log: GateLogger,
 ): Promise<void> {
-  // 1) Strict command parse. Normal comments (and /choose, /change until
-  //    Phase 2) yield null and must not touch the API at all.
-  const command = parseCommand(input.commentBody);
-  if (command === null) {
-    log.info(
-      `Comment on #${input.issueNumber} by "${input.actor}" is not a workflow command: ignored, no API writes.`,
-    );
+  const ref = issueRef(input);
+
+  // 1) Strict command parse. Normal comments yield null and fall through to
+  //    marker detection; neither path touches the API until a rule matches.
+  const parsed = parseCommand(input.commentBody);
+  if (parsed !== null) {
+    await handleCommand(parsed, input, ref, client, log);
     return;
   }
+  await handleMarkerComment(input, ref, client, log);
+}
 
-  // 2) Permission: commands are a Trusted Human monopoly. Trusted Agents and
-  //    everyone else are silently ignored (no reaction, no comment, no writes).
+/** A parsed command: permission -> closed check -> re-read state -> apply. */
+async function handleCommand(
+  parsed: ParsedCommand,
+  input: GateInput,
+  ref: IssueRef,
+  client: GitHubClient,
+  log: GateLogger,
+): Promise<void> {
+  // 2) Permission BEFORE any API read: commands are a Trusted Human monopoly.
+  //    Everyone else (including Trusted Agents) gets the 👎 feedback and is
+  //    otherwise ignored (protocol section 2.3, Phase 2 feedback channel).
   if (!isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput)) {
     const kind = isTrustedAgent(input.actor, input.trustedAgentsInput) ? 'trusted agent' : 'actor';
     log.info(
-      `Command ${command} from non-Trusted-Human ${kind} "${input.actor}" on #${input.issueNumber}: silently ignored.`,
+      `Command ${parsed.command} from non-Trusted-Human ${kind} "${input.actor}" on ` +
+        `#${ref.issueNumber}: rejected (invalid owner command), silently ignored.`,
     );
+    await react(client, ref, input.commentId, '-1', log);
     return;
   }
 
   // 3) Validate the issue itself; closed issues are terminal for commands too.
-  const ref = issueRef(input);
   const issue = await client.getIssue(ref);
   if (issue.state === 'closed') {
     log.info(
-      `Command ${command} on closed issue #${input.issueNumber}: closed issues are terminal, ignored.`,
+      `Command ${parsed.command} on closed issue #${ref.issueNumber}: closed issues are terminal, ignored.`,
     );
     return;
   }
@@ -157,23 +217,135 @@ async function handleComment(
   const labels = await client.getLabels(ref);
   const snapshot = readSnapshot(labels);
 
-  // 5) Validate + 6) transition.
-  switch (command) {
+  // 5) Validate + 6) transition (or legal hand-off); ✅ on acceptance.
+  let accepted = false;
+  switch (parsed.command) {
     case COMMANDS.aiPlan:
-      await applyAiPlan(ref, snapshot, client, log);
-      return;
+      accepted = await applyAiPlan(ref, snapshot, client, log);
+      break;
     case COMMANDS.approve:
-      await applyApprove(ref, snapshot, client, log);
-      return;
+      accepted = await applyApprove(ref, snapshot, client, log);
+      break;
+    case COMMANDS.choose:
+      accepted = await applyChoose(ref, snapshot, parsed.args, log);
+      break;
+    case COMMANDS.change:
+      accepted = await applyChange(ref, snapshot, parsed.args, log);
+      break;
     case COMMANDS.cancel:
-      await applyCancel(ref, snapshot, client, log);
+      accepted = await applyCancel(ref, snapshot, client, log);
+      break;
+  }
+  if (accepted) {
+    await react(client, ref, input.commentId, '+1', log);
+  }
+}
+
+/**
+ * Marker path of a comment. A marker can trigger T1 / T3 / T6, but only when
+ * marker validity, publisher identity and the re-read state ALL check out;
+ * markers alone never prove anything (protocol section 4).
+ */
+async function handleMarkerComment(
+  input: GateInput,
+  ref: IssueRef,
+  client: GitHubClient,
+  log: GateLogger,
+): Promise<void> {
+  const inspection = inspectCommentMarkers(input.commentBody);
+  if (inspection.kind === 'none') {
+    log.info(
+      `Comment on #${ref.issueNumber} by "${input.actor}" is not a workflow command or marker: ` +
+        'ignored, no API writes.',
+    );
+    return;
+  }
+  if (inspection.kind === 'invalid') {
+    log.warning(
+      `Invalid marker comment on #${ref.issueNumber} by "${input.actor}" (${inspection.reason}): ` +
+        'a marker must be unique and occupy a line of its own; ignored (anti-spoofing), no transition.',
+    );
+    return;
+  }
+  const marker = inspection.marker;
+
+  // Producer APPEND: bookkeeping only, never a transition.
+  if (marker === MARKERS.append) {
+    log.info(
+      `append marker on #${ref.issueNumber} by "${input.actor}": discussion appended, ` +
+        'recorded only, no transition.',
+    );
+    return;
+  }
+
+  // Publisher must be Trusted Human ∪ Trusted Agent (protocol 4.3). Everyone
+  // else's markers are plain text: markers are never permission. Trusted
+  // Human and Trusted Agent stay separate checks; either may publish.
+  const isHuman = isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput);
+  const isAgent = isTrustedAgent(input.actor, input.trustedAgentsInput);
+  if (!isHuman && !isAgent) {
+    log.warning(
+      `Marker ${marker} on #${ref.issueNumber} by unknown actor "${input.actor}": markers are ` +
+        'structural hints, never permission; treated as plain text, no transition.',
+    );
+    return;
+  }
+  const publisher = isHuman ? 'trusted human' : 'trusted agent';
+
+  const issue = await client.getIssue(ref);
+  if (issue.state === 'closed') {
+    log.info(
+      `Marker ${marker} on closed issue #${ref.issueNumber}: closed issues are terminal, ignored.`,
+    );
+    return;
+  }
+
+  const labels = await client.getLabels(ref);
+  const snapshot = readSnapshot(labels);
+
+  switch (marker) {
+    case MARKERS.plan:
+      await applyMarkerTransition(
+        ref,
+        snapshot,
+        STATES.planning,
+        STATES.review,
+        'T1',
+        'plan published',
+        publisher,
+        input.actor,
+        client,
+        log,
+      );
       return;
-    default: {
-      // Exhaustiveness guard for future commands.
-      const unreachable: never = command;
-      log.warning(`Unhandled command ${String(unreachable)}: ignored.`);
+    case MARKERS.executionTracker:
+      await applyMarkerTransition(
+        ref,
+        snapshot,
+        STATES.ready,
+        STATES.working,
+        'T3',
+        'execution tracker created',
+        publisher,
+        input.actor,
+        client,
+        log,
+      );
       return;
-    }
+    case MARKERS.completionReport:
+      await applyMarkerTransition(
+        ref,
+        snapshot,
+        STATES.working,
+        STATES.done,
+        'T6',
+        'completion report published',
+        publisher,
+        input.actor,
+        client,
+        log,
+      );
+      return;
   }
 }
 
@@ -183,27 +355,28 @@ async function applyAiPlan(
   snapshot: WorkflowSnapshot,
   client: GitHubClient,
   log: GateLogger,
-): Promise<void> {
+): Promise<boolean> {
   if (snapshot.status === 'ambiguous') {
     log.warning(
       `Invalid /ai-plan on #${ref.issueNumber}: issue carries multiple ai:* labels ` +
         `[${snapshot.labels.join(', ')}] (protocol violation); no transition.`,
     );
-    return;
+    return false;
   }
   if (snapshot.status !== 'outside') {
     log.warning(
       `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow ` +
         `(label ${snapshot.label}); no transition.`,
     );
-    return;
+    return false;
   }
   if (!isLegalTransition(null, STATES.planning)) {
     log.warning('Frozen transition table rejects T0; no transition.');
-    return;
+    return false;
   }
   await client.addLabels(ref, [LABELS.planning]);
   log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
+  return true;
 }
 
 /** T2: REVIEW -> READY by adding ai:ready and removing ai:review. */
@@ -212,31 +385,31 @@ async function applyApprove(
   snapshot: WorkflowSnapshot,
   client: GitHubClient,
   log: GateLogger,
-): Promise<void> {
+): Promise<boolean> {
   if (snapshot.status === 'ambiguous') {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: issue carries multiple ai:* labels ` +
         `[${snapshot.labels.join(', ')}] (protocol violation); no transition.`,
     );
-    return;
+    return false;
   }
   if (snapshot.status !== 'in-workflow') {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: issue is not in the workflow (no ai:* label); ` +
         'run /ai-plan first; no transition.',
     );
-    return;
+    return false;
   }
   if (snapshot.state !== STATES.review) {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: /approve requires ${STATES.review} ` +
         `(${LABELS.review}), current state is ${snapshot.state} (${snapshot.label}); no transition.`,
     );
-    return;
+    return false;
   }
   if (!isLegalTransition(STATES.review, STATES.ready)) {
     log.warning('Frozen transition table rejects T2; no transition.');
-    return;
+    return false;
   }
   // Add-then-remove keeps the issue holding exactly one ai:* label even if a
   // reader observes it between the two calls.
@@ -245,6 +418,74 @@ async function applyApprove(
   log.info(
     `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} (REVIEW -> READY, plan approved).`,
   );
+  return true;
+}
+
+/**
+ * /choose: a Trusted Human decision on an open question of the current plan.
+ * The gate only validates the strict format (done in commands.ts) and the
+ * REVIEW precondition; the arguments are forwarded verbatim to the Consumer
+ * as untrusted data and NO state migration happens (protocol 3.2 / 3.3).
+ */
+async function applyChoose(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  args: ChooseArgs,
+  log: GateLogger,
+): Promise<boolean> {
+  if (snapshot.status === 'ambiguous') {
+    log.warning(
+      `Invalid /choose on #${ref.issueNumber}: issue carries multiple ai:* labels ` +
+        `[${snapshot.labels.join(', ')}] (protocol violation); ignored.`,
+    );
+    return false;
+  }
+  if (snapshot.status !== 'in-workflow' || snapshot.state !== STATES.review) {
+    log.warning(
+      `Invalid /choose on #${ref.issueNumber}: /choose requires ${STATES.review} ` +
+        `(${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ` +
+        'ignored, not forwarded to the Consumer.',
+    );
+    return false;
+  }
+  log.info(
+    `/choose on #${ref.issueNumber} accepted (REVIEW): question "${args.questionId}", ` +
+      `choice "${args.choice}" forwarded to the Consumer as untrusted data; no state migration.`,
+  );
+  return true;
+}
+
+/**
+ * /change: a Trusted Human change request against the current plan. Same
+ * policy as /choose: format + REVIEW precondition only, the free text is
+ * forwarded verbatim as untrusted data, NO state migration.
+ */
+async function applyChange(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  args: ChangeArgs,
+  log: GateLogger,
+): Promise<boolean> {
+  if (snapshot.status === 'ambiguous') {
+    log.warning(
+      `Invalid /change on #${ref.issueNumber}: issue carries multiple ai:* labels ` +
+        `[${snapshot.labels.join(', ')}] (protocol violation); ignored.`,
+    );
+    return false;
+  }
+  if (snapshot.status !== 'in-workflow' || snapshot.state !== STATES.review) {
+    log.warning(
+      `Invalid /change on #${ref.issueNumber}: /change requires ${STATES.review} ` +
+        `(${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ` +
+        'ignored, not forwarded to the Consumer.',
+    );
+    return false;
+  }
+  log.info(
+    `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the ` +
+      `Consumer as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`,
+  );
+  return true;
 }
 
 /**
@@ -258,12 +499,12 @@ async function applyCancel(
   snapshot: WorkflowSnapshot,
   client: GitHubClient,
   log: GateLogger,
-): Promise<void> {
+): Promise<boolean> {
   if (snapshot.status === 'outside') {
     log.warning(
       `Invalid /cancel on #${ref.issueNumber}: issue has no ai:* label, nothing to cancel.`,
     );
-    return;
+    return false;
   }
   const labelsToRemove =
     snapshot.status === 'in-workflow' ? [snapshot.label] : [...snapshot.labels];
@@ -274,15 +515,94 @@ async function applyCancel(
     `/cancel on #${ref.issueNumber}: removed ${labelsToRemove.length} ai:* label(s) ` +
       `[${labelsToRemove.join(', ')}]; workflow exited, issue left open.`,
   );
+  return true;
+}
+
+/**
+ * Shared T1 / T3 / T6 machinery: validates the re-read state against the
+ * marker's required `from` state, checks the frozen transition table and
+ * swaps the ai:* label (add first, then remove — same ordering as T2 so a
+ * concurrent reader always sees at least the old or the new single label).
+ */
+async function applyMarkerTransition(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  fromState: State,
+  toState: State,
+  transitionId: string,
+  description: string,
+  publisherKind: string,
+  actor: string,
+  client: GitHubClient,
+  log: GateLogger,
+): Promise<void> {
+  if (snapshot.status !== 'in-workflow') {
+    log.warning(
+      `Invalid ${transitionId} marker on #${ref.issueNumber}: issue is not in the workflow ` +
+        '(no ai:* label); no transition.',
+    );
+    return;
+  }
+  if (snapshot.state !== fromState) {
+    log.warning(
+      `Invalid ${transitionId} marker on #${ref.issueNumber} (${description} by ${publisherKind} ` +
+        `"${actor}"): requires state ${fromState}, current state is ${snapshot.state} ` +
+        `(${snapshot.label}); no transition.`,
+    );
+    return;
+  }
+  if (!isLegalTransition(fromState, toState)) {
+    log.warning(`Frozen transition table rejects ${transitionId}; no transition.`);
+    return;
+  }
+  const toLabel = STATE_TO_LABEL[toState];
+  await client.addLabels(ref, [toLabel]);
+  await client.removeLabel(ref, snapshot.label);
+  log.info(
+    `${transitionId} on #${ref.issueNumber}: ${snapshot.label} -> ${toLabel} ` +
+      `(${fromState} -> ${toState}, ${description} by ${publisherKind} "${actor}").`,
+  );
+}
+
+/**
+ * Best-effort reaction feedback: "+1" = accepted (✅), "-1" = invalid owner
+ * command (👎). Reactions are never load-bearing: failures (and missing
+ * comment ids) are logged and ignored so they cannot affect the main flow.
+ */
+async function react(
+  client: GitHubClient,
+  ref: IssueRef,
+  commentId: number | undefined,
+  content: '+1' | '-1',
+  log: GateLogger,
+): Promise<void> {
+  if (commentId === undefined) {
+    log.warning(
+      `Cannot add ${content} reaction on #${ref.issueNumber}: event carries no comment id.`,
+    );
+    return;
+  }
+  try {
+    await client.addReaction(ref, commentId, content);
+  } catch (err) {
+    log.warning(
+      `Adding ${content} reaction on comment ${commentId} failed (ignored): ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
+function describeSnapshot(snapshot: WorkflowSnapshot): string {
+  switch (snapshot.status) {
+    case 'outside':
+      return 'not in the workflow (no ai:* label)';
+    case 'ambiguous':
+      return `ambiguous (multiple ai:* labels: ${snapshot.labels.join(', ')})`;
+    case 'in-workflow':
+      return `${snapshot.state} (${snapshot.label})`;
+  }
 }
 
 function issueRef(input: GateInput): IssueRef {
   return { owner: input.repoOwner, repo: input.repo, issueNumber: input.issueNumber };
 }
-
-/** Exported for tests: the set of commands the Phase 1 gate routes. */
-export const PHASE1_COMMANDS: readonly GateCommand[] = [
-  COMMANDS.aiPlan,
-  COMMANDS.approve,
-  COMMANDS.cancel,
-];

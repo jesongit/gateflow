@@ -24291,6 +24291,7 @@ function getOctokit(token, options, ...additionalPlugins) {
 }
 
 // src/protocol.ts
+var SCHEMA_VERSION = 1;
 var LABELS = {
   planning: "ai:planning",
   review: "ai:review",
@@ -24316,6 +24317,9 @@ var LABEL_TO_STATE = {
   [LABELS.blocked]: STATES.blocked,
   [LABELS.done]: STATES.done
 };
+var STATE_TO_LABEL = Object.fromEntries(
+  Object.entries(LABEL_TO_STATE).map(([label, state]) => [state, label])
+);
 var TRANSITIONS = [
   { from: null, to: STATES.planning },
   // T0: /ai-plan by Trusted Human, or Producer CREATE
@@ -24347,6 +24351,13 @@ var MARKERS = {
   completionReport: "<!-- ai-workflow:completion-report:v1 -->"
 };
 var ALL_MARKERS = Object.values(MARKERS);
+var KINDS = ["feature", "bug", "refactor", "docs", "chore"];
+var MATURITY_HINTS = [
+  "requirement",
+  "direction",
+  "solution",
+  "execution_plan"
+];
 var LABEL_COLORS = {
   [LABELS.planning]: "d4c5f9",
   [LABELS.review]: "fef2c0",
@@ -24357,16 +24368,147 @@ var LABEL_COLORS = {
 };
 
 // src/commands.ts
-var EXACT_COMMANDS = /* @__PURE__ */ new Map([
-  [COMMANDS.aiPlan, COMMANDS.aiPlan],
-  [COMMANDS.approve, COMMANDS.approve],
-  [COMMANDS.cancel, COMMANDS.cancel]
+var EXACT_COMMANDS = /* @__PURE__ */ new Set([
+  COMMANDS.aiPlan,
+  COMMANDS.approve,
+  COMMANDS.cancel
 ]);
+var CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
+var CHANGE_PATTERN = /^\/change (.+)$/;
 function parseCommand(body) {
   if (body === null || body === void 0) {
     return null;
   }
-  return EXACT_COMMANDS.get(body.trim()) ?? null;
+  const trimmed = body.trim();
+  if (EXACT_COMMANDS.has(trimmed)) {
+    return { command: trimmed, args: null };
+  }
+  const choose = CHOOSE_PATTERN.exec(trimmed);
+  if (choose !== null) {
+    return {
+      command: COMMANDS.choose,
+      args: { questionId: choose[1] ?? "", choice: choose[2] ?? "" }
+    };
+  }
+  const change = CHANGE_PATTERN.exec(trimmed);
+  if (change !== null) {
+    const text = (change[1] ?? "").trim();
+    if (text.length === 0) {
+      return null;
+    }
+    return { command: COMMANDS.change, args: { text } };
+  }
+  return null;
+}
+
+// src/markers.ts
+function inspectCommentMarkers(body) {
+  if (!body) {
+    return { kind: "none" };
+  }
+  let exclusiveCount = 0;
+  let inlineCount = 0;
+  let exclusiveMarker;
+  let insideFence = false;
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      insideFence = !insideFence;
+      continue;
+    }
+    if (insideFence) {
+      continue;
+    }
+    for (const marker of ALL_MARKERS) {
+      if (trimmed === marker) {
+        exclusiveCount += 1;
+        exclusiveMarker = marker;
+      } else if (trimmed.includes(marker)) {
+        inlineCount += 1;
+      }
+    }
+  }
+  if (exclusiveCount === 1 && inlineCount === 0) {
+    return { kind: "valid", marker: exclusiveMarker };
+  }
+  if (exclusiveCount + inlineCount > 1) {
+    return { kind: "invalid", reason: "multiple-marker-occurrences" };
+  }
+  if (inlineCount === 1) {
+    return { kind: "invalid", reason: "marker-not-line-exclusive" };
+  }
+  return { kind: "none" };
+}
+var SCHEMA_OPENER = "<!-- ai-workflow";
+var SCHEMA_CLOSER = "-->";
+var SCHEMA_KEYS = /* @__PURE__ */ new Set(["schema", "source", "kind", "maturity_hint"]);
+function parseIssueSchemaBlock(body) {
+  if (!body) {
+    return { status: "absent" };
+  }
+  const lines = body.split(/\r?\n/).map((line) => line.trim());
+  const openIdx = lines.indexOf(SCHEMA_OPENER);
+  if (openIdx === -1) {
+    return { status: "absent" };
+  }
+  let closeIdx = -1;
+  for (let i = openIdx + 1; i < lines.length; i += 1) {
+    if (lines[i] === SCHEMA_CLOSER) {
+      closeIdx = i;
+      break;
+    }
+  }
+  if (closeIdx === -1) {
+    return { status: "invalid", reason: 'schema block is not terminated by "-->"' };
+  }
+  const fields = /* @__PURE__ */ new Map();
+  for (let i = openIdx + 1; i < closeIdx; i += 1) {
+    const line = lines[i] ?? "";
+    if (line.length === 0) {
+      continue;
+    }
+    const match = /^([A-Za-z_]+):\s*(.*)$/.exec(line);
+    if (match === null) {
+      return { status: "invalid", reason: `unparseable schema line "${line}"` };
+    }
+    const key = match[1] ?? "";
+    const value = (match[2] ?? "").trim();
+    if (!SCHEMA_KEYS.has(key)) {
+      return { status: "invalid", reason: `unknown schema key "${key}"` };
+    }
+    if (fields.has(key)) {
+      return { status: "invalid", reason: `duplicate schema key "${key}"` };
+    }
+    fields.set(key, value);
+  }
+  const schema = fields.get("schema");
+  const source = fields.get("source");
+  const kind = fields.get("kind");
+  const maturityHint = fields.get("maturity_hint");
+  if (schema === void 0 || source === void 0 || kind === void 0 || maturityHint === void 0) {
+    return { status: "invalid", reason: "missing required schema key(s)" };
+  }
+  if (schema !== String(SCHEMA_VERSION)) {
+    return { status: "invalid", reason: `unsupported schema version "${schema}"` };
+  }
+  if (source !== "producer") {
+    return { status: "invalid", reason: `unsupported source "${source}"` };
+  }
+  if (!KINDS.includes(kind)) {
+    return { status: "invalid", reason: `unknown kind "${kind}"` };
+  }
+  if (!MATURITY_HINTS.includes(maturityHint)) {
+    return { status: "invalid", reason: `unknown maturity_hint "${maturityHint}"` };
+  }
+  return {
+    status: "valid",
+    metadata: {
+      schema: SCHEMA_VERSION,
+      source: "producer",
+      kind,
+      maturityHint
+    }
+  };
 }
 
 // src/states.ts
@@ -24434,11 +24576,23 @@ async function runGate(input, client, log) {
 }
 async function handleIssueEvent(input, client, log) {
   switch (input.eventAction) {
-    case "opened":
-      log.info(
-        `issues.opened on #${input.issueNumber}: no auto-labeling. Producer-created issues already carry ai:planning (T0); external issues stay plain until a Trusted Human runs /ai-plan.`
-      );
+    case "opened": {
+      const schema = parseIssueSchemaBlock(input.issueBody);
+      if (schema.status === "valid") {
+        log.info(
+          `issues.opened on #${input.issueNumber}: no auto-labeling. Producer schema block: kind=${schema.metadata.kind}, maturity_hint=${schema.metadata.maturityHint} (metadata only, no transition). Producer-created issues already carry ai:planning (T0); external issues stay plain until a Trusted Human runs /ai-plan.`
+        );
+      } else if (schema.status === "invalid") {
+        log.warning(
+          `issues.opened on #${input.issueNumber}: issue body schema block invalid (${schema.reason}); treated as a plain issue. No auto-labeling, no transition.`
+        );
+      } else {
+        log.info(
+          `issues.opened on #${input.issueNumber}: no auto-labeling. No schema block. External issues stay plain until a Trusted Human runs /ai-plan.`
+        );
+      }
       return;
+    }
     case "labeled":
       log.info(`issues.labeled on #${input.issueNumber}: observed, no transition.`);
       return;
@@ -24460,45 +24614,136 @@ async function handleIssueEvent(input, client, log) {
   }
 }
 async function handleComment(input, client, log) {
-  const command = parseCommand(input.commentBody);
-  if (command === null) {
-    log.info(
-      `Comment on #${input.issueNumber} by "${input.actor}" is not a workflow command: ignored, no API writes.`
-    );
+  const ref = issueRef(input);
+  const parsed = parseCommand(input.commentBody);
+  if (parsed !== null) {
+    await handleCommand(parsed, input, ref, client, log);
     return;
   }
+  await handleMarkerComment(input, ref, client, log);
+}
+async function handleCommand(parsed, input, ref, client, log) {
   if (!isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput)) {
     const kind = isTrustedAgent(input.actor, input.trustedAgentsInput) ? "trusted agent" : "actor";
     log.info(
-      `Command ${command} from non-Trusted-Human ${kind} "${input.actor}" on #${input.issueNumber}: silently ignored.`
+      `Command ${parsed.command} from non-Trusted-Human ${kind} "${input.actor}" on #${ref.issueNumber}: rejected (invalid owner command), silently ignored.`
     );
+    await react(client, ref, input.commentId, "-1", log);
     return;
   }
-  const ref = issueRef(input);
   const issue2 = await client.getIssue(ref);
   if (issue2.state === "closed") {
     log.info(
-      `Command ${command} on closed issue #${input.issueNumber}: closed issues are terminal, ignored.`
+      `Command ${parsed.command} on closed issue #${ref.issueNumber}: closed issues are terminal, ignored.`
     );
     return;
   }
   const labels = await client.getLabels(ref);
   const snapshot = readSnapshot(labels);
-  switch (command) {
+  let accepted = false;
+  switch (parsed.command) {
     case COMMANDS.aiPlan:
-      await applyAiPlan(ref, snapshot, client, log);
-      return;
+      accepted = await applyAiPlan(ref, snapshot, client, log);
+      break;
     case COMMANDS.approve:
-      await applyApprove(ref, snapshot, client, log);
-      return;
+      accepted = await applyApprove(ref, snapshot, client, log);
+      break;
+    case COMMANDS.choose:
+      accepted = await applyChoose(ref, snapshot, parsed.args, log);
+      break;
+    case COMMANDS.change:
+      accepted = await applyChange(ref, snapshot, parsed.args, log);
+      break;
     case COMMANDS.cancel:
-      await applyCancel(ref, snapshot, client, log);
+      accepted = await applyCancel(ref, snapshot, client, log);
+      break;
+  }
+  if (accepted) {
+    await react(client, ref, input.commentId, "+1", log);
+  }
+}
+async function handleMarkerComment(input, ref, client, log) {
+  const inspection = inspectCommentMarkers(input.commentBody);
+  if (inspection.kind === "none") {
+    log.info(
+      `Comment on #${ref.issueNumber} by "${input.actor}" is not a workflow command or marker: ignored, no API writes.`
+    );
+    return;
+  }
+  if (inspection.kind === "invalid") {
+    log.warning(
+      `Invalid marker comment on #${ref.issueNumber} by "${input.actor}" (${inspection.reason}): a marker must be unique and occupy a line of its own; ignored (anti-spoofing), no transition.`
+    );
+    return;
+  }
+  const marker = inspection.marker;
+  if (marker === MARKERS.append) {
+    log.info(
+      `append marker on #${ref.issueNumber} by "${input.actor}": discussion appended, recorded only, no transition.`
+    );
+    return;
+  }
+  const isHuman = isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput);
+  const isAgent = isTrustedAgent(input.actor, input.trustedAgentsInput);
+  if (!isHuman && !isAgent) {
+    log.warning(
+      `Marker ${marker} on #${ref.issueNumber} by unknown actor "${input.actor}": markers are structural hints, never permission; treated as plain text, no transition.`
+    );
+    return;
+  }
+  const publisher = isHuman ? "trusted human" : "trusted agent";
+  const issue2 = await client.getIssue(ref);
+  if (issue2.state === "closed") {
+    log.info(
+      `Marker ${marker} on closed issue #${ref.issueNumber}: closed issues are terminal, ignored.`
+    );
+    return;
+  }
+  const labels = await client.getLabels(ref);
+  const snapshot = readSnapshot(labels);
+  switch (marker) {
+    case MARKERS.plan:
+      await applyMarkerTransition(
+        ref,
+        snapshot,
+        STATES.planning,
+        STATES.review,
+        "T1",
+        "plan published",
+        publisher,
+        input.actor,
+        client,
+        log
+      );
       return;
-    default: {
-      const unreachable = command;
-      log.warning(`Unhandled command ${String(unreachable)}: ignored.`);
+    case MARKERS.executionTracker:
+      await applyMarkerTransition(
+        ref,
+        snapshot,
+        STATES.ready,
+        STATES.working,
+        "T3",
+        "execution tracker created",
+        publisher,
+        input.actor,
+        client,
+        log
+      );
       return;
-    }
+    case MARKERS.completionReport:
+      await applyMarkerTransition(
+        ref,
+        snapshot,
+        STATES.working,
+        STATES.done,
+        "T6",
+        "completion report published",
+        publisher,
+        input.actor,
+        client,
+        log
+      );
+      return;
   }
 }
 async function applyAiPlan(ref, snapshot, client, log) {
@@ -24506,56 +24751,94 @@ async function applyAiPlan(ref, snapshot, client, log) {
     log.warning(
       `Invalid /ai-plan on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); no transition.`
     );
-    return;
+    return false;
   }
   if (snapshot.status !== "outside") {
     log.warning(
       `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow (label ${snapshot.label}); no transition.`
     );
-    return;
+    return false;
   }
   if (!isLegalTransition(null, STATES.planning)) {
     log.warning("Frozen transition table rejects T0; no transition.");
-    return;
+    return false;
   }
   await client.addLabels(ref, [LABELS.planning]);
   log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
+  return true;
 }
 async function applyApprove(ref, snapshot, client, log) {
   if (snapshot.status === "ambiguous") {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); no transition.`
     );
-    return;
+    return false;
   }
   if (snapshot.status !== "in-workflow") {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: issue is not in the workflow (no ai:* label); run /ai-plan first; no transition.`
     );
-    return;
+    return false;
   }
   if (snapshot.state !== STATES.review) {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: /approve requires ${STATES.review} (${LABELS.review}), current state is ${snapshot.state} (${snapshot.label}); no transition.`
     );
-    return;
+    return false;
   }
   if (!isLegalTransition(STATES.review, STATES.ready)) {
     log.warning("Frozen transition table rejects T2; no transition.");
-    return;
+    return false;
   }
   await client.addLabels(ref, [LABELS.ready]);
   await client.removeLabel(ref, LABELS.review);
   log.info(
     `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} (REVIEW -> READY, plan approved).`
   );
+  return true;
+}
+async function applyChoose(ref, snapshot, args, log) {
+  if (snapshot.status === "ambiguous") {
+    log.warning(
+      `Invalid /choose on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); ignored.`
+    );
+    return false;
+  }
+  if (snapshot.status !== "in-workflow" || snapshot.state !== STATES.review) {
+    log.warning(
+      `Invalid /choose on #${ref.issueNumber}: /choose requires ${STATES.review} (${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ignored, not forwarded to the Consumer.`
+    );
+    return false;
+  }
+  log.info(
+    `/choose on #${ref.issueNumber} accepted (REVIEW): question "${args.questionId}", choice "${args.choice}" forwarded to the Consumer as untrusted data; no state migration.`
+  );
+  return true;
+}
+async function applyChange(ref, snapshot, args, log) {
+  if (snapshot.status === "ambiguous") {
+    log.warning(
+      `Invalid /change on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); ignored.`
+    );
+    return false;
+  }
+  if (snapshot.status !== "in-workflow" || snapshot.state !== STATES.review) {
+    log.warning(
+      `Invalid /change on #${ref.issueNumber}: /change requires ${STATES.review} (${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ignored, not forwarded to the Consumer.`
+    );
+    return false;
+  }
+  log.info(
+    `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the Consumer as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`
+  );
+  return true;
 }
 async function applyCancel(ref, snapshot, client, log) {
   if (snapshot.status === "outside") {
     log.warning(
       `Invalid /cancel on #${ref.issueNumber}: issue has no ai:* label, nothing to cancel.`
     );
-    return;
+    return false;
   }
   const labelsToRemove = snapshot.status === "in-workflow" ? [snapshot.label] : [...snapshot.labels];
   for (const label of labelsToRemove) {
@@ -24564,15 +24847,60 @@ async function applyCancel(ref, snapshot, client, log) {
   log.info(
     `/cancel on #${ref.issueNumber}: removed ${labelsToRemove.length} ai:* label(s) [${labelsToRemove.join(", ")}]; workflow exited, issue left open.`
   );
+  return true;
+}
+async function applyMarkerTransition(ref, snapshot, fromState, toState, transitionId, description, publisherKind, actor, client, log) {
+  if (snapshot.status !== "in-workflow") {
+    log.warning(
+      `Invalid ${transitionId} marker on #${ref.issueNumber}: issue is not in the workflow (no ai:* label); no transition.`
+    );
+    return;
+  }
+  if (snapshot.state !== fromState) {
+    log.warning(
+      `Invalid ${transitionId} marker on #${ref.issueNumber} (${description} by ${publisherKind} "${actor}"): requires state ${fromState}, current state is ${snapshot.state} (${snapshot.label}); no transition.`
+    );
+    return;
+  }
+  if (!isLegalTransition(fromState, toState)) {
+    log.warning(`Frozen transition table rejects ${transitionId}; no transition.`);
+    return;
+  }
+  const toLabel = STATE_TO_LABEL[toState];
+  await client.addLabels(ref, [toLabel]);
+  await client.removeLabel(ref, snapshot.label);
+  log.info(
+    `${transitionId} on #${ref.issueNumber}: ${snapshot.label} -> ${toLabel} (${fromState} -> ${toState}, ${description} by ${publisherKind} "${actor}").`
+  );
+}
+async function react(client, ref, commentId, content, log) {
+  if (commentId === void 0) {
+    log.warning(
+      `Cannot add ${content} reaction on #${ref.issueNumber}: event carries no comment id.`
+    );
+    return;
+  }
+  try {
+    await client.addReaction(ref, commentId, content);
+  } catch (err) {
+    log.warning(
+      `Adding ${content} reaction on comment ${commentId} failed (ignored): ` + (err instanceof Error ? err.message : String(err))
+    );
+  }
+}
+function describeSnapshot(snapshot) {
+  switch (snapshot.status) {
+    case "outside":
+      return "not in the workflow (no ai:* label)";
+    case "ambiguous":
+      return `ambiguous (multiple ai:* labels: ${snapshot.labels.join(", ")})`;
+    case "in-workflow":
+      return `${snapshot.state} (${snapshot.label})`;
+  }
 }
 function issueRef(input) {
   return { owner: input.repoOwner, repo: input.repo, issueNumber: input.issueNumber };
 }
-var PHASE1_COMMANDS = [
-  COMMANDS.aiPlan,
-  COMMANDS.approve,
-  COMMANDS.cancel
-];
 
 // src/github.ts
 function isNotFound(err) {
@@ -24661,7 +24989,7 @@ function createGitHubClient(octokit) {
 }
 
 // src/index.ts
-var GATE_VERSION = "0.1.0";
+var GATE_VERSION = "0.2.0";
 function readInputs() {
   return {
     trustedHumans: getInput("trusted-humans"),
@@ -24689,6 +25017,9 @@ function readGateInput() {
     issueNumber,
     commentId: payload.comment?.id,
     commentBody: payload.comment?.body,
+    // Observability only: the gate parses this for the Producer schema block
+    // (issues.opened); it never derives state or permissions from it.
+    issueBody: payload.issue?.body,
     trustedHumansInput: inputs.trustedHumans,
     trustedAgentsInput: inputs.trustedAgents
   };

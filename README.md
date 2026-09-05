@@ -49,10 +49,10 @@ github-ai-workflow/
 ├── src/                    # Gate 源码（TypeScript strict）
 │   ├── index.ts            # Action 入口：构造 GateInput 并调用 gate（非 Actions 环境安全退出）
 │   ├── gate.ts             # 主流程：Event → Permission → State → Command → Validate → Transition
-│   ├── commands.ts         # 严格命令解析（trim 全等匹配；/choose、/change 为 Phase 2）
+│   ├── commands.ts         # 严格命令解析（无参全等 + 带参锚定正则，五个命令全部生效）
 │   ├── states.ts           # 状态快照 + 迁移合法性（以 protocol.ts 为单一事实来源）
 │   ├── permissions.ts      # Trusted Human / Trusted Agent 判定（两概念永不合并）
-│   ├── markers.ts          # Comment Marker 识别骨架（Phase 2 完整校验）
+│   ├── markers.ts          # Comment Marker 识别（独占整行 + 单 marker 校验 + 围栏代码块剔除）
 │   ├── github.ts           # Octokit API 封装（业务逻辑不散落 API 调用）
 │   └── protocol.ts         # 冻结协议常量（与 docs/protocol.md 同步）
 ├── dist/index.js           # esbuild 产物（GitHub JS Action 要求提交）
@@ -88,4 +88,4 @@ Gate 自身是确定性的，但**串行化必须由 workflow 层保证**（Phas
 
 - Phase 0（建仓库骨架 + 协议冻结）：已完成。协议冻结见 [docs/protocol.md](docs/protocol.md)，协议常量同步在 [src/protocol.ts](src/protocol.ts)。
 - Phase 1（Gate 核心）：已完成。纯确定性状态机，不接任何 AI——支持 `/ai-plan`（T0）、`/approve`（T2）、`/cancel`（退出，不关闭 Issue）；非法命令 / 错误状态 / 非 Trusted Human 一律 no-op 并记录原因，不会产生红 X 噪音。`/choose`、`/change`、reaction 反馈、Marker 校验在 Phase 2；workflow 模板在 Phase 8。
-- Phase 2（Gate 完整命令 + Marker 校验）：待开始。
+- Phase 2（Gate 完整命令 + Marker 校验）：已完成。五个命令全部生效：`/ai-plan`（T0）、`/approve`（T2）、`/choose` / `/change`（仅 REVIEW，✅ 后转交 Consumer，不迁移）、`/cancel`；接受的命令加 ✅，非 Trusted Human 命令加 👎（invalid owner command）后静默；marker 校验实装：独占整行 + 单 marker + 围栏代码块剔除，plan / tracker / report marker 分别触发 T1 / T3 / T6（发布者须为 Trusted Human ∪ Trusted Agent），append marker 与 Issue body schema 块只记录不迁移。reaction 为 best-effort，失败不影响主流程。偏差记录见 [docs/protocol.md](docs/protocol.md) 文末"实现备注"。

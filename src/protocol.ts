@@ -49,6 +49,14 @@ export const LABEL_TO_STATE: Readonly<Record<Label, State>> = {
 };
 
 /**
+ * State -> label mapping. Purely derived from LABEL_TO_STATE (the inverse
+ * view); not a separate protocol concept.
+ */
+export const STATE_TO_LABEL: Readonly<Record<State, Label>> = Object.fromEntries(
+  Object.entries(LABEL_TO_STATE).map(([label, state]) => [state, label]),
+) as Readonly<Record<State, Label>>;
+
+/**
  * Legal transitions of the frozen state machine.
  * `from: null` means "issue not yet in the workflow" (no ai:* label).
  * T1/T3/T6 are marker-triggered; T2 is a Trusted Human command;

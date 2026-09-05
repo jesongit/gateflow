@@ -7,33 +7,91 @@
  *  - Parameterless commands (/ai-plan, /approve, /cancel) must match the whole
  *    comment exactly after trim. Substring/prefix matching (body.includes)
  *    is forbidden and never used.
+ *  - Parameterized commands (/choose, /change) use ANCHORED regexes over the
+ *    trimmed body: the whole comment must be the command. `.` never matches a
+ *    newline, so multi-line bodies can never match.
  *  - Matching is case-sensitive: "/Approve" is NOT a command.
- *  - Anything that does not exactly match is a normal comment -> null, which
- *    must never trigger any gate logic.
+ *  - Anything that does not match is a normal comment -> null, which must
+ *    never trigger any gate logic. Command-SHAPED bodies with malformed
+ *    arguments (e.g. "/choose 1", "/choose 1 B C", a bare "/change", or a
+ *    multi-line "/change") are also null: they are normal comments and are
+ *    silently ignored (protocol 3.1 rule 7), not "invalid commands".
+ *  - /choose and /change arguments are parsed but NEVER interpreted by the
+ *    gate: they are forwarded verbatim to the Consumer as untrusted data
+ *    (protocol 3.3).
  *
- * Phase 1 only routes /ai-plan, /approve and /cancel. /choose and /change are
- * frozen in the protocol but deliberately return null here until Phase 2; a
- * Phase-1 build must treat them as normal comments (silent no-op).
+ * Since Phase 2 the gate routes all five frozen commands.
  */
 import { COMMANDS, type CommandName } from './protocol';
 
-/** Commands handled by the Phase 1 gate. */
-export type GateCommand = Extract<CommandName, '/ai-plan' | '/approve' | '/cancel'>;
+/** All five frozen commands are routed as of Phase 2. */
+export type GateCommand = CommandName;
 
-const EXACT_COMMANDS: ReadonlyMap<string, GateCommand> = new Map([
-  [COMMANDS.aiPlan, COMMANDS.aiPlan],
-  [COMMANDS.approve, COMMANDS.approve],
-  [COMMANDS.cancel, COMMANDS.cancel],
+/** Commands that take no arguments (exact whole-body match after trim). */
+export type ExactCommand = Extract<GateCommand, '/ai-plan' | '/approve' | '/cancel'>;
+
+/** Strictly parsed /choose arguments: exactly two non-whitespace tokens. */
+export interface ChooseArgs {
+  questionId: string;
+  choice: string;
+}
+
+/** Strictly parsed /change argument: the free text after the command word. */
+export interface ChangeArgs {
+  text: string;
+}
+
+/** A parsed comment command: the command plus its (possibly absent) args. */
+export type ParsedCommand =
+  | { command: ExactCommand; args: null }
+  | { command: Extract<GateCommand, '/choose'>; args: ChooseArgs }
+  | { command: Extract<GateCommand, '/change'>; args: ChangeArgs };
+
+const EXACT_COMMANDS: ReadonlySet<string> = new Set<string>([
+  COMMANDS.aiPlan,
+  COMMANDS.approve,
+  COMMANDS.cancel,
 ]);
 
+// Anchored patterns (protocol 3.1 rule 4). Applied to the trimmed body: the
+// trailing `$` forbids trailing content and `.` never crosses newlines.
+const CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
+const CHANGE_PATTERN = /^\/change (.+)$/;
+
 /**
- * Parses an issue-comment body into a GateCommand.
- * Returns null for normal comments and for commands not implemented yet
- * (/choose, /change arrive in Phase 2). Never throws on any input.
+ * Parses an issue-comment body into a ParsedCommand.
+ * Returns null for normal comments — including texts that merely contain a
+ * command word and command-shaped bodies with malformed arguments. Never
+ * throws on any input.
  */
-export function parseCommand(body: string | null | undefined): GateCommand | null {
+export function parseCommand(body: string | null | undefined): ParsedCommand | null {
   if (body === null || body === undefined) {
     return null;
   }
-  return EXACT_COMMANDS.get(body.trim()) ?? null;
+  const trimmed = body.trim();
+
+  if (EXACT_COMMANDS.has(trimmed)) {
+    return { command: trimmed as ExactCommand, args: null };
+  }
+
+  const choose = CHOOSE_PATTERN.exec(trimmed);
+  if (choose !== null) {
+    return {
+      command: COMMANDS.choose,
+      args: { questionId: choose[1] ?? '', choice: choose[2] ?? '' },
+    };
+  }
+
+  const change = CHANGE_PATTERN.exec(trimmed);
+  if (change !== null) {
+    const text = (change[1] ?? '').trim();
+    if (text.length === 0) {
+      // Defensive: the body was trimmed, so `(.+)` already guarantees at
+      // least one character. Protocol 3.2 requires non-empty free text.
+      return null;
+    }
+    return { command: COMMANDS.change, args: { text } };
+  }
+
+  return null;
 }

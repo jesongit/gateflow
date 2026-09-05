@@ -136,10 +136,10 @@ describe('Case 1: owner /approve on REVIEW transitions REVIEW -> READY', () => {
     expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
   });
 
-  it('never reacts in Phase 1 (feedback via Actions log only)', async () => {
+  it('reacts with ✅ on the accepted /approve (Phase 2 feedback, best-effort only)', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
     await runGate(makeInput(), h.client, makeLogger());
-    expect(h.calls.addReaction).toEqual([]);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
     expect(h.calls.editComment).toEqual([]);
   });
 
@@ -150,14 +150,17 @@ describe('Case 1: owner /approve on REVIEW transitions REVIEW -> READY', () => {
   });
 });
 
-describe('Case 2: /approve from a non-trusted actor is silently ignored', () => {
-  it('performs no write operations', async () => {
+describe('Case 2: /approve from a non-trusted actor gets 👎 and is otherwise ignored', () => {
+  it('only write is the 👎 reaction (invalid owner command); zero label writes', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
     const log = makeLogger();
 
     await runGate(makeInput({ actor: 'external-user' }), h.client, log);
 
-    expect(writeCount(h)).toBe(0);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '-1' }]);
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
+    expect(h.calls.editComment).toEqual([]);
     expect(log.warnings).toEqual([]);
     expect(log.infos.some((m) => m.includes('silently ignored'))).toBe(true);
   });
@@ -169,14 +172,16 @@ describe('Case 2: /approve from a non-trusted actor is silently ignored', () => 
     expect(h.calls.getLabels).toBe(0);
   });
 
-  it('a registered trusted agent can never approve', async () => {
+  it('a registered trusted agent can never approve (👎, no label writes)', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
     await runGate(
       makeInput({ actor: 'ci-bot', trustedAgentsInput: 'ci-bot' }),
       h.client,
       makeLogger(),
     );
-    expect(writeCount(h)).toBe(0);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '-1' }]);
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
   });
 });
 
@@ -300,14 +305,16 @@ describe('Case 5: /ai-plan', () => {
     expect(writeCount(h)).toBe(0);
   });
 
-  it('from a non-trusted actor performs nothing', async () => {
+  it('from a non-trusted actor: 👎 only, no transition (Phase 2 feedback)', async () => {
     const h = makeHarness({ labels: [] });
     await runGate(
       makeInput({ commentBody: '/ai-plan', actor: 'external-user' }),
       h.client,
       makeLogger(),
     );
-    expect(writeCount(h)).toBe(0);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '-1' }]);
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
   });
 });
 
@@ -362,11 +369,29 @@ describe('Case 7+8: strict parsing at the gate boundary', () => {
     expect(h.calls.getLabels).toBe(0);
   });
 
-  it('/choose and /change are normal comments in Phase 1: zero API writes', async () => {
+  it('/choose and /change from the owner on REVIEW are accepted: ✅ each, zero label writes (Phase 2)', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
-    await runGate(makeInput({ commentBody: '/choose 1 B' }), h.client, makeLogger());
-    await runGate(makeInput({ commentBody: '/change please reconsider' }), h.client, makeLogger());
+    const log = makeLogger();
+    await runGate(makeInput({ commentBody: '/choose 1 B' }), h.client, log);
+    await runGate(makeInput({ commentBody: '/change please reconsider' }), h.client, log);
+    expect(h.calls.addLabels).toEqual([]); // hand-off to the Consumer, never a migration
+    expect(h.calls.removeLabel).toEqual([]);
+    expect(h.calls.editComment).toEqual([]);
+    expect(h.calls.addReaction).toEqual([
+      { commentId: 9001, content: '+1' },
+      { commentId: 9001, content: '+1' },
+    ]);
+    expect(log.infos.some((m) => m.includes('question "1"') && m.includes('choice "B"'))).toBe(true);
+    expect(log.infos.some((m) => m.includes('please reconsider'))).toBe(true);
+  });
+
+  it('malformed /choose and /change arguments stay normal comments: zero API operations', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    await runGate(makeInput({ commentBody: '/choose 1' }), h.client, makeLogger());
+    await runGate(makeInput({ commentBody: '/change' }), h.client, makeLogger());
     expect(writeCount(h)).toBe(0);
+    expect(h.calls.getIssue).toBe(0);
+    expect(h.calls.getLabels).toBe(0);
   });
 
   it('a plain question triggers nothing', async () => {
@@ -394,14 +419,16 @@ describe('Case 9: trusted-humans allowlist', () => {
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
   });
 
-  it('a non-owner outside the allowlist is still ignored', async () => {
+  it('a non-owner outside the allowlist gets 👎 and no label writes', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
     await runGate(
       makeInput({ actor: 'random-user', trustedHumansInput: 'maintainer-1' }),
       h.client,
       makeLogger(),
     );
-    expect(writeCount(h)).toBe(0);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '-1' }]);
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
   });
 
   it('an allowlisted non-owner can also /ai-plan and /cancel', async () => {
@@ -498,5 +525,357 @@ describe('infrastructure failures may surface (everything else must not)', () =>
     });
 
     await expect(runGate(makeInput(), h.client, makeLogger())).rejects.toThrow('503');
+  });
+});
+
+/* ------------------------------------------------------- Phase 2: commands */
+
+describe('Phase 2: /choose and /change (hand-off to the Consumer, never a migration)', () => {
+  it('/choose outside REVIEW is a no-op: no reaction, no label writes, warning logged', async () => {
+    for (const labels of [
+      [],
+      [LABELS.planning],
+      [LABELS.ready],
+      [LABELS.working],
+      [LABELS.blocked],
+      [LABELS.done],
+      [LABELS.planning, LABELS.done], // ambiguous
+    ]) {
+      const h = makeHarness({ labels });
+      const log = makeLogger();
+
+      await runGate(makeInput({ commentBody: '/choose 1 B' }), h.client, log);
+
+      expect(writeCount(h)).toBe(0);
+      expect(log.warnings.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('/change outside REVIEW is a no-op: no reaction, no label writes, warning logged', async () => {
+    for (const labels of [[], [LABELS.planning], [LABELS.ready], [LABELS.done]]) {
+      const h = makeHarness({ labels });
+      const log = makeLogger();
+
+      await runGate(makeInput({ commentBody: '/change do it differently' }), h.client, log);
+
+      expect(writeCount(h)).toBe(0);
+      expect(log.warnings.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('/choose and /change on a closed issue are silently ignored (closed is terminal)', async () => {
+    for (const body of ['/choose 1 B', '/change reconsider']) {
+      const h = makeHarness({ labels: [LABELS.review], state: 'closed' });
+      const log = makeLogger();
+
+      await runGate(makeInput({ commentBody: body }), h.client, log);
+
+      expect(h.calls.getIssue).toBe(1);
+      expect(h.calls.getLabels).toBe(0); // never reaches the re-read
+      expect(writeCount(h)).toBe(0);
+      expect(log.warnings).toEqual([]);
+    }
+  });
+});
+
+describe('Phase 2: every command from a non-Trusted-Human gets exactly one 👎', () => {
+  const commands = ['/ai-plan', '/approve', '/choose 1 B', '/change please reconsider', '/cancel'];
+
+  it('external user: one -1 reaction per command, zero label writes, zero API reads', async () => {
+    for (const body of commands) {
+      const h = makeHarness({ labels: [LABELS.review] });
+      const log = makeLogger();
+
+      await runGate(makeInput({ commentBody: body, actor: 'external-user' }), h.client, log);
+
+      expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '-1' }]);
+      expect(h.calls.addLabels).toEqual([]);
+      expect(h.calls.removeLabel).toEqual([]);
+      expect(h.calls.editComment).toEqual([]);
+      expect(h.calls.getIssue).toBe(0);
+      expect(h.calls.getLabels).toBe(0);
+      expect(log.warnings).toEqual([]);
+    }
+  });
+
+  it('a registered trusted agent gets 👎 on /choose and /change too (agents never command)', async () => {
+    for (const body of ['/choose 1 B', '/change please reconsider']) {
+      const h = makeHarness({ labels: [LABELS.review] });
+      await runGate(
+        makeInput({ commentBody: body, actor: 'ai-bot', trustedAgentsInput: 'ai-bot' }),
+        h.client,
+        makeLogger(),
+      );
+      expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '-1' }]);
+      expect(h.calls.addLabels).toEqual([]);
+      expect(h.calls.removeLabel).toEqual([]);
+    }
+  });
+});
+
+/* -------------------------------------------------------- Phase 2: markers */
+
+describe('Phase 2: marker-triggered transitions (T1 / T3 / T6, Trusted Human ∪ Trusted Agent)', () => {
+  const PLAN_BODY = '## Execution Plan\n\n### Objective\n\nDo the thing.\n\n<!-- ai-workflow:plan:v1 -->';
+  const TRACKER_BODY =
+    '## Execution Tracker\n\n**Status:** In Progress\n\n- [x] first\n\n<!-- ai-workflow:execution-tracker:v1 -->';
+  const REPORT_BODY =
+    '## Completion Report\n\n### Result\n\nDone.\n\n<!-- ai-workflow:completion-report:v1 -->';
+
+  it('plan marker from the owner at PLANNING triggers T1 (PLANNING -> REVIEW)', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, log);
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.review] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.planning }]);
+    expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
+    expect(h.calls.addReaction).toEqual([]); // markers never react
+    expect(log.warnings).toEqual([]);
+  });
+
+  it('plan marker from a configured Trusted Agent triggers T1 too (agents may publish)', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+    await runGate(
+      makeInput({ commentBody: PLAN_BODY, actor: 'ai-bot', trustedAgentsInput: 'ai-bot' }),
+      h.client,
+      makeLogger(),
+    );
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.review] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.planning }]);
+  });
+
+  it('plan marker from an unknown actor is plain text: no transition, no writes, no API reads', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: PLAN_BODY, actor: 'external-user' }), h.client, log);
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.getIssue).toBe(0);
+    expect(h.calls.getLabels).toBe(0);
+    expect(log.warnings.some((m) => m.includes('never permission'))).toBe(true);
+  });
+
+  it('plan marker in a wrong state is a no-op (including ambiguous)', async () => {
+    for (const labels of [
+      [],
+      [LABELS.review],
+      [LABELS.ready],
+      [LABELS.working],
+      [LABELS.done],
+      [LABELS.planning, LABELS.done],
+    ]) {
+      const h = makeHarness({ labels });
+      await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, makeLogger());
+      expect(writeCount(h)).toBe(0);
+    }
+  });
+
+  it('execution-tracker marker from the owner at READY triggers T3 (READY -> WORKING)', async () => {
+    const h = makeHarness({ labels: [LABELS.ready] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: TRACKER_BODY }), h.client, log);
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.working] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.ready }]);
+    expect(log.warnings).toEqual([]);
+  });
+
+  it('execution-tracker marker in a wrong state is a no-op', async () => {
+    for (const labels of [[LABELS.planning], [LABELS.review], [LABELS.done]]) {
+      const h = makeHarness({ labels });
+      await runGate(makeInput({ commentBody: TRACKER_BODY }), h.client, makeLogger());
+      expect(writeCount(h)).toBe(0);
+    }
+  });
+
+  it('completion-report marker from the owner at WORKING triggers T6 (WORKING -> DONE)', async () => {
+    const h = makeHarness({ labels: [LABELS.working] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: REPORT_BODY }), h.client, log);
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.done] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.working }]);
+    expect(log.warnings).toEqual([]);
+  });
+
+  it('completion-report marker in a wrong state is a no-op (DONE is terminal, no T6 repeat)', async () => {
+    for (const labels of [[LABELS.ready], [LABELS.done], [LABELS.blocked]]) {
+      const h = makeHarness({ labels });
+      await runGate(makeInput({ commentBody: REPORT_BODY }), h.client, makeLogger());
+      expect(writeCount(h)).toBe(0);
+    }
+  });
+
+  it('a comment with two markers is invalid: no transition, no API reads (anti-spoofing)', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({
+        commentBody: '<!-- ai-workflow:plan:v1 -->\n<!-- ai-workflow:execution-tracker:v1 -->',
+      }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.getIssue).toBe(0);
+    expect(log.warnings.some((m) => m.includes('Invalid marker comment'))).toBe(true);
+  });
+
+  it('a marker that does not own its line is invalid: no transition', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ commentBody: 'the plan follows: <!-- ai-workflow:plan:v1 -->' }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('Invalid marker comment'))).toBe(true);
+  });
+
+  it('a marker quoted inside a fenced code block never triggers (protocol 4.3)', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+
+    await runGate(
+      makeInput({ commentBody: 'Example:\n\n```\n<!-- ai-workflow:plan:v1 -->\n```\n' }),
+      h.client,
+      makeLogger(),
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.getIssue).toBe(0);
+  });
+
+  it('append marker is recorded only: no transition from any state, no reaction', async () => {
+    for (const labels of [[], [LABELS.planning], [LABELS.review], [LABELS.working], [LABELS.done]]) {
+      const h = makeHarness({ labels });
+      const log = makeLogger();
+
+      await runGate(
+        makeInput({
+          commentBody: '## AI Discussion Summary\n\nMore context.\n\n<!-- ai-workflow:append:v1 -->',
+        }),
+        h.client,
+        log,
+      );
+
+      expect(writeCount(h)).toBe(0);
+      expect(log.warnings).toEqual([]);
+    }
+  });
+
+  it('duplicate plan marker delivery: second run re-reads REVIEW and no-ops', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, log);
+    await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, log); // same event delivered twice
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.review] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.planning }]);
+    expect(h.calls.getLabels).toBe(2);
+    expect(log.warnings.some((m) => m.includes('current state is REVIEW'))).toBe(true);
+  });
+
+  it('markers on a closed issue are ignored (closed is terminal)', async () => {
+    const h = makeHarness({ labels: [LABELS.planning], state: 'closed' });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, log);
+
+    expect(h.calls.getIssue).toBe(1);
+    expect(h.calls.getLabels).toBe(0);
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings).toEqual([]);
+  });
+});
+
+describe('Phase 2: issue body schema block is observability metadata only', () => {
+  const SCHEMA_BODY =
+    '## Goal\n\nDo it.\n\n<!-- ai-workflow\nschema: 1\nsource: producer\nkind: feature\nmaturity_hint: solution\n-->';
+
+  it('issues.opened with a valid Producer schema block still does not auto-label', async () => {
+    const h = makeHarness({ labels: [] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ eventName: 'issues', eventAction: 'opened', commentBody: undefined, issueBody: SCHEMA_BODY }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.getIssue).toBe(0);
+    expect(log.infos.some((m) => m.includes('kind=feature') && m.includes('maturity_hint=solution'))).toBe(true);
+    expect(log.infos.some((m) => m.includes('no auto-labeling'))).toBe(true);
+  });
+
+  it('an invalid schema block is reported and the issue stays plain (no transition)', async () => {
+    const h = makeHarness({ labels: [] });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({
+        eventName: 'issues',
+        eventAction: 'opened',
+        commentBody: undefined,
+        issueBody: '<!-- ai-workflow\nschema: 1\nsource: producer\nkind: feature\nmaturity_hint: vibes\n-->',
+      }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('schema block invalid'))).toBe(true);
+  });
+});
+
+describe('Phase 2: reaction feedback is best-effort and never load-bearing', () => {
+  it('a failing reaction API call does not affect an accepted /approve migration', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    h.client.addReaction = vi.fn(async () => {
+      throw new Error('500 reaction endpoint down');
+    });
+    const log = makeLogger();
+
+    await runGate(makeInput(), h.client, log);
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+    expect(log.warnings.some((m) => m.includes('reaction') && m.includes('ignored'))).toBe(true);
+  });
+
+  it('a failing 👎 reaction still leaves the non-owner command ignored (no throw)', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    h.client.addReaction = vi.fn(async () => {
+      throw new Error('403 forbidden');
+    });
+    const log = makeLogger();
+
+    await runGate(makeInput({ actor: 'external-user' }), h.client, log);
+
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
+    expect(log.warnings.some((m) => m.includes('ignored'))).toBe(true);
+  });
+
+  it('a comment event without a comment id still migrates and only logs a warning', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentId: undefined }), h.client, log);
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+    expect(log.warnings.some((m) => m.includes('no comment id'))).toBe(true);
   });
 });

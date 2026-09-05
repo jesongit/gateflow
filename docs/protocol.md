@@ -242,3 +242,17 @@ AI **不能**：
 - 本协议为 V0 冻结版：字段、枚举、语法、迁移表均不得随意变更。
 - 变更必须：更新本文档 + 同步 `src/protocol.ts` + 提升 schema 版本（issue body `schema:` 字段、comment marker 的 `:v1` 后缀），保证新旧内容可区分。
 - 已知留白（不算协议变更）：`/approve` 的版本级校验（Phase 5）、👎 反馈实装（Phase 2）、Tracker Status 解析细节（Phase 6）。
+
+---
+
+## 实现备注（Implementation Notes）
+
+> 本节**不属于冻结协议本体**，只记录实现与正文条文的偏差与实现口径澄清。正文任何修改仍视为协议升级。
+
+- **2026-09-05（Phase 2 实装）：reaction 反馈方向与 2.3 / 3.1 规则 9 的条文相反，实装取反。**
+  - 非 Trusted Human 发出的五个命令：加 👎 reaction（含义 = "invalid owner command"），除此之外静默（不评论、无标签写、无 API 读）。正文写的是"一律静默忽略（不 reaction）"；实装按开发指南 Phase 2 的"👎 invalid owner command"语义，给非 Owner 命令一个明确的拒绝信号。已知权衡：这会向探测者暴露"命令已被解析但身份不足"（正文 3.1 规则 9 想避免的预言机），接受该噪音换取 Owner 的可观察反馈。
+  - Trusted Human 的无效命令（状态前提不满足等）：保持静默 no-op + Actions log，**不加** 👎（正文 2.3 写的是"对 Trusted Human 的无效命令加 👎"，实装避免 Owner 自用时的额外噪音；no-op 语义不变）。
+  - 接受的命令（效果已执行，或 `/choose` / `/change` 合法转交 Consumer）加 ✅ reaction。Reaction 永远只是操作反馈：不是权限证明、不是状态的一部分、也不被主流程依赖（reaction API 失败只记 warning，迁移照常完成）。
+- **2026-09-05（Phase 2 实装）：4.3 "代码块中的不算" 的实现口径**：以行首 ``` 围栏（fenced code block）为开关，围栏内的 marker 出现一律不计数（既不算独占整行、也不算重复出现）；围栏外仍按"独占整行 + 全评论至多一次出现"判定。引用（quote）marker 文本因此不会触发迁移。
+- 2026-09-05（Phase 2 实装）：Gate 实现版本号 `GATE_VERSION` 升至 `0.2.0`；冻结的 `schema: 1` 与 marker `:v1` 后缀不变，非协议升级。
+- 2026-09-05（Phase 2 实装）：`/choose` / `/change` 的前提状态按 3.2 表格执行，即**仅 REVIEW**；Gate 只做格式与身份校验，参数原样转交 Consumer，不做任何状态迁移（与冻结表一致，无偏差）。
