@@ -16128,6 +16128,16 @@ var OctokitDriverClient = class {
     issues.sort((a, b) => a.number - b.number);
     return issues;
   }
+  async createIssue(ref, input) {
+    const { data } = await this.octokit.rest.issues.create({
+      owner: ref.owner,
+      repo: ref.repo,
+      title: input.title,
+      body: input.body,
+      labels: [...input.labels]
+    });
+    return { number: data.number ?? 0 };
+  }
 };
 function createOctokit(token, baseUrl) {
   return new Octokit2({ auth: token, ...baseUrl ? { baseUrl } : {} });
@@ -16696,7 +16706,8 @@ var RECEIPT_KEYS = [
   "last_progress_sha256",
   "last_feedback_comment_id",
   "last_sync_at",
-  "error"
+  "error",
+  "last_notice_state"
 ];
 var RECEIPT_REQUIRED = ["dispatch_id", "status", "attempts"];
 function validateReceipt(raw) {
@@ -16719,6 +16730,7 @@ function validateReceipt(raw) {
   if (error !== void 0 && error !== null) {
     checkString(error, `${what}.error`, errors, { min: 1, max: 2e3 });
   }
+  checkString(raw["last_notice_state"], `${what}.last_notice_state`, errors, { min: 1, max: 64 });
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: raw };
 }
@@ -18029,10 +18041,135 @@ async function processIntents(deps, repositoryInfo) {
   return outcomes;
 }
 
-// src/driver/sync.ts
+// src/workspace/submit.ts
 var import_promises7 = require("node:fs/promises");
 var nodePath6 = __toESM(require("node:path"));
+var SUBMIT_JSON = "submit.json";
+var SUBMIT_TASK = "TASK.md";
+var SUBMIT_ERROR = "error.json";
+async function readIfExists(file) {
+  let info;
+  try {
+    info = await (0, import_promises7.stat)(file);
+    if (!info.isFile()) return null;
+  } catch {
+    return null;
+  }
+  try {
+    return { text: await (0, import_promises7.readFile)(file, "utf8"), size: info.size };
+  } catch {
+    return null;
+  }
+}
+async function inspectSubmit(paths) {
+  const submitJson = await readIfExists(nodePath6.join(paths.submit, SUBMIT_JSON));
+  const task = await readIfExists(nodePath6.join(paths.submit, SUBMIT_TASK));
+  if (submitJson === null && task === null) return { status: "empty" };
+  if (submitJson === null) {
+    return { status: "invalid", error: `${SUBMIT_JSON} is missing while ${SUBMIT_TASK} exists` };
+  }
+  if (task === null) {
+    return { status: "invalid", error: `${SUBMIT_TASK} is missing while ${SUBMIT_JSON} exists` };
+  }
+  let raw;
+  try {
+    raw = JSON.parse(submitJson.text);
+  } catch (err) {
+    return {
+      status: "invalid",
+      error: `${SUBMIT_JSON} is not valid JSON: ${err.message}`
+    };
+  }
+  const parsed = validateSubmit(raw);
+  if (!parsed.ok) {
+    return { status: "invalid", error: `${SUBMIT_JSON} failed validation: ${parsed.errors.join("; ")}` };
+  }
+  if (task.text.length === 0) {
+    return { status: "invalid", error: `${SUBMIT_TASK} is empty` };
+  }
+  if (task.size > MAX_FILE_BYTES) {
+    return { status: "invalid", error: `${SUBMIT_TASK} exceeds ${MAX_FILE_BYTES} bytes` };
+  }
+  return { status: "ready", request: parsed.value, task: task.text };
+}
+async function markSubmitProcessed(paths) {
+  await (0, import_promises7.mkdir)(paths.submit, { recursive: true });
+  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+  const dirName = `processed-${stamp}`;
+  const targetDir = nodePath6.join(paths.submit, dirName);
+  await (0, import_promises7.mkdir)(targetDir, { recursive: true });
+  const entries = await (0, import_promises7.readdir)(paths.submit, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (entry.name === SUBMIT_ERROR) continue;
+    try {
+      await (0, import_promises7.rename)(nodePath6.join(paths.submit, entry.name), nodePath6.join(targetDir, entry.name));
+    } catch {
+    }
+  }
+  return dirName;
+}
+async function writeSubmitError(paths, error) {
+  await (0, import_promises7.mkdir)(paths.submit, { recursive: true });
+  await atomicWriteJson(nodePath6.join(paths.submit, SUBMIT_ERROR), {
+    error,
+    created_at: (/* @__PURE__ */ new Date()).toISOString()
+  });
+}
+
+// src/driver/submit.ts
+var SUBMIT_LABELS = ["ai:planning"];
 function errorMessage2(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+function buildSubmitIssueBody(task, request2) {
+  return `${task}
+
+<!-- ai-workflow
+schema: 1
+source: producer
+kind: ${request2.kind}
+maturity_hint: ${request2.maturity_hint}
+-->
+
+> Submitted via GateFlow local submit (.gateflow/submit).
+`;
+}
+async function processSubmit(deps, repositoryInfo) {
+  const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
+  const inspection = await inspectSubmit(paths);
+  if (inspection.status === "empty") {
+    return { action: "empty", detail: "no pending submission" };
+  }
+  if (inspection.status === "invalid") {
+    await writeSubmitError(paths, inspection.error);
+    deps.log.warning(`submit rejected: ${inspection.error}`);
+    return { action: "invalid", detail: inspection.error };
+  }
+  const { request: request2, task } = inspection;
+  try {
+    const { number } = await deps.client.createIssue(
+      { owner: repositoryInfo.owner, repo: repositoryInfo.repo },
+      {
+        title: request2.title,
+        body: buildSubmitIssueBody(task, request2),
+        labels: [...SUBMIT_LABELS]
+      }
+    );
+    await markSubmitProcessed(paths);
+    deps.log.info(`submit created issue #${number} (${request2.kind}/${request2.maturity_hint})`);
+    return { action: "created", detail: `issue #${number} created`, issueNumber: number };
+  } catch (err) {
+    const message = errorMessage2(err);
+    deps.log.error(`submit issue creation failed (left unprocessed, will retry next cycle): ${message}`);
+    return { action: "error", detail: message };
+  }
+}
+
+// src/driver/sync.ts
+var import_promises8 = require("node:fs/promises");
+var nodePath7 = __toESM(require("node:path"));
+function errorMessage3(err) {
   return err instanceof Error ? err.message : String(err);
 }
 function noticeBody(role, what, dispatchId, reason) {
@@ -18051,7 +18188,7 @@ async function readMarkdownCapped(paths, dispatchId, name) {
     return { content: await readOutboxMarkdown(paths, dispatchId, name), error: null };
   } catch (err) {
     if (err instanceof OversizedFileError) {
-      return { content: null, error: errorMessage2(err) };
+      return { content: null, error: errorMessage3(err) };
     }
     throw err;
   }
@@ -18078,20 +18215,27 @@ function validateOrDetail(raw, validate, dispatchId, role) {
 async function readOutboxJsonStrict(paths, dispatchId, fileName) {
   let file;
   try {
-    file = nodePath6.join(outboxDispatchDir(paths, dispatchId), fileName);
+    file = nodePath7.join(outboxDispatchDir(paths, dispatchId), fileName);
   } catch {
     return null;
   }
   let text;
   try {
-    text = await (0, import_promises7.readFile)(file, "utf8");
+    text = await (0, import_promises8.readFile)(file, "utf8");
   } catch {
     return null;
   }
+  if (Buffer.byteLength(text, "utf8") > MAX_FILE_BYTES) {
+    return { raw: null, error: `${fileName} exceeds the ${MAX_FILE_BYTES}-byte limit` };
+  }
   try {
-    return { raw: JSON.parse(text), error: null };
+    const parsed = JSON.parse(text);
+    if (parsed === null) {
+      return { raw: null, error: `${fileName} is not a JSON object` };
+    }
+    return { raw: parsed, error: null };
   } catch (err) {
-    return { raw: null, error: errorMessage2(err) };
+    return { raw: null, error: errorMessage3(err) };
   }
 }
 async function syncDispatch(deps, repositoryInfo, dispatchId) {
@@ -18164,11 +18308,22 @@ async function syncConsumer(deps, ref, paths, dispatchId, receipt, status, resul
     return { dispatchId, action: "notice", detail: `consumer ${result.result} notice posted` };
   }
   if (status !== null && status.state === "blocked") {
+    if (receipt?.last_notice_state === "blocked") {
+      return {
+        dispatchId,
+        action: "unchanged",
+        detail: "consumer blocked notice already posted for this dispatch"
+      };
+    }
     await deps.client.addIssueComment(
       ref,
       noticeBody("consumer", "blocked", dispatchId, status.summary ?? status.phase ?? "(blocked, no summary)")
     );
-    await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: "synced", last_sync_at: nowIso });
+    await writeReceipt(paths, {
+      ...receiptBase(receipt, dispatchId),
+      last_notice_state: "blocked",
+      last_sync_at: nowIso
+    });
     return { dispatchId, action: "notice", detail: "consumer blocked notice posted" };
   }
   return {
@@ -18324,14 +18479,14 @@ async function syncAll(deps, repositoryInfo) {
     try {
       outcomes.push(await syncDispatch(deps, repositoryInfo, dispatchId));
     } catch (err) {
-      deps.log.error(`sync failed for ${dispatchId}: ${errorMessage2(err)}`);
+      deps.log.error(`sync failed for ${dispatchId}: ${errorMessage3(err)}`);
     }
   }
   return outcomes;
 }
 
 // src/driver/driver.ts
-function errorMessage3(err) {
+function errorMessage4(err) {
   return err instanceof Error ? err.message : String(err);
 }
 function sleep2(ms) {
@@ -18341,9 +18496,18 @@ async function runOnce(deps) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
   const repositoryInfo = await deps.client.getRepository();
+  const submit = await processSubmit(deps, {
+    owner: repositoryInfo.owner,
+    repo: repositoryInfo.name,
+    id: repositoryInfo.id
+  });
   const dispatched = await processIntents(deps, repositoryInfo);
   const synced = await syncAll(deps, repositoryInfo);
-  return { dispatched, synced };
+  return {
+    ...submit.action === "empty" ? {} : { submit },
+    dispatched,
+    synced
+  };
 }
 async function startDriver(deps) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
@@ -18373,7 +18537,7 @@ async function startDriver(deps) {
           const outcome = await syncDispatch(deps, repositoryInfo, id);
           deps.log.info(`watcher sync ${outcome.dispatchId}: ${outcome.action} \u2014 ${outcome.detail}`);
         } catch (err) {
-          deps.log.error(`watcher sync failed for ${id}: ${errorMessage3(err)}`);
+          deps.log.error(`watcher sync failed for ${id}: ${errorMessage4(err)}`);
         }
       }
     } finally {
@@ -18401,11 +18565,12 @@ async function startDriver(deps) {
       try {
         const result = await runOnce(deps);
         const dispatchedCount = result.dispatched.filter((o) => o.dispatched).length;
+        const submitNote = result.submit ? `, submit: ${result.submit.action}` : "";
         deps.log.info(
-          `cycle complete: ${dispatchedCount} dispatched, ${result.synced.filter((o) => o.action !== "unchanged" && o.action !== "skipped").length} synced (of ${result.synced.length} outbox dirs)`
+          `cycle complete: ${dispatchedCount} dispatched, ${result.synced.filter((o) => o.action !== "unchanged" && o.action !== "skipped").length} synced (of ${result.synced.length} outbox dirs)` + submitNote
         );
       } catch (err) {
-        deps.log.error(`cycle failed: ${errorMessage3(err)}`);
+        deps.log.error(`cycle failed: ${errorMessage4(err)}`);
       }
       cycling = false;
       await drain();
@@ -18424,57 +18589,6 @@ async function startDriver(deps) {
 // src/driver/retry.ts
 async function retryDispatch(paths, dispatchId) {
   return clearReceipt(paths, dispatchId);
-}
-
-// src/workspace/submit.ts
-var import_promises8 = require("node:fs/promises");
-var nodePath7 = __toESM(require("node:path"));
-var SUBMIT_JSON = "submit.json";
-var SUBMIT_TASK = "TASK.md";
-async function readIfExists(file) {
-  let info;
-  try {
-    info = await (0, import_promises8.stat)(file);
-    if (!info.isFile()) return null;
-  } catch {
-    return null;
-  }
-  try {
-    return { text: await (0, import_promises8.readFile)(file, "utf8"), size: info.size };
-  } catch {
-    return null;
-  }
-}
-async function inspectSubmit(paths) {
-  const submitJson = await readIfExists(nodePath7.join(paths.submit, SUBMIT_JSON));
-  const task = await readIfExists(nodePath7.join(paths.submit, SUBMIT_TASK));
-  if (submitJson === null && task === null) return { status: "empty" };
-  if (submitJson === null) {
-    return { status: "invalid", error: `${SUBMIT_JSON} is missing while ${SUBMIT_TASK} exists` };
-  }
-  if (task === null) {
-    return { status: "invalid", error: `${SUBMIT_TASK} is missing while ${SUBMIT_JSON} exists` };
-  }
-  let raw;
-  try {
-    raw = JSON.parse(submitJson.text);
-  } catch (err) {
-    return {
-      status: "invalid",
-      error: `${SUBMIT_JSON} is not valid JSON: ${err.message}`
-    };
-  }
-  const parsed = validateSubmit(raw);
-  if (!parsed.ok) {
-    return { status: "invalid", error: `${SUBMIT_JSON} failed validation: ${parsed.errors.join("; ")}` };
-  }
-  if (task.text.length === 0) {
-    return { status: "invalid", error: `${SUBMIT_TASK} is empty` };
-  }
-  if (task.size > MAX_FILE_BYTES) {
-    return { status: "invalid", error: `${SUBMIT_TASK} exceeds ${MAX_FILE_BYTES} bytes` };
-  }
-  return { status: "ready", request: parsed.value, task: task.text };
 }
 
 // src/cli.ts

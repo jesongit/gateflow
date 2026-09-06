@@ -238,6 +238,13 @@ export interface Receipt {
   last_feedback_comment_id?: number;
   last_sync_at?: string;
   error?: string | null;
+  /**
+   * Last non-terminal notice posted to GitHub (e.g. a consumer `blocked`
+   * status echo). Status notices must NOT move the receipt to `synced` —
+   * that would consume the result replay token (docs §2.6 / §8.4) — so the
+   * notice itself is remembered here to avoid re-posting every cycle.
+   */
+  last_notice_state?: string;
 }
 
 /** submit/submit.json — Producer local task submission (docs §9). */

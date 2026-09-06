@@ -124,6 +124,12 @@ function fakeOctokit(opts: FakeOptions = {}) {
       list: vi.fn(async (_params: { owner: string; repo: string; state: string; per_page: number; page: number }) => ({
         data: [],
       })),
+      // Added when the Driver interface grew createIssue (Producer submit);
+      // no existing test asserts on it (see the dedicated createIssue
+      // describe below).
+      create: vi.fn(async (_params: { owner: string; repo: string; title: string; body: string; labels: string[] }) => ({
+        data: { number: 1 },
+      })),
     },
       reactions: { createForIssueComment: fns.createReaction },
     },
@@ -333,6 +339,8 @@ describe('DriverGitHubClient.listOpenIssues (no real API)', () => {
           createComment: vi.fn(),
           updateComment: vi.fn(),
           list: listIssues,
+          // Added when the Driver interface grew createIssue; unused here.
+          create: vi.fn(),
         },
         reactions: { createForIssueComment: vi.fn() },
       },
@@ -387,5 +395,77 @@ describe('DriverGitHubClient.listOpenIssues (no real API)', () => {
 
     expect(listIssues).toHaveBeenCalledTimes(10);
     expect(issues).toHaveLength(1000);
+  });
+});
+
+/*
+ * createIssue (appended for the V1 Producer submit seam, docs/
+ * workspace-protocol.md §9): fake covers ONLY the newly declared
+ * rest.issues.create endpoint; existing tests above stay untouched.
+ */
+describe('DriverGitHubClient.createIssue (no real API)', () => {
+  type CreateIssueParams = { owner: string; repo: string; title: string; body: string; labels: string[] };
+
+  interface CreateFakeOptions {
+    payload?: { number?: number };
+  }
+
+  function fakeCreateOctokit(opts: CreateFakeOptions = {}) {
+    const create = vi.fn(async (_params: CreateIssueParams) => ({ data: opts.payload ?? { number: 501 } }));
+    const octokit: OctokitRest = {
+      rest: {
+        repos: { get: vi.fn() },
+        issues: {
+          get: vi.fn(),
+          listComments: vi.fn(),
+          createComment: vi.fn(),
+          updateComment: vi.fn(),
+          list: vi.fn(),
+          create,
+        },
+        reactions: { createForIssueComment: vi.fn() },
+      },
+    };
+    return { octokit, create };
+  }
+
+  it('forwards title/body/labels and returns the created issue number', async () => {
+    const { octokit, create } = fakeCreateOctokit();
+    const client = createDriverGitHubClient(octokit);
+
+    await expect(
+      client.createIssue(
+        { owner: 'owner-user', repo: 'demo' },
+        { title: 'Add export', body: 'TASK content', labels: ['ai:planning'] },
+      ),
+    ).resolves.toEqual({ number: 501 });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]?.[0]).toEqual({
+      owner: 'owner-user',
+      repo: 'demo',
+      title: 'Add export',
+      body: 'TASK content',
+      labels: ['ai:planning'],
+    });
+  });
+
+  it('maps a missing issue number in the response payload to 0', async () => {
+    const { octokit } = fakeCreateOctokit({ payload: {} });
+    const client = createDriverGitHubClient(octokit);
+
+    await expect(
+      client.createIssue({ owner: 'owner-user', repo: 'demo' }, { title: 't', body: 'b', labels: [] }),
+    ).resolves.toEqual({ number: 0 });
+  });
+
+  it('propagates infrastructure errors (no swallowing)', async () => {
+    const { octokit, create } = fakeCreateOctokit();
+    create.mockRejectedValueOnce(new Error('rate limited'));
+    const client = createDriverGitHubClient(octokit);
+
+    await expect(
+      client.createIssue({ owner: 'owner-user', repo: 'demo' }, { title: 't', body: 'b', labels: [] }),
+    ).rejects.toThrow('rate limited');
   });
 });

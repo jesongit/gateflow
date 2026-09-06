@@ -20,6 +20,8 @@ import { watchOutbox } from '../workspace/watcher';
 import type { OutboxWatcher } from '../workspace/watcher';
 import { processIntents } from './dispatch';
 import type { DispatchOutcome } from './dispatch';
+import { processSubmit } from './submit';
+import type { SubmitOutcome } from './submit';
 import { syncAll, syncDispatch } from './sync';
 import type { SyncOutcome } from './sync';
 
@@ -45,6 +47,11 @@ export interface DriverDeps {
 export interface DriverOnceResult {
   dispatched: DispatchOutcome[];
   synced: SyncOutcome[];
+  /**
+   * Producer submit processing (docs/workspace-protocol.md §9). Absent when
+   * there was nothing to submit (`action: 'empty'`) — the common case.
+   */
+  submit?: SubmitOutcome;
 }
 
 function errorMessage(err: unknown): string {
@@ -58,16 +65,29 @@ function sleep(ms: number): Promise<void> {
 /**
  * One full driver cycle: ensure the workspace, resolve repository identity
  * (the client is already bound to owner/repo at construction; getRepository
- * supplies the database id that dispatch_ids embed), dispatch fresh intents,
- * then sync every outbox dispatch.
+ * supplies the database id that dispatch_ids embed), process the local
+ * Producer submit FIRST (workspace-protocol.md §9 — a new issue created from
+ * `.gateflow/submit/` is discoverable in the SAME cycle), then dispatch fresh
+ * intents and sync every outbox dispatch.
  */
 export async function runOnce(deps: DriverDeps): Promise<DriverOnceResult> {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
   const repositoryInfo: RepositoryInfo = await deps.client.getRepository();
+  // Submit before intents: new work enters first, so the issue created from
+  // `.gateflow/submit/` is picked up by this cycle's discovery below.
+  const submit = await processSubmit(deps, {
+    owner: repositoryInfo.owner,
+    repo: repositoryInfo.name,
+    id: repositoryInfo.id,
+  });
   const dispatched = await processIntents(deps, repositoryInfo);
   const synced = await syncAll(deps, repositoryInfo);
-  return { dispatched, synced };
+  return {
+    ...(submit.action === 'empty' ? {} : { submit }),
+    dispatched,
+    synced,
+  };
 }
 
 /**
@@ -147,9 +167,11 @@ export async function startDriver(deps: DriverDeps): Promise<void> {
       try {
         const result = await runOnce(deps);
         const dispatchedCount = result.dispatched.filter((o) => o.dispatched).length;
+        const submitNote = result.submit ? `, submit: ${result.submit.action}` : '';
         deps.log.info(
           `cycle complete: ${dispatchedCount} dispatched, ` +
-            `${result.synced.filter((o) => o.action !== 'unchanged' && o.action !== 'skipped').length} synced (of ${result.synced.length} outbox dirs)`,
+            `${result.synced.filter((o) => o.action !== 'unchanged' && o.action !== 'skipped').length} synced (of ${result.synced.length} outbox dirs)` +
+            submitNote,
         );
       } catch (err) {
         deps.log.error(`cycle failed: ${errorMessage(err)}`);

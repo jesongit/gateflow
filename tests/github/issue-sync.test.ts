@@ -50,6 +50,12 @@ function fakeClient() {
     addReaction: vi.fn(async (_r: IssueRef, _commentId: number, _content: string) => undefined),
     // Stub added when the Driver interface grew listOpenIssues; unused here.
     listOpenIssues: vi.fn(async (_r: { owner: string; repo: string }) => []),
+    // Stub added when the Driver interface grew createIssue; unused here.
+    createIssue: vi.fn(
+      async (_r: IssueRef, _input: { title: string; body: string; labels: string[] }) => ({
+        number: 42,
+      }),
+    ),
   };
 }
 

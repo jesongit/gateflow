@@ -436,6 +436,7 @@ const RECEIPT_KEYS = [
   'last_feedback_comment_id',
   'last_sync_at',
   'error',
+  'last_notice_state',
 ] as const;
 const RECEIPT_REQUIRED = ['dispatch_id', 'status', 'attempts'] as const;
 
@@ -465,6 +466,7 @@ export function validateReceipt(raw: unknown): Validation<Receipt> {
   if (error !== undefined && error !== null) {
     checkString(error, `${what}.error`, errors, { min: 1, max: 2000 });
   }
+  checkString(raw['last_notice_state'], `${what}.last_notice_state`, errors, { min: 1, max: 64 });
 
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: raw as unknown as Receipt };

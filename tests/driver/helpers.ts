@@ -145,6 +145,26 @@ export class FakeDriverClient implements DriverGitHubClient {
   async addReaction(_ref: IssueRef, _commentId: number, _content: DriverReactionContent): Promise<void> {
     /* no-op */
   }
+
+  /** Records created issues so submit tests can assert title/body/labels. */
+  readonly createdIssues: Array<{
+    ref: IssueRef;
+    title: string;
+    body: string;
+    labels: string[];
+    number: number;
+  }> = [];
+  private issueSeq = 500;
+
+  async createIssue(
+    ref: IssueRef,
+    input: { title: string; body: string; labels: string[] },
+  ): Promise<{ number: number }> {
+    const number = ++this.issueSeq;
+    this.addIssue(number, { title: input.title, body: input.body, labels: [...input.labels] });
+    this.createdIssues.push({ ref, ...input, labels: [...input.labels], number });
+    return { number };
+  }
 }
 
 /** DriverConfig with §10 defaults and surgical overrides for tests. */

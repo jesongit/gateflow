@@ -170,6 +170,10 @@ gateflow driver retry gf_r123_i42_executor_p3472198451
 - `dispatch_id` 规则冻结：`gf_r<repository_id>_i<issue_number>_<role>_<revision>`（完整规则见 [docs/workspace-protocol.md](workspace-protocol.md) §3）。反馈后的重新规划必然产生新 dispatch_id，因此不会与旧轮次混淆。
 - Activation 失败不影响状态：Issue 保持 `ai:ready`，Agent 没写 `status=working` 之前不产生 Tracker、不触发 T3。
 
+### 6.1 本地提交（`.gateflow/submit/`）
+
+Producer Agent 在用户明确要求时写 `.gateflow/submit/`（`TASK.md` + `submit.json`，契约见 [docs/workspace-protocol.md](workspace-protocol.md) §9）。每轮 Discovery 在派发 intents **之前**检查该目录：校验通过 → 通过 GitHub API 创建 Issue（正文 = TASK.md + Producer schema block，创建时直接打 `ai:planning`——这是 Driver 唯一一次标签写入，仅限 Issue 初始化）→ 成功后把 `submit/` 整目录改名为 `submit/processed-<timestamp>/`，绝不重复提交。校验失败 → 写 `submit/error.json` 说明原因，不创建 Issue、不改名，等人工清理；API 失败 → 不改名，下个周期自动重试（提交永不丢失）。
+
 ---
 
 ## 7. 同步与去重

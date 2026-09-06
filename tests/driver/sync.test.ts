@@ -245,7 +245,7 @@ describe('consumer sync (scenario 2)', () => {
     }
   });
 
-  it('status=blocked without a result → plain notice, receipt synced', async () => {
+  it('status=blocked without a result → plain notice once, receipt stays dispatched (replay token reserved for results)', async () => {
     const { client, fixture, deps, cleanup } = await setup();
     try {
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
@@ -259,7 +259,17 @@ describe('consumer sync (scenario 2)', () => {
       expect(client.issues.get(ISSUE)!.comments[0]!.body).toBe(
         `[gateflow] consumer blocked (dispatch ${CONSUMER_ID}): 等待 API key`,
       );
-      expect((await readReceipt(fixture.paths, CONSUMER_ID))?.status).toBe('synced');
+      // Status notices are non-terminal (docs §2.6 / §8.4): the receipt must
+      // NOT become `synced`, otherwise the dispatch's later legitimate
+      // result.json would be swallowed by the replay guard. The notice is
+      // remembered instead so it is posted once, not every cycle.
+      const receipt = await readReceipt(fixture.paths, CONSUMER_ID);
+      expect(receipt?.status).toBe('dispatched');
+      expect(receipt?.last_notice_state).toBe('blocked');
+
+      const repeat = await syncDispatch(deps, client.repository, CONSUMER_ID);
+      expect(repeat.action).toBe('unchanged');
+      expect(client.commentCount(ISSUE)).toBe(1);
     } finally {
       await cleanup();
     }

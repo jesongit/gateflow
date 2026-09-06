@@ -61,6 +61,8 @@ export type DriverReactionContent = '+1' | '-1' | 'eyes';
  * The only GitHub operations the Driver may perform. Note what is MISSING on
  * purpose: no label writes, no issue create/edit/close, no comment deletion,
  * no state mutation of any kind — those belong exclusively to the Gate.
+ * (Single exception: `createIssue` below exists for Producer submit issue
+ * INITIALIZATION, docs/workspace-protocol.md §9 — see its doc comment.)
  */
 export interface DriverGitHubClient {
   /** Fetches repository identity (owner login, name, database id). */
@@ -80,13 +82,27 @@ export interface DriverGitHubClient {
    * ascending by issue number. Discovery's entry point into canonical state.
    */
   listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]>;
+  /**
+   * Creates a new issue. The ONE deliberate exception to "the Driver never
+   * creates issues" (docs/workspace-protocol.md §9, Producer submit): a
+   * valid `.gateflow/submit/` request becomes the seed issue, equivalent to
+   * V0's producer-created issue (the Gate's T0 CREATE path). The labels
+   * passed here (always `ai:planning`) are issue INITIALIZATION at creation
+   * time — the only label write the Driver ever performs; every subsequent
+   * label/state transition remains Gate-exclusive.
+   */
+  createIssue(
+    ref: { owner: string; repo: string },
+    input: { title: string; body: string; labels: string[] },
+  ): Promise<{ number: number }>;
 }
 
 /**
- * Structural subset of Octokit used by the adapter below — ONLY the six
- * endpoints the Driver is allowed to touch. Kept in sync with nothing:
- * extra fields on the real Octokit are ignored, missing methods on test
- * fakes are never called.
+ * Structural subset of Octokit used by the adapter below — ONLY the endpoints
+ * the Driver is allowed to touch (six read/comment endpoints, plus
+ * `rest.issues.create` for Producer submit initialization since V1). Kept in
+ * sync with nothing: extra fields on the real Octokit are ignored, missing
+ * methods on test fakes are never called.
  */
 export interface OctokitRest {
   rest: {
@@ -154,6 +170,15 @@ export interface OctokitRest {
         comment_id: number;
         body: string;
       }): Promise<unknown>;
+      // Added when the Driver interface grew createIssue (Producer submit,
+      // docs/workspace-protocol.md §9); no existing endpoint changed.
+      create(params: {
+        owner: string;
+        repo: string;
+        title: string;
+        body: string;
+        labels: string[];
+      }): Promise<{ data: { number?: number } }>;
     };
     reactions: {
       createForIssueComment(params: {
@@ -345,6 +370,20 @@ class OctokitDriverClient implements DriverGitHubClient {
     }
     issues.sort((a, b) => a.number - b.number);
     return issues;
+  }
+
+  async createIssue(
+    ref: { owner: string; repo: string },
+    input: { title: string; body: string; labels: string[] },
+  ): Promise<{ number: number }> {
+    const { data } = await this.octokit.rest.issues.create({
+      owner: ref.owner,
+      repo: ref.repo,
+      title: input.title,
+      body: input.body,
+      labels: [...input.labels],
+    });
+    return { number: data.number ?? 0 };
   }
 }
 

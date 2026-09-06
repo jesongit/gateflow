@@ -48,7 +48,7 @@ import {
   readReceipt,
   writeReceipt,
 } from '../workspace/outbox';
-import { OversizedFileError, validateOutboxResult, validateOutboxStatus } from '../workspace/validation';
+import { OversizedFileError, MAX_FILE_BYTES, validateOutboxResult, validateOutboxStatus } from '../workspace/validation';
 import type { DriverDeps } from './driver';
 
 /** All sync actions (see module header + docs/workspace-protocol.md §3). */
@@ -165,8 +165,19 @@ async function readOutboxJsonStrict(
   } catch {
     return null; // absent (or unreadable) → treated as absent
   }
+  // Size bound before JSON.parse (docs §5.7): a hostile agent must not be
+  // able to force arbitrarily large allocations through a machine file.
+  if (Buffer.byteLength(text, 'utf8') > MAX_FILE_BYTES) {
+    return { raw: null, error: `${fileName} exceeds the ${MAX_FILE_BYTES}-byte limit` };
+  }
   try {
-    return { raw: JSON.parse(text) as unknown, error: null };
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed === null) {
+      // JSON.parse('null') succeeds but `null` is never a valid machine file
+      // object; treat it as malformed instead of "absent" (docs §5 rule 1).
+      return { raw: null, error: `${fileName} is not a JSON object` };
+    }
+    return { raw: parsed, error: null };
   } catch (err) {
     return { raw: null, error: errorMessage(err) };
   }
@@ -270,11 +281,27 @@ async function syncConsumer(
   }
 
   if (status !== null && status.state === 'blocked') {
+    // Status notices are non-terminal: they must NOT move the receipt to
+    // `synced` — that token is reserved for an accepted result.json (docs
+    // §2.6 / §8.4), otherwise a blocked echo would permanently swallow the
+    // dispatch's later legitimate plan_ready result. The notice itself is
+    // remembered on the receipt so it is posted once, not every cycle.
+    if (receipt?.last_notice_state === 'blocked') {
+      return {
+        dispatchId,
+        action: 'unchanged',
+        detail: 'consumer blocked notice already posted for this dispatch',
+      };
+    }
     await deps.client.addIssueComment(
       ref,
       noticeBody('consumer', 'blocked', dispatchId, status.summary ?? status.phase ?? '(blocked, no summary)'),
     );
-    await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: 'synced', last_sync_at: nowIso });
+    await writeReceipt(paths, {
+      ...receiptBase(receipt, dispatchId),
+      last_notice_state: 'blocked',
+      last_sync_at: nowIso,
+    });
     return { dispatchId, action: 'notice', detail: 'consumer blocked notice posted' };
   }
 

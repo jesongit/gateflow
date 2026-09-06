@@ -5,13 +5,27 @@
   "description": "Frozen contract mirror of docs/workspace-protocol.md. The executable source of truth is src/workspace/schemas.ts; this document must be kept in sync manually. Long content (TASK.md, PLAN.md, PROGRESS.md, REPORT.md, FEEDBACK.md) is Markdown and intentionally NOT described here. Human-only actions (approve, ready, cancel, human-close) never appear in any machine file; src/workspace/schemas.ts rejects them in any casing variant.",
   "type": "object",
   "oneOf": [
-    { "$ref": "#/$defs/dispatch" },
-    { "$ref": "#/$defs/context" },
-    { "$ref": "#/$defs/status" },
-    { "$ref": "#/$defs/result" },
-    { "$ref": "#/$defs/current" },
-    { "$ref": "#/$defs/receipt" },
-    { "$ref": "#/$defs/submitRequest" }
+    {
+      "$ref": "#/$defs/dispatch"
+    },
+    {
+      "$ref": "#/$defs/context"
+    },
+    {
+      "$ref": "#/$defs/status"
+    },
+    {
+      "$ref": "#/$defs/result"
+    },
+    {
+      "$ref": "#/$defs/current"
+    },
+    {
+      "$ref": "#/$defs/receipt"
+    },
+    {
+      "$ref": "#/$defs/submitRequest"
+    }
   ],
   "$defs": {
     "schemaVersion": {
@@ -19,7 +33,10 @@
       "const": 1
     },
     "role": {
-      "enum": ["consumer", "executor"]
+      "enum": [
+        "consumer",
+        "executor"
+      ]
     },
     "dispatchId": {
       "description": "gf_r<repository_id>_i<issue_number>_<role>_<revision>; consumer revision is a zero-padded round (01, 02, ... 100), executor revision is p<plan_comment_id>.",
@@ -47,11 +64,27 @@
     "dispatchInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["task", "plan", "feedback"],
+      "required": [
+        "task",
+        "plan",
+        "feedback"
+      ],
       "properties": {
-        "task": { "const": "TASK.md" },
-        "plan": { "enum": ["PLAN.md", null] },
-        "feedback": { "enum": ["FEEDBACK.md", null] }
+        "task": {
+          "const": "TASK.md"
+        },
+        "plan": {
+          "enum": [
+            "PLAN.md",
+            null
+          ]
+        },
+        "feedback": {
+          "enum": [
+            "FEEDBACK.md",
+            null
+          ]
+        }
       }
     },
     "dispatch": {
@@ -71,38 +104,117 @@
         "input"
       ],
       "properties": {
-        "schema": { "$ref": "#/$defs/schemaVersion" },
-        "dispatch_id": { "$ref": "#/$defs/dispatchId" },
-        "repository": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "repository_id": { "$ref": "#/$defs/positiveInteger" },
-        "issue_number": { "$ref": "#/$defs/positiveInteger" },
-        "role": { "$ref": "#/$defs/role" },
-        "reason": { "enum": ["planning", "feedback_applied", "approved_plan"] },
-        "created_at": { "$ref": "#/$defs/isoDateTime" },
-        "plan_comment_id": { "type": ["integer", "null"] },
-        "approval_comment_id": { "type": ["integer", "null"] },
-        "input": { "$ref": "#/$defs/dispatchInput" }
+        "schema": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "dispatch_id": {
+          "$ref": "#/$defs/dispatchId"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "repository_id": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "issue_number": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "reason": {
+          "enum": [
+            "planning",
+            "feedback_applied",
+            "approved_plan"
+          ]
+        },
+        "created_at": {
+          "$ref": "#/$defs/isoDateTime"
+        },
+        "plan_comment_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "approval_comment_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input": {
+          "$ref": "#/$defs/dispatchInput"
+        }
       },
       "allOf": [
         {
-          "if": { "properties": { "role": { "const": "consumer" } }, "required": ["role"] },
+          "if": {
+            "properties": {
+              "role": {
+                "const": "consumer"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
           "then": {
             "properties": {
-              "reason": { "enum": ["planning", "feedback_applied"] },
-              "plan_comment_id": { "const": null },
-              "approval_comment_id": { "const": null },
-              "input": { "properties": { "plan": { "const": null } } }
+              "reason": {
+                "enum": [
+                  "planning",
+                  "feedback_applied"
+                ]
+              },
+              "plan_comment_id": {
+                "const": null
+              },
+              "approval_comment_id": {
+                "const": null
+              },
+              "input": {
+                "properties": {
+                  "plan": {
+                    "const": null
+                  }
+                }
+              }
             }
           }
         },
         {
-          "if": { "properties": { "role": { "const": "executor" } }, "required": ["role"] },
+          "if": {
+            "properties": {
+              "role": {
+                "const": "executor"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
           "then": {
             "properties": {
-              "reason": { "const": "approved_plan" },
-              "plan_comment_id": { "$ref": "#/$defs/positiveInteger" },
-              "approval_comment_id": { "$ref": "#/$defs/positiveInteger" },
-              "input": { "properties": { "plan": { "const": "PLAN.md" } } }
+              "reason": {
+                "const": "approved_plan"
+              },
+              "plan_comment_id": {
+                "$ref": "#/$defs/positiveInteger"
+              },
+              "approval_comment_id": {
+                "$ref": "#/$defs/positiveInteger"
+              },
+              "input": {
+                "properties": {
+                  "plan": {
+                    "const": "PLAN.md"
+                  }
+                }
+              }
             }
           }
         }
@@ -111,128 +223,370 @@
     "context": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "dispatch_id", "feedback_count"],
+      "required": [
+        "schema",
+        "dispatch_id",
+        "feedback_count"
+      ],
       "properties": {
-        "schema": { "$ref": "#/$defs/schemaVersion" },
-        "dispatch_id": { "$ref": "#/$defs/dispatchId" },
-        "plan_comment_id": { "$ref": "#/$defs/positiveInteger" },
-        "plan_sha256": { "$ref": "#/$defs/sha256Hex" },
-        "feedback_count": { "$ref": "#/$defs/nonNegativeInteger" }
+        "schema": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "dispatch_id": {
+          "$ref": "#/$defs/dispatchId"
+        },
+        "plan_comment_id": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/sha256Hex"
+        },
+        "feedback_count": {
+          "$ref": "#/$defs/nonNegativeInteger"
+        }
       },
       "allOf": [
         {
           "if": {
-            "properties": { "dispatch_id": { "pattern": "^gf_r\\d+_i\\d+_executor_" } },
-            "required": ["dispatch_id"]
+            "properties": {
+              "dispatch_id": {
+                "pattern": "^gf_r\\d+_i\\d+_executor_"
+              }
+            },
+            "required": [
+              "dispatch_id"
+            ]
           },
-          "then": { "required": ["plan_comment_id", "plan_sha256"] }
+          "then": {
+            "required": [
+              "plan_comment_id",
+              "plan_sha256"
+            ]
+          }
         }
       ]
     },
     "status": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "dispatch_id", "role", "state", "updated_at"],
+      "required": [
+        "schema",
+        "dispatch_id",
+        "role",
+        "state",
+        "updated_at"
+      ],
       "properties": {
-        "schema": { "$ref": "#/$defs/schemaVersion" },
-        "dispatch_id": { "$ref": "#/$defs/dispatchId" },
-        "role": { "$ref": "#/$defs/role" },
+        "schema": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "dispatch_id": {
+          "$ref": "#/$defs/dispatchId"
+        },
+        "role": {
+          "$ref": "#/$defs/role"
+        },
         "state": {
           "description": "Per-role whitelist: consumer and executor both allow working|blocked|failed. Human-only values are rejected by src/workspace/schemas.ts in any casing.",
-          "enum": ["working", "blocked", "failed"]
+          "enum": [
+            "working",
+            "blocked",
+            "failed"
+          ]
         },
-        "phase": { "type": "string", "maxLength": 500 },
-        "summary": { "type": "string", "maxLength": 500 },
-        "updated_at": { "$ref": "#/$defs/isoDateTime" }
+        "phase": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "updated_at": {
+          "$ref": "#/$defs/isoDateTime"
+        }
       }
     },
     "result": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "dispatch_id", "role", "result"],
+      "required": [
+        "schema",
+        "dispatch_id",
+        "role",
+        "result"
+      ],
       "properties": {
-        "schema": { "$ref": "#/$defs/schemaVersion" },
-        "dispatch_id": { "$ref": "#/$defs/dispatchId" },
-        "role": { "$ref": "#/$defs/role" },
+        "schema": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "dispatch_id": {
+          "$ref": "#/$defs/dispatchId"
+        },
+        "role": {
+          "$ref": "#/$defs/role"
+        },
         "result": {
           "description": "Per-role whitelist enforced by validation.ts: consumer allows plan_ready|question|failed; executor allows completed|blocked|question|failed.",
-          "enum": ["plan_ready", "completed", "question", "blocked", "failed"]
+          "enum": [
+            "plan_ready",
+            "completed",
+            "question",
+            "blocked",
+            "failed"
+          ]
         },
-        "plan_file": { "const": "PLAN.md" },
-        "report_file": { "const": "REPORT.md" },
-        "validation": { "enum": ["passed", "failed"] },
-        "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        "plan_file": {
+          "const": "PLAN.md"
+        },
+        "report_file": {
+          "const": "REPORT.md"
+        },
+        "validation": {
+          "enum": [
+            "passed",
+            "failed"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
       },
       "allOf": [
         {
-          "if": { "properties": { "role": { "const": "consumer" } }, "required": ["role"] },
-          "then": { "properties": { "result": { "enum": ["plan_ready", "question", "failed"] } } }
-        },
-        {
-          "if": { "properties": { "role": { "const": "executor" } }, "required": ["role"] },
-          "then": { "properties": { "result": { "enum": ["completed", "blocked", "question", "failed"] } } }
+          "if": {
+            "properties": {
+              "role": {
+                "const": "consumer"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "enum": [
+                  "plan_ready",
+                  "question",
+                  "failed"
+                ]
+              }
+            }
+          }
         },
         {
           "if": {
-            "properties": { "role": { "const": "consumer" }, "result": { "const": "plan_ready" } },
-            "required": ["role", "result"]
+            "properties": {
+              "role": {
+                "const": "executor"
+              }
+            },
+            "required": [
+              "role"
+            ]
           },
-          "then": { "required": ["plan_file"] }
+          "then": {
+            "properties": {
+              "result": {
+                "enum": [
+                  "completed",
+                  "blocked",
+                  "question",
+                  "failed"
+                ]
+              }
+            }
+          }
         },
         {
           "if": {
-            "properties": { "role": { "const": "executor" }, "result": { "const": "completed" } },
-            "required": ["role", "result"]
+            "properties": {
+              "role": {
+                "const": "consumer"
+              },
+              "result": {
+                "const": "plan_ready"
+              }
+            },
+            "required": [
+              "role",
+              "result"
+            ]
           },
-          "then": { "required": ["report_file", "validation"] }
+          "then": {
+            "required": [
+              "plan_file"
+            ]
+          }
         },
         {
           "if": {
-            "properties": { "result": { "enum": ["blocked", "question", "failed"] } },
-            "required": ["result"]
+            "properties": {
+              "role": {
+                "const": "executor"
+              },
+              "result": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "role",
+              "result"
+            ]
           },
-          "then": { "required": ["reason"] }
+          "then": {
+            "required": [
+              "report_file",
+              "validation"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "result": {
+                "enum": [
+                  "blocked",
+                  "question",
+                  "failed"
+                ]
+              }
+            },
+            "required": [
+              "result"
+            ]
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
         }
       ]
     },
     "current": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "dispatch_id", "role", "issue_number", "updated_at"],
+      "required": [
+        "schema",
+        "dispatch_id",
+        "role",
+        "issue_number",
+        "updated_at"
+      ],
       "properties": {
-        "schema": { "$ref": "#/$defs/schemaVersion" },
-        "dispatch_id": { "$ref": "#/$defs/dispatchId" },
-        "role": { "$ref": "#/$defs/role" },
-        "issue_number": { "$ref": "#/$defs/positiveInteger" },
-        "updated_at": { "$ref": "#/$defs/isoDateTime" }
+        "schema": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "dispatch_id": {
+          "$ref": "#/$defs/dispatchId"
+        },
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "issue_number": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/isoDateTime"
+        }
       }
     },
     "receipt": {
       "description": "Driver-local cache; carries no schema field and is rebuildable at any time.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["dispatch_id", "status", "attempts"],
+      "required": [
+        "dispatch_id",
+        "status",
+        "attempts"
+      ],
       "properties": {
-        "dispatch_id": { "$ref": "#/$defs/dispatchId" },
-        "status": { "enum": ["dispatched", "syncing", "synced", "failed"] },
-        "attempts": { "type": "integer", "minimum": 1 },
-        "tracker_comment_id": { "$ref": "#/$defs/positiveInteger" },
-        "last_progress_sha256": { "type": "string", "minLength": 1 },
-        "last_feedback_comment_id": { "$ref": "#/$defs/positiveInteger" },
-        "last_sync_at": { "$ref": "#/$defs/isoDateTime" },
-        "error": { "type": ["string", "null"] }
+        "dispatch_id": {
+          "$ref": "#/$defs/dispatchId"
+        },
+        "status": {
+          "enum": [
+            "dispatched",
+            "syncing",
+            "synced",
+            "failed"
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tracker_comment_id": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "last_progress_sha256": {
+          "type": "string",
+          "minLength": 1
+        },
+        "last_feedback_comment_id": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "last_sync_at": {
+          "$ref": "#/$defs/isoDateTime"
+        },
+        "last_notice_state": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Last non-terminal notice echoed to GitHub (e.g. consumer blocked). Status notices never set status to synced."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "submitRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "title", "kind", "maturity_hint", "created_at"],
+      "required": [
+        "schema",
+        "title",
+        "kind",
+        "maturity_hint",
+        "created_at"
+      ],
       "properties": {
-        "schema": { "$ref": "#/$defs/schemaVersion" },
-        "title": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "kind": { "enum": ["feature", "bug", "refactor", "docs", "chore"] },
-        "maturity_hint": { "enum": ["requirement", "direction", "solution", "execution_plan"] },
-        "created_at": { "$ref": "#/$defs/isoDateTime" }
+        "schema": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": [
+            "feature",
+            "bug",
+            "refactor",
+            "docs",
+            "chore"
+          ]
+        },
+        "maturity_hint": {
+          "enum": [
+            "requirement",
+            "direction",
+            "solution",
+            "execution_plan"
+          ]
+        },
+        "created_at": {
+          "$ref": "#/$defs/isoDateTime"
+        }
       }
     }
   }
