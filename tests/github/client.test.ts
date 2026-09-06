@@ -114,12 +114,17 @@ function fakeOctokit(opts: FakeOptions = {}) {
   const octokit: OctokitRest = {
     rest: {
       repos: { get: fns.reposGet },
-      issues: {
-        get: fns.issuesGet,
-        listComments: fns.listComments,
-        createComment: fns.createComment,
-        updateComment: fns.updateComment,
-      },
+    issues: {
+      get: fns.issuesGet,
+      listComments: fns.listComments,
+      createComment: fns.createComment,
+      updateComment: fns.updateComment,
+      // Added when the Driver interface grew listOpenIssues; no existing
+      // test asserts on it (see the dedicated listOpenIssues describe below).
+      list: vi.fn(async (_params: { owner: string; repo: string; state: string; per_page: number; page: number }) => ({
+        data: [],
+      })),
+    },
       reactions: { createForIssueComment: fns.createReaction },
     },
   };
@@ -299,5 +304,88 @@ describe('DriverGitHubClient adapter (no real API)', () => {
       comment_id: 9001,
       content: 'eyes',
     });
+  });
+});
+
+/*
+ * listOpenIssues (appended for the V1 Driver Discovery seam): fake covers
+ * ONLY the newly declared rest.issues.list endpoint; existing tests above
+ * stay untouched.
+ */
+describe('DriverGitHubClient.listOpenIssues (no real API)', () => {
+  type RawIssueListParams = { owner: string; repo: string; state: string; per_page: number; page: number };
+
+  interface ListFakeOptions {
+    pages?: RawIssue[][];
+  }
+
+  function fakeListOctokit(opts: ListFakeOptions = {}) {
+    const listIssues = vi.fn(async (params: RawIssueListParams) => {
+      const current = opts.pages?.[params.page - 1] ?? [];
+      return { data: current };
+    });
+    const octokit: OctokitRest = {
+      rest: {
+        repos: { get: vi.fn() },
+        issues: {
+          get: vi.fn(),
+          listComments: vi.fn(),
+          createComment: vi.fn(),
+          updateComment: vi.fn(),
+          list: listIssues,
+        },
+        reactions: { createForIssueComment: vi.fn() },
+      },
+    };
+    return { octokit, listIssues };
+  }
+
+  it('requests state=open with per_page=100 and maps raw issues ascending by number', async () => {
+    const { octokit, listIssues } = fakeListOctokit({
+      pages: [
+        [
+          { number: 12, title: 'Second', body: 'b2', state: 'open', labels: ['ai:planning'], updated_at: '2026-09-06T12:00:00Z' },
+          { number: 3, title: 'First', body: 'b1', state: 'open', labels: [{ name: 'ai:ready' }, 'bug'], updated_at: '2026-09-06T11:00:00Z' },
+        ],
+      ],
+    });
+    const client = createDriverGitHubClient(octokit);
+
+    const issues = await client.listOpenIssues({ owner: 'owner-user', repo: 'demo' });
+
+    expect(listIssues.mock.calls[0]?.[0]).toEqual({
+      owner: 'owner-user',
+      repo: 'demo',
+      state: 'open',
+      per_page: 100,
+      page: 1,
+    });
+    expect(issues.map((i) => i.number)).toEqual([3, 12]);
+    expect(issues[1]?.labels).toEqual(['ai:planning']);
+    expect(issues[0]?.labels).toEqual(['ai:ready', 'bug']);
+    expect(issues.every((i) => i.state === 'open')).toBe(true);
+  });
+
+  it('keeps paginating while pages are full and stops after a short page', async () => {
+    const fullPage: RawIssue[] = Array.from({ length: 100 }, (_, i) => ({ number: i, state: 'open' }));
+    const { octokit, listIssues } = fakeListOctokit({ pages: [[...fullPage], [{ number: 500, state: 'open' }]] });
+    const client = createDriverGitHubClient(octokit);
+
+    const issues = await client.listOpenIssues({ owner: 'o', repo: 'r' });
+
+    expect(listIssues).toHaveBeenCalledTimes(2);
+    expect(listIssues.mock.calls[1]?.[0]).toMatchObject({ page: 2, per_page: 100, state: 'open' });
+    expect(issues).toHaveLength(101);
+  });
+
+  it('never issues more than 10 pages', async () => {
+    const fullPage: RawIssue[] = Array.from({ length: 100 }, (_, i) => ({ number: i, state: 'open' }));
+    const { octokit, listIssues } = fakeListOctokit({ pages: Array.from({ length: 12 }, () => [...fullPage]) });
+    const client = createDriverGitHubClient(octokit);
+
+    const issues = await client.listOpenIssues({ owner: 'o', repo: 'r' });
+
+    expect(listIssues).toHaveBeenCalledTimes(10);
+    expect(issues).toHaveLength(1000);
   });
 });

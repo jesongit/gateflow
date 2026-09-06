@@ -7,7 +7,14 @@
  * - `createGitHubClient` adapts an Octokit instance (as provided by
  *   @actions/github's context) to that interface. The Octokit shape is typed
  *   structurally (`OctokitLike`) to stay decoupled from octokit internals.
+ *
+ * V1 additions (plan-ID approval hardening): `getComment` and `listComments`
+ * give the gate read access to issue comments so the /approve target can be
+ * validated against the issue's plan-marker comment history. Both are
+ * read-only; the gate still never edits plan comments.
  */
+import type { GateComment } from './approvals';
+
 /** Identifies the target issue of every API call in a gate run. */
 export interface IssueRef {
   owner: string;
@@ -50,6 +57,19 @@ export interface GitHubClient {
   addReaction(ref: IssueRef, commentId: number, content: ReactionContent): Promise<void>;
   /** Edits an issue comment body (reserved for later phases). */
   editComment(ref: IssueRef, commentId: number, body: string): Promise<void>;
+  /**
+   * Fetches a single issue comment by id (V1 approval validation). Returns
+   * null when the comment does not exist (404); any other failure propagates
+   * as an infrastructure error.
+   */
+  getComment(ref: IssueRef, commentId: number): Promise<GateComment | null>;
+  /**
+   * Lists ALL comments of the issue, id-ascending (V1 approval validation:
+   * the chronological order establishes which plan marker is the current
+   * plan). Paginates at 100 per page, at most 10 pages (1000 comments —
+   * protocol comments per issue stay far below this in practice).
+   */
+  listComments(ref: IssueRef): Promise<GateComment[]>;
 }
 
 /** Structural subset of Octokit used by the adapter below. */
@@ -85,6 +105,30 @@ export interface OctokitLike {
         comment_id: number;
         body: string;
       }): Promise<unknown>;
+      getComment(params: {
+        owner: string;
+        repo: string;
+        comment_id: number;
+      }): Promise<{
+        data: {
+          id?: number;
+          user?: { login?: string } | null;
+          body?: string | null;
+        };
+      }>;
+      listComments(params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        per_page?: number;
+        page?: number;
+      }): Promise<{
+        data: ReadonlyArray<{
+          id?: number;
+          user?: { login?: string } | null;
+          body?: string | null;
+        }>;
+      }>;
     };
     reactions: {
       createForIssueComment(params: {
@@ -118,6 +162,19 @@ function labelNames(labels: ReadonlyArray<string | { name?: string | null }> | u
     }
   }
   return names;
+}
+
+/** Maps a raw REST comment object onto the minimal GateComment shape. */
+function toGateComment(raw: {
+  id?: number;
+  user?: { login?: string } | null;
+  body?: string | null;
+}): GateComment {
+  return {
+    id: raw.id ?? 0,
+    user: raw.user?.login ?? 'unknown',
+    body: raw.body ?? '',
+  };
 }
 
 /** Octokit-backed GitHubClient; a single client instance serves the whole run. */
@@ -194,6 +251,52 @@ export class OctokitGitHubClient implements GitHubClient {
       comment_id: commentId,
       body,
     });
+  }
+
+  async getComment(ref: IssueRef, commentId: number): Promise<GateComment | null> {
+    try {
+      const { data } = await this.octokit.rest.issues.getComment({
+        owner: ref.owner,
+        repo: ref.repo,
+        comment_id: commentId,
+      });
+      return toGateComment(data);
+    } catch (err) {
+      // A referenced comment that no longer exists (deleted, or an id from
+      // another repository) is a validation failure of the /approve target,
+      // not an infrastructure error: the gate treats null as "not found".
+      if (isNotFound(err)) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  async listComments(ref: IssueRef): Promise<GateComment[]> {
+    const comments: GateComment[] = [];
+    // 100 per page, at most 10 pages: the protocol keeps comment counts per
+    // issue far below 1000; the cap guards against runaway pagination.
+    const perPage = 100;
+    const maxPages = 10;
+    for (let page = 1; page <= maxPages; page += 1) {
+      const { data } = await this.octokit.rest.issues.listComments({
+        owner: ref.owner,
+        repo: ref.repo,
+        issue_number: ref.issueNumber,
+        per_page: perPage,
+        page,
+      });
+      for (const raw of data) {
+        comments.push(toGateComment(raw));
+      }
+      if (data.length < perPage) {
+        break;
+      }
+    }
+    // Chronological order by comment id is the plan-revision order the
+    // approval validation relies on; do not trust the API sort parameter.
+    comments.sort((a, b) => a.id - b.id);
+    return comments;
   }
 }
 

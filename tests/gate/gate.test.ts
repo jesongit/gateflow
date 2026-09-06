@@ -1,9 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runGate, type GateInput, type GateLogger } from '../../src/gate/gate';
 import type { GitHubClient, IssueRef } from '../../src/gate/github';
+import type { GateComment } from '../../src/gate/approvals';
 import { LABELS } from '../../src/gate/protocol';
 
 /* ---------------------------------------------------------------- helpers */
+
+/** A body that carries a valid plan marker (unique, line-owning). */
+const PLAN_COMMENT_BODY =
+  '## Execution Plan\n\n### Objective\n\nDo the thing.\n\n<!-- ai-workflow:plan:v1 -->';
+
+/** The current plan of the default fixture issue, as the Consumer published it. */
+const DEFAULT_PLAN_COMMENT: GateComment = {
+  id: 123,
+  user: 'consumer-bot',
+  body: PLAN_COMMENT_BODY,
+};
 
 interface Harness {
   client: GitHubClient;
@@ -15,13 +27,18 @@ interface Harness {
     removeLabel: Array<{ label: string }>;
     addReaction: Array<{ commentId: number; content: string }>;
     editComment: Array<{ commentId: number; body: string }>;
+    getComment: Array<{ commentId: number }>;
+    listComments: number;
   };
   /** Labels as returned by getIssue (the "payload-era" snapshot). */
   issueLabels: string[];
   /** Labels as returned by getLabels (the fresh re-read the gate must use). */
   labelStore: string[];
   issueState: string;
+  /** All comments of the issue, as listComments / getComment serve them. */
+  commentStore: GateComment[];
   setLabelStore(labels: string[]): void;
+  setComments(comments: GateComment[]): void;
 }
 
 function makeHarness(options?: {
@@ -30,6 +47,7 @@ function makeHarness(options?: {
   actor?: string;
   trustedHumans?: string;
   trustedAgents?: string;
+  comments?: GateComment[];
 }): Harness {
   const h: Harness = {
     calls: {
@@ -40,12 +58,18 @@ function makeHarness(options?: {
       removeLabel: [],
       addReaction: [],
       editComment: [],
+      getComment: [],
+      listComments: 0,
     },
     issueLabels: [...(options?.labels ?? [])],
     labelStore: [...(options?.labels ?? [])],
     issueState: options?.state ?? 'open',
+    commentStore: [...(options?.comments ?? [DEFAULT_PLAN_COMMENT])],
     setLabelStore(labels: string[]) {
       h.labelStore = [...labels];
+    },
+    setComments(comments: GateComment[]) {
+      h.commentStore = [...comments];
     },
     client: {
       getIssue: vi.fn(async () => {
@@ -71,6 +95,15 @@ function makeHarness(options?: {
       }),
       editComment: vi.fn(async (_ref: IssueRef, commentId: number, body: string) => {
         h.calls.editComment.push({ commentId, body });
+      }),
+      getComment: vi.fn(async (_ref: IssueRef, commentId: number) => {
+        h.calls.getComment.push({ commentId });
+        const found = h.commentStore.find((c) => c.id === commentId);
+        return found === undefined ? null : { ...found };
+      }),
+      listComments: vi.fn(async () => {
+        h.calls.listComments += 1;
+        return [...h.commentStore].sort((a, b) => a.id - b.id);
       }),
     },
   };
@@ -99,7 +132,8 @@ function makeInput(overrides: Partial<GateInput> = {}): GateInput {
     repo: 'demo',
     issueNumber: 7,
     commentId: 9001,
-    commentBody: '/approve',
+    // V1: the default command approves the default fixture plan comment 123.
+    commentBody: '/approve 123',
     trustedHumansInput: '',
     trustedAgentsInput: '',
     ...overrides,
@@ -118,16 +152,19 @@ function writeCount(h: Harness): number {
 
 /* ------------------------------------------------------------------ tests */
 
-describe('Case 1: owner /approve on REVIEW transitions REVIEW -> READY', () => {
-  it('adds ai:ready and removes ai:review (T2)', async () => {
+describe('Case 1: owner /approve 123 on REVIEW transitions REVIEW -> READY', () => {
+  it('adds ai:ready and removes ai:review (T2, approving the current plan comment)', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
     const log = makeLogger();
 
-    await runGate(makeInput({ commentBody: '/approve' }), h.client, log);
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
     expect(log.warnings).toEqual([]);
+    expect(
+      log.infos.some((m) => m.includes('T2 on #7') && m.includes('approving plan comment 123')),
+    ).toBe(true);
   });
 
   it('adds the new label before removing the old one', async () => {
@@ -143,9 +180,9 @@ describe('Case 1: owner /approve on REVIEW transitions REVIEW -> READY', () => {
     expect(h.calls.editComment).toEqual([]);
   });
 
-  it('accepts "/approve" with surrounding whitespace', async () => {
+  it('accepts "/approve 123" with surrounding whitespace', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
-    await runGate(makeInput({ commentBody: '  /approve\n' }), h.client, makeLogger());
+    await runGate(makeInput({ commentBody: '  /approve 123\n' }), h.client, makeLogger());
     expect(h.calls.addLabels).toHaveLength(1);
   });
 });
@@ -170,6 +207,8 @@ describe('Case 2: /approve from a non-trusted actor gets 👎 and is otherwise i
     await runGate(makeInput({ actor: 'external-user' }), h.client, makeLogger());
     expect(h.calls.getIssue).toBe(0);
     expect(h.calls.getLabels).toBe(0);
+    expect(h.calls.listComments).toBe(0);
+    expect(h.calls.getComment).toEqual([]);
   });
 
   it('a registered trusted agent can never approve (👎, no label writes)', async () => {
@@ -250,7 +289,7 @@ describe('Case 4: concurrency — every migration re-reads labels from the API',
     h.setLabelStore([LABELS.review]);
 
     // Run 2: /approve re-reads labels and sees REVIEW, not the stale PLANNING.
-    await runGate(makeInput({ commentBody: '/approve' }), h.client, log);
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
     expect(h.calls.addLabels).toEqual([
       { labels: [LABELS.planning] },
       { labels: [LABELS.ready] },
@@ -360,13 +399,18 @@ describe('Case 7+8: strict parsing at the gate boundary', () => {
   it('embedded "/approve" text is a normal comment: zero API operations at all', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
 
-    await runGate(makeInput({ commentBody: '请看 /approve' }), h.client, makeLogger());
+    await runGate(makeInput({ commentBody: '请看 /approve 123' }), h.client, makeLogger());
     await runGate(makeInput({ commentBody: 'x/approve' }), h.client, makeLogger());
     await runGate(makeInput({ commentBody: '/Approve' }), h.client, makeLogger());
+    await runGate(makeInput({ commentBody: '/approve' }), h.client, makeLogger()); // V1: bare form is gone
+    await runGate(makeInput({ commentBody: '/approve abc' }), h.client, makeLogger());
 
     expect(writeCount(h)).toBe(0);
+    expect(h.calls.addReaction).toEqual([]); // not even a 👎: not a command anymore
     expect(h.calls.getIssue).toBe(0);
     expect(h.calls.getLabels).toBe(0);
+    expect(h.calls.listComments).toBe(0);
+    expect(h.calls.getComment).toEqual([]);
   });
 
   it('/choose and /change from the owner on REVIEW are accepted: ✅ each, zero label writes (Phase 2)', async () => {
@@ -579,7 +623,7 @@ describe('Phase 2: /choose and /change (hand-off to the Consumer, never a migrat
 });
 
 describe('Phase 2: every command from a non-Trusted-Human gets exactly one 👎', () => {
-  const commands = ['/ai-plan', '/approve', '/choose 1 B', '/change please reconsider', '/cancel'];
+  const commands = ['/ai-plan', '/approve 123', '/choose 1 B', '/change please reconsider', '/cancel'];
 
   it('external user: one -1 reaction per command, zero label writes, zero API reads', async () => {
     for (const body of commands) {
@@ -1122,5 +1166,143 @@ describe('Phase 6: tracker status transitions (T4 WORKING->BLOCKED, T5 BLOCKED->
     expect(h.calls.getLabels).toBe(0);
     expect(writeCount(h)).toBe(0);
     expect(log.warnings).toEqual([]);
+  });
+});
+
+/* -------------------------------------- V1: plan-ID bound approval (3.4) */
+
+describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () => {
+  const planComment = (id: number, body = PLAN_COMMENT_BODY, user = 'consumer-bot'): GateComment => ({
+    id,
+    user,
+    body,
+  });
+  const plainComment = (id: number, body: string, user = 'bystander'): GateComment => ({
+    id,
+    user,
+    body,
+  });
+
+  it('valid approval: REVIEW + referenced comment exists / is a plan marker / is the LAST one -> labels swapped + ✅', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+    expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
+    expect(h.calls.listComments).toBe(1); // exactly one comment-list read per approve handling
+    expect(h.calls.getComment).toEqual([{ commentId: 123 }]); // fetched with the parsed id
+    expect(log.warnings).toEqual([]);
+    expect(log.infos.some((m) => m.includes('T2 on #7') && m.includes('approving plan comment 123'))).toBe(
+      true,
+    );
+  });
+
+  it('approving an OLD plan (a newer plan-marker comment exists) is a logged no-op without reaction', async () => {
+    const h = makeHarness({ labels: [LABELS.review], comments: [planComment(123), planComment(456)] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
+
+    expect(writeCount(h)).toBe(0); // no transition, no reaction
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
+    expect(h.calls.addReaction).toEqual([]);
+    expect(h.calls.listComments).toBe(1);
+    expect(h.calls.getComment).toEqual([{ commentId: 123 }]);
+    expect(log.warnings.some((m) => m.includes('not-current-plan') && m.includes('123'))).toBe(true);
+  });
+
+  it('approving the NEWEST plan succeeds when several plan revisions exist', async () => {
+    const h = makeHarness({ labels: [LABELS.review], comments: [planComment(123), planComment(456)] });
+
+    await runGate(makeInput({ commentBody: '/approve 456' }), h.client, makeLogger());
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
+  });
+
+  it('approving a non-plan comment is a logged no-op (membership unverifiable via the plan list)', async () => {
+    const h = makeHarness({
+      labels: [LABELS.review],
+      comments: [planComment(123), plainComment(777, 'just a question about the repo')],
+    });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 777' }), h.client, log);
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('comment-on-other-issue') && m.includes('777'))).toBe(true);
+  });
+
+  it('the marker of the referenced comment must be a PLAN marker (a tracker comment is rejected)', async () => {
+    const h = makeHarness({
+      labels: [LABELS.review],
+      comments: [
+        planComment(123),
+        {
+          id: 778,
+          user: 'executor-bot',
+          body: '## Execution Tracker\n\n**Status:** In Progress\n\n<!-- ai-workflow:execution-tracker:v1 -->',
+        },
+      ],
+    });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 778' }), h.client, log);
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('778'))).toBe(true);
+  });
+
+  it('approving a missing comment (getComment 404 -> null) is a logged no-op', async () => {
+    const h = makeHarness({ labels: [LABELS.review], comments: [planComment(123)] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 99999' }), h.client, log);
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.getComment).toEqual([{ commentId: 99999 }]);
+    expect(log.warnings.some((m) => m.includes('comment-not-found') && m.includes('99999'))).toBe(true);
+  });
+
+  it('approve in a wrong state (PLANNING) is the unchanged no-op and never consults the comment API', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.listComments).toBe(0);
+    expect(h.calls.getComment).toEqual([]);
+    expect(log.warnings.some((m) => m.includes('requires REVIEW'))).toBe(true);
+  });
+
+  it('a non-trusted human "/approve 123" still gets exactly one 👎 and zero comment reads', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+
+    await runGate(makeInput({ commentBody: '/approve 123', actor: 'external-user' }), h.client, makeLogger());
+
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '-1' }]);
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
+    expect(h.calls.listComments).toBe(0);
+    expect(h.calls.getComment).toEqual([]);
+  });
+
+  it('plan-marker comments are found regardless of their position in the store (id-chronological current plan)', async () => {
+    const h = makeHarness({
+      labels: [LABELS.review],
+      comments: [plainComment(200, 'later chatter'), planComment(123), plainComment(50, 'early chatter')],
+    });
+
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, makeLogger());
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
   });
 });

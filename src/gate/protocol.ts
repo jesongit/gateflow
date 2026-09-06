@@ -4,6 +4,13 @@
  * Single source of truth: docs/protocol.md. Any change here must be mirrored
  * in docs/protocol.md and treated as a protocol upgrade (bump schema version).
  * Markers are structural hints only and are NEVER proof of permission.
+ *
+ * V1 amendment (protocol v2 document, github-schema-v2.json): the /approve
+ * command now carries the plan comment id it approves — "/approve
+ * <plan-comment-id>" (docs/protocol.md section 3.4 "V1 审批证明
+ * （Plan-ID 绑定）"). The issue-body schema block, all label strings, all
+ * marker strings and SCHEMA_VERSION are unchanged (still 1); see
+ * docs/protocol.md for the normative V1 wording.
  */
 
 /** Protocol / marker schema version, frozen for V0. */

@@ -75,6 +75,11 @@ export interface DriverGitHubClient {
   updateIssueComment(ref: IssueRef, commentId: number, body: string): Promise<void>;
   /** Adds a reaction to an issue comment (Driver feedback channel). */
   addReaction(ref: IssueRef, commentId: number, content: DriverReactionContent): Promise<void>;
+  /**
+   * Lists ALL open issues of the repository (paginated internally),
+   * ascending by issue number. Discovery's entry point into canonical state.
+   */
+  listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]>;
 }
 
 /**
@@ -118,6 +123,22 @@ export interface OctokitRest {
           user?: { login?: string } | null;
           body?: string | null;
           created_at?: string;
+          updated_at?: string;
+        }>;
+      }>;
+      list(params: {
+        owner: string;
+        repo: string;
+        state: 'open';
+        per_page: number;
+        page: number;
+      }): Promise<{
+        data: ReadonlyArray<{
+          number?: number;
+          title?: string;
+          body?: string | null;
+          state?: string;
+          labels?: ReadonlyArray<string | { name?: string | null }>;
           updated_at?: string;
         }>;
       }>;
@@ -180,6 +201,9 @@ function labelNames(
 const COMMENTS_PER_PAGE = 100;
 /** Hard cap so a pathological pagination loop cannot run forever. */
 const MAX_COMMENT_PAGES = 10;
+const ISSUES_PER_PAGE = 100;
+/** Hard cap for issue-list pagination (mirrors MAX_COMMENT_PAGES). */
+const MAX_ISSUE_PAGES = 10;
 
 /** Octokit-backed DriverGitHubClient; one instance serves the whole Driver. */
 class OctokitDriverClient implements DriverGitHubClient {
@@ -291,6 +315,36 @@ class OctokitDriverClient implements DriverGitHubClient {
       comment_id: commentId,
       content,
     });
+  }
+
+  async listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
+    const issues: IssueDetail[] = [];
+    for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
+      const { data } = await this.octokit.rest.issues.list({
+        owner: ref.owner,
+        repo: ref.repo,
+        state: 'open',
+        per_page: ISSUES_PER_PAGE,
+        page,
+      });
+      for (const raw of data) {
+        issues.push({
+          number: raw.number ?? 0,
+          title: raw.title ?? '',
+          body: raw.body ?? '',
+          // We queried state:'open'; normalize defensively anyway.
+          state: raw.state === 'closed' ? 'closed' : 'open',
+          labels: labelNames(raw.labels),
+          updatedAt: raw.updated_at ?? '',
+        });
+      }
+      // A short (or empty) page means we reached the end.
+      if (data.length < ISSUES_PER_PAGE) {
+        break;
+      }
+    }
+    issues.sort((a, b) => a.number - b.number);
+    return issues;
   }
 }
 

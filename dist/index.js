@@ -24290,7 +24290,7 @@ function getOctokit(token, options, ...additionalPlugins) {
   return new GitHubWithPlugins(getOctokitOptions(token, options));
 }
 
-// src/protocol.ts
+// src/gate/protocol.ts
 var SCHEMA_VERSION = 1;
 var LABELS = {
   planning: "ai:planning",
@@ -24367,12 +24367,12 @@ var LABEL_COLORS = {
   [LABELS.done]: "0e8a16"
 };
 
-// src/commands.ts
+// src/gate/commands.ts
 var EXACT_COMMANDS = /* @__PURE__ */ new Set([
   COMMANDS.aiPlan,
-  COMMANDS.approve,
   COMMANDS.cancel
 ]);
+var APPROVE_PATTERN = /^\/approve (\d+)$/;
 var CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
 var CHANGE_PATTERN = /^\/change (.+)$/;
 function parseCommand(body) {
@@ -24382,6 +24382,13 @@ function parseCommand(body) {
   const trimmed = body.trim();
   if (EXACT_COMMANDS.has(trimmed)) {
     return { command: trimmed, args: null };
+  }
+  const approve = APPROVE_PATTERN.exec(trimmed);
+  if (approve !== null) {
+    return {
+      command: COMMANDS.approve,
+      args: { planCommentId: Number(approve[1] ?? "0") }
+    };
   }
   const choose = CHOOSE_PATTERN.exec(trimmed);
   if (choose !== null) {
@@ -24401,7 +24408,11 @@ function parseCommand(body) {
   return null;
 }
 
-// src/markers.ts
+// src/gate/markers.ts
+function detectCommentMarker(body) {
+  const inspection = inspectCommentMarkers(body);
+  return inspection.kind === "valid" ? inspection.marker : null;
+}
 function inspectCommentMarkers(body) {
   if (!body) {
     return { kind: "none" };
@@ -24511,7 +24522,27 @@ function parseIssueSchemaBlock(body) {
   };
 }
 
-// src/states.ts
+// src/gate/approvals.ts
+function validatePlanCommentForApproval(args) {
+  const { planCommentId, referencedComment, planMarkerComments } = args;
+  if (referencedComment === null) {
+    return { status: "invalid", reason: "comment-not-found" };
+  }
+  if (detectCommentMarker(referencedComment.body) !== MARKERS.plan) {
+    const inPlanList = planMarkerComments.some((comment) => comment.id === planCommentId);
+    return {
+      status: "invalid",
+      reason: inPlanList ? "not-a-plan-comment" : "comment-on-other-issue"
+    };
+  }
+  const currentPlan = planMarkerComments[planMarkerComments.length - 1];
+  if (currentPlan === void 0 || currentPlan.id !== planCommentId) {
+    return { status: "invalid", reason: "not-current-plan" };
+  }
+  return { status: "valid", planCommentId };
+}
+
+// src/gate/states.ts
 function aiLabelsIn(labels) {
   const known = new Set(ALL_LABELS);
   return labels.filter((name) => known.has(name));
@@ -24531,7 +24562,7 @@ function isLegalTransition(from, to) {
   return TRANSITIONS.some((t) => t.from === from && t.to === to);
 }
 
-// src/tracker.ts
+// src/gate/tracker.ts
 var TRACKER_STATUSES = ["In Progress", "Blocked", "Completed"];
 var STATUS_PATTERN = /^\*\*Status:\*\*\s*(.*)$/;
 function parseTrackerStatus(body) {
@@ -24561,7 +24592,7 @@ function parseTrackerStatus(body) {
   return { kind: "absent" };
 }
 
-// src/permissions.ts
+// src/gate/permissions.ts
 function parseLoginList(input) {
   if (!input) {
     return [];
@@ -24587,7 +24618,7 @@ function isTrustedAgent(actor, trustedAgentsInput) {
   return parseLoginList(trustedAgentsInput).some((login) => loginEquals(actor, login));
 }
 
-// src/gate.ts
+// src/gate/gate.ts
 var COMMAND_ACTIONS = /* @__PURE__ */ new Set(["created", "edited"]);
 async function runGate(input, client, log) {
   if (input.eventName === "issue_comment") {
@@ -24676,7 +24707,7 @@ async function handleCommand(parsed, input, ref, client, log) {
       accepted = await applyAiPlan(ref, snapshot, client, log);
       break;
     case COMMANDS.approve:
-      accepted = await applyApprove(ref, snapshot, client, log);
+      accepted = await applyApprove(ref, snapshot, parsed.args, client, log);
       break;
     case COMMANDS.choose:
       accepted = await applyChoose(ref, snapshot, parsed.args, log);
@@ -24810,7 +24841,7 @@ async function applyAiPlan(ref, snapshot, client, log) {
   log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
   return true;
 }
-async function applyApprove(ref, snapshot, client, log) {
+async function applyApprove(ref, snapshot, args, client, log) {
   if (snapshot.status === "ambiguous") {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); no transition.`
@@ -24833,10 +24864,26 @@ async function applyApprove(ref, snapshot, client, log) {
     log.warning("Frozen transition table rejects T2; no transition.");
     return false;
   }
+  const allComments = await client.listComments(ref);
+  const planMarkerComments = allComments.filter(
+    (comment) => detectCommentMarker(comment.body) === MARKERS.plan
+  );
+  const referencedComment = await client.getComment(ref, args.planCommentId);
+  const inspection = validatePlanCommentForApproval({
+    planCommentId: args.planCommentId,
+    referencedComment,
+    planMarkerComments
+  });
+  if (inspection.status === "invalid") {
+    log.warning(
+      `Invalid /approve on #${ref.issueNumber}: referenced plan comment ${args.planCommentId} rejected (${inspection.reason}); the approval must name the current plan comment; no transition, no reaction.`
+    );
+    return false;
+  }
   await client.addLabels(ref, [LABELS.ready]);
   await client.removeLabel(ref, LABELS.review);
   log.info(
-    `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} (REVIEW -> READY, plan approved).`
+    `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} (REVIEW -> READY approving plan comment ${inspection.planCommentId}).`
   );
   return true;
 }
@@ -25000,7 +25047,7 @@ function issueRef(input) {
   return { owner: input.repoOwner, repo: input.repo, issueNumber: input.issueNumber };
 }
 
-// src/github.ts
+// src/gate/github.ts
 function isNotFound(err) {
   return typeof err === "object" && err !== null && "status" in err && err.status === 404;
 }
@@ -25016,6 +25063,13 @@ function labelNames(labels) {
     }
   }
   return names;
+}
+function toGateComment(raw) {
+  return {
+    id: raw.id ?? 0,
+    user: raw.user?.login ?? "unknown",
+    body: raw.body ?? ""
+  };
 }
 var OctokitGitHubClient = class {
   octokit;
@@ -25081,13 +25135,50 @@ var OctokitGitHubClient = class {
       body
     });
   }
+  async getComment(ref, commentId) {
+    try {
+      const { data } = await this.octokit.rest.issues.getComment({
+        owner: ref.owner,
+        repo: ref.repo,
+        comment_id: commentId
+      });
+      return toGateComment(data);
+    } catch (err) {
+      if (isNotFound(err)) {
+        return null;
+      }
+      throw err;
+    }
+  }
+  async listComments(ref) {
+    const comments = [];
+    const perPage = 100;
+    const maxPages = 10;
+    for (let page = 1; page <= maxPages; page += 1) {
+      const { data } = await this.octokit.rest.issues.listComments({
+        owner: ref.owner,
+        repo: ref.repo,
+        issue_number: ref.issueNumber,
+        per_page: perPage,
+        page
+      });
+      for (const raw of data) {
+        comments.push(toGateComment(raw));
+      }
+      if (data.length < perPage) {
+        break;
+      }
+    }
+    comments.sort((a, b) => a.id - b.id);
+    return comments;
+  }
 };
 function createGitHubClient(octokit) {
   return new OctokitGitHubClient(octokit);
 }
 
 // src/index.ts
-var GATE_VERSION = "0.3.0";
+var GATE_VERSION = "1.0.0";
 function readInputs() {
   return {
     trustedHumans: getInput("trusted-humans"),

@@ -1,51 +1,45 @@
-# 接入项目仓库详细指南（Integration）
+# 接入项目仓库详细指南（Integration）—— V1
 
-> 本指南面向**第一次接触 GateFlow** 的人：只照本文档操作，就能把自己的项目仓库接入 GateFlow 并跑通第一个 Issue 闭环。全程**不需要配置远端服务器、不需要额外部署任何东西**（本指南也完全不涉及把目标仓库推送到哪里之外的远端——只要求目标仓库已有一个 GitHub 上的存在形态）。
+> 本指南面向**第一次接触 GateFlow** 的人：只照本文档操作，就能把自己的项目仓库接入 GateFlow 并跑通第一个 Issue 闭环。全程**不需要配置远端服务器、不需要额外部署任何东西**。
 >
-> 命令与协议约定见 [protocol.md](protocol.md)；日常操作（接入完成之后）见 [usage.md](usage.md) §3；发布维护见 [release.md](release.md)。
+> V1 接入分两部分：
 >
-> 占位约定：GateFlow 本体写作 `jesongit/gateflow@v0`（请替换为你实际发布的 `owner/gateflow@v0`）；目标仓库写作 `owner/target`；本地检出的 GateFlow 仓库路径写作 `/path/to/gateflow`。
+> - **Part 1 · Gate 接入（GitHub 侧）**：让目标仓库的 workflow 能运行确定性 Gate——GateFlow 本体可被引用、bootstrap 初始化、Action 输入配置（第 1~5 章）；
+> - **Part 2 · Driver + Workspace 接入（本地侧，V1 新增）**：构建本地 Driver、写 `gateflow.config.yml`、配置凭证与身份、安装四个 Agent Skills，并跑通一次完整冒烟闭环（第 6~10 章）。
+>
+> 命令与协议约定见 [protocol.md](protocol.md)；Workspace 协议见 [workspace-protocol.md](workspace-protocol.md)；Driver 运维见 [driver.md](driver.md)；日常操作见 [usage.md](usage.md) §3；发布维护见 [release.md](release.md)。
+>
+> 占位约定：GateFlow 本体写作 `jesongit/gateflow@v1`（请替换为你实际发布的 `owner/gateflow@v1`；未发布 V1 tag 前 bootstrap 的默认占位仍是 `@v0`，用 `--action-ref` 覆盖即可）；目标仓库写作 `owner/target`；本地检出的 GateFlow 仓库路径写作 `/path/to/gateflow`。
 
 ---
 
 ## 0. 这份指南解决什么
 
-你的项目仓库（`owner/target`）要接入 GateFlow，本质上是让四样东西就位：
+你的项目仓库（`owner/target`）要接入 GateFlow V1，本质上是让五样东西就位：
 
-1. **Gate 本体可被引用**——目标仓库的 workflow 里有一句 `uses: jesongit/gateflow@v0`，这句引用必须能在 GitHub 上解析成功（第一步，三选一）；
+1. **Gate 本体可被引用**——目标仓库的 workflow 里有一句 `uses: jesongit/gateflow@v1`，这句引用必须能在 GitHub 上解析成功（第一步，三选一）；
 2. **仓库里的接线**——6 个 `ai:*` 状态标签 + 一个监听 Issue 事件的 workflow 文件（第二步，脚本或手写）；
-3. **AI 侧的接线**——你的 AI 客户端能读写 GitHub（GitHub MCP），并装有 producer / consumer / executor 三个 Skill（第三、四步）；
-4. **跑通一次闭环**——从 Issue 进入工作流到 Close 走完一遍，确认 Gate 与 AI 各就各位（第五步验收）。
+3. **Driver 身份登记**——workflow 的 `trusted-agents` 输入里登记 Driver 的 Bot 身份（如 `gateflow-agent[bot]`），Gate 才认可 Driver 发布的 Plan / Tracker / Report 评论（第三步）；
+4. **本地接线**——构建 `gateflow` CLI、写 `gateflow.config.yml`、配 `GITHUB_TOKEN`、装四个 Agent Skills（第四步）；
+5. **跑通一次闭环**——从 Issue 进入工作流到 DONE 走完一遍，确认 Gate / Driver / Agent 各就各位（第五步验收）。
 
 全流程图：
 
 ```text
- ┌─ 第一步：发布 GateFlow 本体（模式 A / B / C 三选一，让 uses: 能解析） ─┐
- │                                                                      │
- │   模式 A（推荐）：发布为 public 仓库                                  │
- │   模式 B：私有仓库 + 打开 "Access" 共享策略（同账号 / 同组织）        │
- │   模式 C：内嵌——把 action 复制进目标仓库，uses: 本地路径             │
+ ┌─ Part 1 · GitHub 侧 ─────────────────────────────────────────────────┐
+ │ 第一步：发布 GateFlow 本体（模式 A / B / C 三选一，让 uses: 能解析）  │
+ │ 第二步：bootstrap（创建 6 个 ai:* 标签 + 生成 workflow）+ commit/push │
+ │ 第三步：配置 Action 输入（trusted-agents 登记 Driver Bot 身份）       │
  └──────────────────────────────┬───────────────────────────────────────┘
                                 ▼
- ┌─ 第二步：目标仓库接入 ────────────────────────────────────────────────┐
- │   bootstrap 脚本：创建 6 个 ai:* 标签 + 生成 .github/workflows/…yml  │
- │   （或按第 4 章手工完成同样两件事）                                   │
- │   然后 commit + push 生成的 workflow 文件（注意 PAT 的 workflow 权限）│
- └──────────────────────────────┬───────────────────────────────────────┘
-                                ▼
- ┌─ 第三步：配置 Action 输入 ────────────────────────────────────────────┐
- │   github-token（保持默认即可）/ trusted-humans / trusted-agents      │
- └──────────────────────────────┬───────────────────────────────────────┘
-                                ▼
- ┌─ 第四步：接入 AI 侧 ──────────────────────────────────────────────────┐
- │   GitHub MCP（toolsets: repos / issues / pull_requests）             │
- │   + 安装 producer / consumer / executor 三个 Skill                   │
- └──────────────────────────────┬───────────────────────────────────────┘
-                                ▼
- ┌─ 第五步：验收——跑通第一个 Issue 闭环 ────────────────────────────────┐
- │   /ai-plan → 规划 → /approve → 执行 → Completion Report → Close      │
+ ┌─ Part 2 · 本地侧（V1 新增）──────────────────────────────────────────┐
+ │ 第四步：构建 gateflow CLI → 写 gateflow.config.yml → GITHUB_TOKEN    │
+ │         → 安装 agent / consumer / executor / producer 四个 Skills    │
+ │ 第五步：验收——Driver + Agent 冒烟闭环（once → inbox → outbox → once）│
  └──────────────────────────────────────────────────────────────────────┘
 ```
+
+> V0 的"AI 配置 GitHub MCP"步骤在 V1 中**不再需要**：Agent 只读写本地 `.gateflow/`，GitHub 访问全部由 Driver 完成（历史做法见文末附录）。
 
 ---
 
@@ -54,41 +48,42 @@
 | # | 项 | 要求 | 检查命令 / 入口 |
 | --- | --- | --- | --- |
 | 1 | GitHub 账号 | 对目标仓库 `owner/target` 拥有 **admin** 权限（建标签、改仓库 Settings、推 workflow 文件都需要） | 仓库页面 → Settings 可见即有 admin |
-| 2 | 本机 Node.js | ≥ 20（bootstrap 零依赖，使用内置 fetch） | `node --version` |
+| 2 | 本机 Node.js | ≥ 20（bootstrap 零依赖；Driver CLI 同样运行在 Node 上，开发基线为 Node 24） | `node --version` |
 | 3 | 本机 git | 任意较新版本 | `git --version` |
-| 4 | GateFlow 本仓库 | 已 clone 到本地（下文写作 `/path/to/gateflow`） | `ls /path/to/gateflow/scripts/bootstrap.mjs` |
+| 4 | GateFlow 本仓库 | 已 clone 到本地（下文写作 `/path/to/gateflow`），并能 `npm install && npm run build:cli` | `ls /path/to/gateflow/scripts/bootstrap.mjs` |
 | 5 | 目标仓库 | 已 clone 到本地（下文写作目标仓库的检出目录），且对应 GitHub 上的 `owner/target` | `git -C <检出目录> remote -v` |
-| 6 | GitHub PAT | 一个 Personal Access Token（创建路径见下方"如何创建 PAT"），用于 bootstrap 建标签、push workflow 文件、以及（快速自用模式）GitHub MCP | — |
-| 7 | AI 客户端 | 支持 MCP 的客户端（Claude Code / Codex / Cursor / VS Code 等）；本指南以 Claude Code 为例给出具体配置 | — |
+| 6 | bootstrap 用 PAT | 一个 Personal Access Token（见下方"如何创建 PAT"），用于 bootstrap 建标签、push workflow 文件 | — |
+| 7 | Driver 用 `GITHUB_TOKEN` | Driver 进程专用的 GitHub token（可与 6 同一个，见第 8 章）；**只存在于 Driver 进程环境**，不给 Agent | — |
+| 8 | AI 客户端 | 可安装 Skill 的客户端（ChatGPT / ZCode 等）；**V1 不再要求支持 MCP** | — |
 
 ### 如何创建 PAT（classic 与 fine-grained 二选一）
 
 入口：GitHub 右上角头像 → **Settings** → 左栏最底部 **Developer settings** → **Personal access tokens**。
 
-**选型建议**：只想快速跑通 → classic（勾 scope 即可，一个 token 覆盖建标签 + push + MCP 三件事）；追求最小权限 → fine-grained（按用途拆多个 token）。
-
 **方式一：classic PAT**（Tokens (classic) → **Generate new token (classic)**）：
 
 | 勾选项 | 用途 |
 | --- | --- |
-| `repo` | bootstrap 调 API 建标签；push 到私有仓库；GitHub MCP 读写 Issue / 仓库 |
-| `workflow` | push 添加 / 更新 workflow 文件的提交（**没有它 push 会被拒**，见第 8 章 FAQ-5） |
+| `repo` | bootstrap 调 API 建标签；push 到私有仓库；Driver 读 Issue / 评论、发布 Plan / Tracker / Report 评论、（submit 路径）创建 Issue |
+| `workflow` | push 添加 / 更新 workflow 文件的提交（**没有它 push 会被拒**，见第 11 章 FAQ-5） |
 
 **方式二：fine-grained PAT**（Fine-grained tokens → **Generate new token**）：
 
 | Token 用途 | Repository access | Permissions |
 | --- | --- | --- |
-| bootstrap（建标签） | 仅选中 `owner/target` | **Issues: Read and write**（Metadata: Read 自动附带）；另需 **Administration 无、Contents 无**——脚本只调用 GET /repos、列标签、建标签三个 API，全部落在 Metadata + Issues 上 |
-| push workflow 文件 | 仅选中 `owner/target` | **Contents: Read and write** + **Workflows: Read and write**（workflows 权限只有 write 一档；没有它 push workflow 文件同样被拒） |
-| GitHub MCP（Owner 身份使用） | 仅选中 `owner/target` | **Issues: Read and write** + **Contents: Read** + **Pull requests: Read and write**（Executor 建 PR 需要） |
+| bootstrap（建标签） | 仅选中 `owner/target` | **Issues: Read and write**（Metadata: Read 自动附带）；脚本只调用 GET /repos、列标签、建标签三个 API |
+| push workflow 文件 | 仅选中 `owner/target` | **Contents: Read and write** + **Workflows: Read and write** |
+| Driver `GITHUB_TOKEN` | 仅选中 `owner/target` | **Issues: Read and write**（读 Issue / 评论、发评论、建 Issue；Metadata 自动附带）。不要授予 Administration 等高权权限 |
 
 > token 只在创建时可见，先复制好。下文示例以环境变量引用为主：`export GITHUB_TOKEN=ghp_xxx`（避免出现在 shell history 与文档里）。
 
 ---
 
+## Part 1 · Gate 接入（GitHub 侧）
+
 ## 2. 第一步：让 GateFlow 本体可被引用
 
-目标仓库的 workflow 里会有一句 `uses: jesongit/gateflow@v0`。GitHub 对这句话有一条硬规则：**它指向的仓库（含 `action.yml` 与已提交的 `dist/index.js`）必须在 GitHub 上可被你的目标仓库访问**。三种模式覆盖所有情形，先说结论：
+目标仓库的 workflow 里会有一句 `uses: jesongit/gateflow@v1`。GitHub 对这句话有一条硬规则：**它指向的仓库（含 `action.yml` 与已提交的 `dist/index.js`）必须在 GitHub 上可被你的目标仓库访问**。三种模式覆盖所有情形，先说结论：
 
 | 模式 | gateflow 仓库可见性 | 额外要求 | 适用 |
 | --- | --- | --- | --- |
@@ -102,26 +97,26 @@
 
 ### 2.A 模式 A：发布为 public 仓库（最短指引）
 
-完整发布步骤（产物同步检查、版本对齐、GitHub Release、`@v0` 浮动 tag 维护策略）见 [release.md](release.md) §1，这里只给最短可用路径：
+完整发布步骤（两个 dist 产物的同步检查、版本对齐、GitHub Release、`@v1` 浮动 tag 维护策略）见 [release.md](release.md) §1，这里只给最短可用路径：
 
 ```bash
 cd /path/to/gateflow
 
 # 0. 本地验证（release.md §1 Step 1，全绿才继续）
-npm run typecheck && npm test && npm run build && git status   # dist/index.js 必须无变化
+npm run typecheck && npm test && npm run build && npm run check:dist && git status   # dist/ 必须无变化
 
 # 1. 在 GitHub 上建一个 public 仓库（名字建议 gateflow），然后：
 git remote add origin https://github.com/<owner>/gateflow.git
 git push -u origin main
 
-# 2. 打版本 tag 与浮动 tag（与 package.json 的 0.1.0 对齐）
-git tag v0.1.0
-git push origin v0.1.0
-git tag -f v0 v0.1.0
-git push -f origin v0
+# 2. 打版本 tag 与浮动 tag（与 package.json 的版本对齐）
+git tag v1.0.0
+git push origin v1.0.0
+git tag -f v1 v1.0.0
+git push -f origin v1
 ```
 
-完成后 `uses: <owner>/gateflow@v0` 即可被任何仓库引用。此后每次 Gate 更新，按 [release.md](release.md) §1 Step 5 重新移动 `v0`。
+完成后 `uses: <owner>/gateflow@v1` 即可被任何仓库引用。此后每次 Gate 更新，按 [release.md](release.md) §1 Step 5 重新移动 `v1`。
 
 ### 2.B 模式 B：私有仓库 + Access 共享策略
 
@@ -145,7 +140,7 @@ git push -f origin v0
    cp /path/to/gateflow/dist/index.js .github/actions/gateflow/
    ```
 
-   > 前提：`/path/to/gateflow` 里已执行过 `npm run build`（`dist/index.js` 是 esbuild 产物，GitHub JS Action 只认它，不认 `src/`）。`action.yml` 与 `dist/index.js` 两个文件都要复制、都要 commit。
+   > 前提：`/path/to/gateflow` 里已执行过 `npm run build`（`dist/index.js` 是 esbuild 产物，GitHub JS Action 只认它，不认 `src/`）。`action.yml` 与 `dist/index.js` 两个文件都要复制、都要 commit。注意：内嵌的是 **Gate** 产物；Driver（`dist/cli.js`）始终在本地运行，不需要内嵌。
 
 2. **bootstrap 时覆盖 `--action-ref` 为本地路径**（详见第 3 章）：
 
@@ -191,32 +186,23 @@ node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target \
                                           ← 真跑时先调 GET /repos 校验 token 与仓库
 [dry-run] 步骤 2：创建以下 6 个 ai:* 标签（同名已存在的标签将跳过，绝不修改其颜色 / 描述）：
 [create] 将创建标签：ai:planning（#d4c5f9，描述：…）
-[create] 将创建标签：ai:review（#fef2c0，描述：…）
-[create] 将创建标签：ai:ready（#c2e0c6，描述：…）
-[create] 将创建标签：ai:working（#1d76db，描述：…）
-[create] 将创建标签：ai:blocked（#d93f0b，描述：…）
-[create] 将创建标签：ai:done（#0e8a16，描述：…）
-                                          ← 6 个标签的名称 / 颜色 / 描述，与 protocol.md §1 一致
+…（共 6 行，与 protocol.md §1 一致）
 [dry-run] 步骤 3：workflow 文件：<当前目录>\.github\workflows\ai-workflow.yml
-[create] 将在确认后从 templates/workflow.yml 生成（uses: jesongit/gateflow@v0）。
-                                          ← 待生成的文件路径（在当前目录下）与将写入的 uses 引用
-                                            （--action-ref 传了别的值时这里会显示那个值）
+[create] 将在确认后从 templates/workflow.yml 生成（uses: <你传的 action-ref>）。
+                                          ← V1 建议传 --action-ref <owner>/gateflow@v1
 [dry-run] 步骤 4：打印 GitHub MCP 与 Skills 安装提示（只提示，不代劳）。
-
-收尾提示（以下步骤需要你手动完成，本脚本不代劳）：
-  1. 在你的 AI Client（Codex / Claude Code / Cursor / VS Code 等）配置 GitHub 官方 MCP Server，…
-  2. 把 skills/producer、skills/consumer、skills/executor 三个 Skill 安装到你的 AI Client（全局或项目级）。
-
-提交并推送生成的 .github/workflows/<file> 后，按 docs/usage.md §3 开始使用：/ai-plan → /approve → 执行。
+                                          ← 脚本收尾提示沿用 V0 文案；V1 中 MCP 提示已过时，
+                                            忽略即可（正确步骤见本指南第 6~9 章）
 ```
 
-> 若步骤 3 显示 *"该文件已存在：将警告并跳过，绝不覆盖"*，说明当前目录已有同名 workflow——脚本不会动它，确认这是否符合预期（要换引用请手工编辑，见第 8 章 FAQ-6）。
+> 若步骤 3 显示 *"该文件已存在：将警告并跳过，绝不覆盖"*，说明当前目录已有同名 workflow——脚本不会动它，确认这是否符合预期（要换引用请手工编辑，见第 11 章 FAQ-6）。
 
 ### 步骤 2.3 真跑（去掉 --dry-run）
 
 ```bash
-node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHUB_TOKEN"
-# 模式 C 则加上： --action-ref ./.github/actions/gateflow
+node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target \
+  --token "$GITHUB_TOKEN" --action-ref jesongit/gateflow@v1
+# 模式 C 则改为： --action-ref ./.github/actions/gateflow
 ```
 
 预期输出：
@@ -224,7 +210,7 @@ node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHU
 ```text
 == gateflow bootstrap ==
 目标仓库：owner/target
-Action 引用：jesongit/gateflow@v0
+Action 引用：jesongit/gateflow@v1
 
 步骤 1/3：校验 token 与仓库…
 [ok] 仓库可访问：owner/target
@@ -236,7 +222,7 @@ Action 引用：jesongit/gateflow@v0
 …（共 6 行；已存在的显示 [skip] 标签已存在，不做任何修改：…）
 
 步骤 3/3：workflow 文件（已存在则警告跳过，绝不覆盖）…
-[confirm] 将创建 <当前目录>\.github\workflows\ai-workflow.yml（uses: jesongit/gateflow@v0），是否继续？[Y/n]
+[confirm] 将创建 <当前目录>\.github\workflows\ai-workflow.yml（uses: jesongit/gateflow@v1），是否继续？[Y/n]
                                           ← 交互确认：回车或 y 继续，n 取消（取消则不生成文件，标签已建不受影响）
 [create] workflow 文件已生成：<当前目录>\.github\workflows\ai-workflow.yml
 
@@ -250,15 +236,14 @@ Action 引用：jesongit/gateflow@v0
 
 ### 步骤 2.4 检查生成的 workflow 文件
 
-打开生成的 `.github/workflows/ai-workflow.yml`（内容与 [templates/workflow.yml](../templates/workflow.yml) 一致，仅 `uses:` 换成了你传的引用）。全文如下，逐段说明：
+打开生成的 `.github/workflows/ai-workflow.yml`（内容与 [templates/workflow.yml](../templates/workflow.yml) 一致，仅 `uses:` 换成了你传的引用）。结构如下，逐段说明：
 
 ```yaml
 name: AI Workflow Gate
 
 # 监听事件（与 protocol.md §8 事件矩阵一致）：
-#   issues  [opened, labeled, closed]  —— Issue 创建 / 打标 / 关闭（不给新 Issue 自动打标，只做一致性检查与静默收尾）
+#   issues  [opened, labeled, closed]  —— Issue 创建 / 打标 / 关闭
 #   issue_comment [created, edited]    —— 主处理路径：命令（/approve 等）与 Marker（Plan / Tracker / Report）
-# 注意：不监听 reopened（V0 不处理，残留标签用 /cancel 清除）。
 on:
   issues:
     types: [opened, labeled, closed]
@@ -283,15 +268,15 @@ jobs:
 
     steps:
       - name: AI Workflow Gate
-        # 模式 A / B：owner/gateflow@v0（必须按第 2 章发布 / 开策略后才解析成功）
+        # V1：owner/gateflow@v1（必须按第 2 章发布 / 开策略后才解析成功）
         # 模式 C：./.github/actions/gateflow（本地路径，action 本体已复制进本仓库）
-        uses: jesongit/gateflow@v0
+        uses: jesongit/gateflow@v1
         with:
           # 缺省 = workflow 自己的 ${{ github.token }}，无需配置 secret
           github-token: ${{ github.token }}
           # 额外可信的人类账号（逗号分隔，如 alice,bob）；留空 = 仅 repo owner
           trusted-humans: ''
-          # 额外可信的 AI 独立身份（逗号分隔）；留空 = 无（Owner PAT 直连 MCP 时无需设置）
+          # V1 必填场景：Driver 的 Bot 身份（如 gateflow-agent[bot]），见第 5 章
           trusted-agents: ''
 ```
 
@@ -303,7 +288,7 @@ git commit -m "ci: adopt GateFlow AI workflow gate"
 git push
 ```
 
-> **push 被拒的常见原因**：含 workflow 文件的提交，用 HTTPS + PAT 推送时要求 PAT 具备 workflow 权限——classic PAT 勾选 **`workflow`** scope（官方定义：*"Grants the ability to add and update GitHub Actions workflow files"*），fine-grained PAT 则需要 **Workflows: Read and write**（外加 Contents 读写）。否则报错形如 *"refusing to allow a Personal Access Token to create or update workflow … without workflow scope"*。SSH 方式推送不受此限制（SSH 密钥与 PAT scope 无关）。排查详见第 8 章 FAQ-5。
+> **push 被拒的常见原因**：含 workflow 文件的提交，用 HTTPS + PAT 推送时要求 PAT 具备 workflow 权限——classic PAT 勾选 **`workflow`** scope，fine-grained PAT 则需要 **Workflows: Read and write**（外加 Contents 读写）。否则报错形如 *"refusing to allow a Personal Access Token to create or update workflow … without workflow scope"*。SSH 方式推送不受此限制。排查详见第 11 章 FAQ-5。
 >
 > 模式 C 还要 `git add .github/actions/gateflow/` 一起提交（见 2.C 步骤 3）。
 
@@ -321,8 +306,8 @@ git push
 | --- | --- | --- |
 | `--repo owner/name` | `GITHUB_REPOSITORY` 环境变量 | 目标仓库；两者都没有时报错退出 |
 | `--token <token>` | `GITHUB_TOKEN` 环境变量 | GitHub token，需要对目标仓库的写权限（创建标签）；**`--dry-run` 也要求它存在**（入口统一校验，但 dry-run 不访问网络、不校验有效性） |
-| `--action-ref <ref>` | `jesongit/gateflow@v0` | workflow 中 `uses:` 的 Action 引用（不能含空白字符；模式 C 传 `./.github/actions/gateflow`） |
-| `--workflow-file <name>` | `ai-workflow.yml` | 生成的 workflow 文件名（不含路径的 `.yml` / `.yaml` 文件名，改了它 push 时注意同名文件对应关系） |
+| `--action-ref <ref>` | `jesongit/gateflow@v0` | workflow 中 `uses:` 的 Action 引用（不能含空白字符；V1 建议传 `@v1`，模式 C 传 `./.github/actions/gateflow`） |
+| `--workflow-file <name>` | `ai-workflow.yml` | 生成的 workflow 文件名（不含路径的 `.yml` / `.yaml` 文件名） |
 | `--dry-run` | 关 | 只打印将做什么，不做任何修改、不访问网络 |
 | `--help` / `-h` | — | 显示帮助 |
 
@@ -349,7 +334,7 @@ git push
 
 ### 4.2 手动创建 workflow 文件
 
-在目标仓库检出目录新建 `.github/workflows/ai-workflow.yml`，内容与 [templates/workflow.yml](../templates/workflow.yml) 完全一致（把 `uses:` 换成你第 2 章选定的引用）：
+在目标仓库检出目录新建 `.github/workflows/ai-workflow.yml`，内容与 [templates/workflow.yml](../templates/workflow.yml) 完全一致（把 `uses:` 换成你第 2 章选定的引用，V1 建议 `@v1`；逐段说明见步骤 2.4）：
 
 ```yaml
 name: AI Workflow Gate
@@ -374,14 +359,12 @@ jobs:
 
     steps:
       - name: AI Workflow Gate
-        uses: jesongit/gateflow@v0    # 模式 A/B：你的 owner/gateflow@v0；模式 C：./.github/actions/gateflow
+        uses: jesongit/gateflow@v1    # 模式 A/B：你的 owner/gateflow@v1；模式 C：./.github/actions/gateflow
         with:
           github-token: ${{ github.token }}
           trusted-humans: ''
-          trusted-agents: ''
+          trusted-agents: ''          # V1：填 Driver 的 Bot 身份（第 5 章）
 ```
-
-（各字段语义见步骤 2.4 的逐段说明。）
 
 ### 4.3 push 并验证
 
@@ -391,240 +374,258 @@ git commit -m "ci: adopt GateFlow AI workflow gate"
 git push
 ```
 
-验证同步骤 2.6（Actions 页出现 "AI Workflow Gate"、Labels 页出现 6 个 `ai:*` 标签）。push 的 workflow 权限提醒同步骤 2.5。
+验证同步骤 2.6。push 的 workflow 权限提醒同步骤 2.5。
 
 ---
 
 ## 5. 第三步：配置 Action 输入
 
-Action 共三个输入（定义见 [action.yml](../action.yml)，权限模型见 [protocol.md](protocol.md) §6）。生成的 workflow 里三项都已显式写出（默认值），**第一次接入可以什么都不改**，先跑通验收，再按需回来加：
+Action 共三个输入（定义见 [action.yml](../action.yml)，权限模型见 [protocol.md](protocol.md) §6）。生成的 workflow 里三项都已显式写出（默认值），**第一次接入至少要改 `trusted-agents`**（见下）；`github-token` 与 `trusted-humans` 可先保持默认，跑通验收后再按需调整：
 
 ### `github-token`：保持默认即可
 
-模板写的是 `github-token: ${{ github.token }}`——这是 **GitHub Actions 自动注入的 workflow token**，随 workflow 运行自动生成与回收，配合上方的 `permissions: issues: write, contents: read` 正好够 Gate 读标签、写标签、加 reaction。**你不需要在仓库 Secrets 里配任何 PAT**（很多人以为要配 `GITHUB_TOKEN` secret——不需要）。只有当你的仓库策略限制默认 token 权限时才需要换成 PAT secret，常规使用不要动。
+模板写的是 `github-token: ${{ github.token }}`——这是 **GitHub Actions 自动注入的 workflow token**，随 workflow 运行自动生成与回收，配合上方的 `permissions: issues: write, contents: read` 正好够 Gate 读标签、写标签、加 reaction。**你不需要在仓库 Secrets 里配任何 PAT**。只有当你的仓库策略限制默认 token 权限时才需要换成 PAT secret，常规使用不要动。
 
 ### `trusted-humans`：除了你之外，还有谁能发命令
 
 - **何时填**：仓库有协作者，且你希望他们也能执行 `/ai-plan`、`/approve`、`/choose`、`/change`、`/cancel` 时。
 - **格式**：逗号分隔的 GitHub login，如 `trusted-humans: 'alice,bob'`。
 - **默认行为**：留空 = 只有 **repo owner**（个人仓库即你）是 Trusted Human。
-- 示例——让协作者 alice、bob 也拥有审批权：
+- **V1 注意**：这份名单同时被 Driver 使用——`gateflow.config.yml` 的 `trusted_humans` 字段应填同一批人（Driver 在派发 Executor 前独立校验 `/approve <id>` 评论的作者时用它），见第 7 章。
 
-  ```yaml
-  trusted-humans: 'alice,bob'
-  ```
+### `trusted-agents`：登记 Driver 的 Bot 身份（V1 必填场景）
 
-  之后 alice 评论 `/approve` 也会被 Gate 接受（✅ 并迁移 `ai:review → ai:ready`）；非 Trusted Human 的命令一律被拒（👎，见第 7 章验收第 7 步）。
+**V1 语义**：Trusted Agent = **受控 GateFlow Driver 的 GitHub Identity**，而不是"AI 直接操作 GitHub 的身份"。Driver 以这个身份发布 Plan / Tracker / Completion 评论；Gate 只认可发布者 ∈ Trusted Human ∪ Trusted Agent 的 marker 评论（T1 / T3 / T6）——**不登记，Driver 发的 Plan 评论就只是普通文本，状态永远停在 `ai:planning`**。
 
-### `trusted-agents`：给 AI 独立身份登记（与 trusted-humans 本质不同）
+- **它永远不能执行命令**：即使有人诱导 Bot 发 `/approve`，也等价于普通评论。命令权只在 Trusted Human 手里；
+- **凭证不归 AI**：该身份的 token 只存在于 Driver 进程（`GITHUB_TOKEN`），Agent 接触不到。
 
-两者**语义不同且在协议中永不合并**：
+配置步骤：
 
-| | Trusted Human（`trusted-humans`） | Trusted Agent（`trusted-agents`） |
+1. 准备一个专用 Bot 身份：独立 GitHub 账号，或 GitHub App（对应的 comment 作者形如 `gateflow-agent[bot]`）；
+2. 为它生成 token，作为 Driver 进程的 `GITHUB_TOKEN`（第 8 章）；
+3. workflow 里登记（与 token 所属账号一致）：
+
+   ```yaml
+   trusted-agents: 'gateflow-agent[bot]'
+   ```
+
+4. 效果：Driver 发布的 Plan / Tracker / Report 评论能触发状态迁移（T1 / T3 / T6）；`gateflow-agent[bot]` 评论 `/approve` **永远无效**。
+
+| | Trusted Human（`trusted-humans`） | Trusted Agent（`trusted-agents`，V1 = Driver 身份） |
 | --- | --- | --- |
 | 能否**发命令**（`/approve` 等 5 个） | **能**（且只有它能） | **永远不能**——发了也不被解析，等价于普通评论 |
-| 能否**发 Marker 推进状态**（Plan / Tracker / Report 触发 T1 / T3 / T6） | 能 | 能（这是它唯一的职权） |
-| 典型身份 | 你、你的协作者 | 独立 Bot 账号 / GitHub App |
-
-- **何时填**：V0 快速自用模式（你自己的 PAT 直连 GitHub MCP）下，AI 发的 Issue / 评论的 actor 就是你本人，天然满足 Trusted Human ∪ Trusted Agent，**无需设置**。当你给 AI 换成独立 Bot 身份（独立的 GitHub 账号 + 它自己的 PAT）时才需要登记。
-- 示例——给 AI 一个独立身份 `gateflow-bot`：
-
-  1. 创建 / 使用一个独立 GitHub 账号（或 bot 账号），为它生成 PAT，配到 GitHub MCP（见第 6 章）；
-  2. workflow 里登记：
-
-     ```yaml
-     trusted-agents: 'gateflow-bot'
-     ```
-
-  3. 效果：`gateflow-bot` 发布的 Plan / Tracker / Report 评论能触发状态迁移（T1 / T3 / T6）；但它评论 `/approve` **永远无效**——即使有人诱导它（Prompt Injection），它也无法批准任何 Plan。命令权仍然只在 Trusted Human 手里。
+| 能否**发 Marker 推进状态**（触发 T1 / T3 / T6） | 能 | 能（这是它唯一的职权；V1 中即 Driver） |
+| 典型身份 | 你、你的协作者 | `gateflow-agent[bot]` 等专用 Bot |
 
 ---
 
-## 6. 第四步：接入 AI 侧
+## Part 2 · Driver + Workspace 接入（本地侧，V1 新增）
 
-### 6.1 配置 GitHub MCP
+## 6. 第四步（1/4）：构建本地 Driver
 
-AI（Producer / Consumer / Executor）通过 [GitHub 官方 MCP Server](https://github.com/github/github-mcp-server) 读写 GitHub。推荐接**远端 server**（无需本地 Docker / Node 进程）：URL 为 `https://api.githubcopilot.com/mcp/`，用 PAT 走 `Authorization: Bearer` 头认证，用 `X-MCP-Toolsets` 头收敛 toolsets。
-
-**Claude Code 方式一：命令行添加（user / local scope）**
+Driver 是本地确定性 CLI（`src/driver/`，产物 `dist/cli.js`，bin 名 `gateflow`）。在 GateFlow 本地检出里构建：
 
 ```bash
-claude mcp add --transport http github https://api.githubcopilot.com/mcp/ \
-  --header "Authorization: Bearer <你的PAT>"
+cd /path/to/gateflow
+npm install
+npm run build:cli        # esbuild 打包 src/cli.ts → dist/cli.js
 ```
 
-**Claude Code 方式二：项目级 `.mcp.json`（可提交给团队共用，PAT 用环境变量展开，不要把明文 token 提交进仓库）**
+- 运行方式二选一：`node /path/to/gateflow/dist/cli.js driver …`，或将 `gateflow` 链接到 PATH（`package.json` 已声明 `"bin": {"gateflow": "dist/cli.js"}`）；
+- CLI 契约：`gateflow driver start|once|status|retry <dispatchId>`，全局 flags `--root <dir>`（缺省 = 当前目录）与 `--config <file>`（缺省 = `<root>/gateflow.config.yml`）；完整参考见 [driver.md](driver.md) §5；
+- `npm run build` 会同时构建 Gate 与 Driver 两个产物，两者都必须提交在 GateFlow 仓库中（`npm run check:dist` 校验同步）。
 
-在目标仓库根目录建 `.mcp.json`：
+## 7. 第四步（2/4）：写 `gateflow.config.yml`
 
-```json
-{
-  "mcpServers": {
-    "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "headers": {
-        "Authorization": "Bearer ${GITHUB_MCP_PAT}",
-        "X-MCP-Toolsets": "repos,issues,pull_requests"
-      }
-    }
-  }
-}
+在**目标仓库的检出根目录**创建 `gateflow.config.yml`。以下即 [workspace-protocol.md](workspace-protocol.md) §10 的冻结示例：
+
+```yaml
+version: 1
+repository: owner/name            # 可省略：回退解析 git remote origin，再回退 GATEFLOW_REPOSITORY
+driver:
+  poll_interval_seconds: 30       # start 模式轮询间隔
+  workspace_dir: .gateflow
+  progress_sync_seconds: 60       # Tracker 编辑 debounce
+  max_attempts: 3                 # 同一 dispatch 自动重试上限
+trusted_humans: []                # 除 repo owner 外的 Trusted Humans（Driver 校验 Approval 用）
+routing:
+  consumer: chatgpt-main
+  executor: zcode-main
+agents:
+  chatgpt-main: { activation: chatgpt }
+  zcode-main:   { activation: zcode }
+activation:
+  fallback: manual
 ```
 
-`${GITHUB_MCP_PAT}` 在你的 shell 里 `export GITHUB_MCP_PAT=github_pat_xxx`（Claude Code 支持 `${VAR}` 与 `${VAR:-default}` 展开语法）。项目级 server 首次使用时 Claude Code 会请求批准。
+字段说明（完整参考见 [driver.md](driver.md) §3）：
 
-**其他客户端（Codex / Cursor / VS Code 等）通用写法**：任何支持 streamable HTTP MCP 的客户端，填同样的 URL + 两个 header 即可（JSON 字段名按各自客户端约定，`X-MCP-Toolsets` 与 `Authorization` 的值不变）。
+- **Role 与 Provider 分离**：`routing` 把角色路由到 `agents` 里定义的任意 agent——`consumer: zcode-main` + `executor: chatgpt-main` 同样合法；
+- `agents.<name>.activation` 取值 `manual | chatgpt | zcode`；adapter probe 失败时回退 `activation.fallback`；
+- `trusted_humans` 与 workflow 的 `trusted-humans` 保持同一份名单（Driver 校验 `/approve <id>` 作者时使用）；
+- 同时确认目标仓库的 `.gitignore` 已包含 `.gateflow/`（运行时目录，不入库）。
 
-**toolsets 最小化原则**：只开 `repos` / `issues` / `pull_requests` 三个——覆盖 Producer 建 Issue、Consumer 读仓库发 Plan、Executor 读代码建 PR 的全部需要。不要把全部 toolsets 打开给 AI（远端 server 未指定 toolsets 时会启用一组默认 toolsets，所以**显式带上这个 header**；也可以用 `X-MCP-Readonly: "true"` 做整体只读限幅，或对单一 toolset 用 `.../mcp/x/issues` 这类 URL path 写法——多 toolset 组合请用 header）。
-
-**PAT 与 MCP 权限的关系**：MCP server 用你给的 PAT 代表"你"调 GitHub API，PAT 权限就是 AI 的实际上限：
-
-- classic PAT：勾 `repo`（读写私有仓库的 Issue / 内容 / PR）；只读使用可进一步收敛；
-- fine-grained PAT：目标仓库 + **Issues: Read and write** + **Contents: Read** + **Pull requests: Read and write**；
-- 只装 Producer / Consumer（不让 Executor 执行）时，可以不给 pull_requests 写权限；
-- 更换 PAT 时注意：MCP 连接的 actor 就是 AI 的 actor。V0 快速自用模式下它就是你（Trusted Human），所以**不要把有 admin 权限的 token 随手交给 AI**——给它能干活的最小权限即可。
-
-配置完在 Claude Code 里跑 `/mcp` 应看到 `github ✔ Connected`。
-
-### 6.2 安装三个 Skills
-
-把本仓库的 [skills/producer/SKILL.md](../skills/producer/SKILL.md)、[skills/consumer/SKILL.md](../skills/consumer/SKILL.md)、[skills/executor/SKILL.md](../skills/executor/SKILL.md) 装进 Claude Code。
-
-**安装方式**：每个 Skill 是一个目录（目录名即 Skill 名），内含 `SKILL.md`。
-
-```text
-# 方式一：全局（个人）安装——对你所有项目生效
-~/.claude/skills/
-├── producer/SKILL.md
-├── consumer/SKILL.md
-└── executor/SKILL.md
-
-# 方式二：项目级安装——只对当前项目生效（可提交进仓库，随仓库分发给协作者）
-<目标仓库>/.claude/skills/
-├── producer/SKILL.md
-├── consumer/SKILL.md
-└── executor/SKILL.md
-```
-
-复制命令（以项目级为例，在目标仓库检出目录里执行）：
+## 8. 第四步（3/4）：配置 `GITHUB_TOKEN`
 
 ```bash
-mkdir -p .claude/skills
-cp -r /path/to/gateflow/skills/producer .claude/skills/
-cp -r /path/to/gateflow/skills/consumer .claude/skills/
-cp -r /path/to/gateflow/skills/executor .claude/skills/
+export GITHUB_TOKEN=ghp_xxx        # Driver 专用 token（见第 1 章权限建议）
 ```
 
-> 注意复制的是**目录**（`cp -r …/producer .claude/skills/`），保证路径形如 `.claude/skills/producer/SKILL.md`。全局与项目级同名冲突时按 客户端优先级规则 解析；一般二选一即可。
+三条铁律：
 
-**装完如何验证**：新开一个 Claude Code 会话（让它重新加载 Skills），对 AI 说：
+1. **只存在于 Driver 进程环境**——不写入任何文件、不进 `gateflow.config.yml`、不进 `.gateflow/`、不给 AI 客户端；
+2. **Agent 零凭证**：ChatGPT / ZCode 不需要（也不应该有）任何 GitHub token / MCP——这是 V1 与 V0 的本质区别；
+3. **身份即登记**：`GITHUB_TOKEN` 所属的账号就是 Driver 发评论用的身份，必须与 workflow 的 `trusted-agents` 登记一致（第 5 章），否则 marker 不触发迁移。
 
-```text
-发个测试 Issue 到 owner/target：标题"GateFlow 接入冒烟测试"，内容随便写，用完我会关掉。
+## 9. 第四步（4/4）：安装四个 Agent Skills
+
+把本仓库的四个 Skill 装入你的 AI 客户端（ChatGPT / ZCode 等；每个 Skill 是一个目录，目录名即 Skill 名）：
+
+```bash
+# 以客户端的项目级 skills 目录为例（按你所用客户端的约定放置；全局安装则复制到全局目录）
+mkdir -p /path/to/your-client/skills
+cp -r /path/to/gateflow/skills/agent    /path/to/your-client/skills/
+cp -r /path/to/gateflow/skills/consumer /path/to/your-client/skills/
+cp -r /path/to/gateflow/skills/executor /path/to/your-client/skills/
+cp -r /path/to/gateflow/skills/producer /path/to/your-client/skills/
 ```
 
-Producer 的正确行为是：提炼出一份 Draft（目标仓库、标题、正文），**先给你确认**——它应该在写入前向你展示 Draft 并等你说"确认"。你确认后它通过 GitHub MCP 创建 Issue，并给 Issue 打上 `ai:planning` 标签。看到这条 Issue 且标签正确，说明 MCP 与 Producer 都通了。（它若不打 `ai:planning` 或不打草稿直接发，说明 Skill 没装对——检查目录布局。）
+| Skill | 作用 |
+| --- | --- |
+| `skills/agent` | 通用基础：如何找到当前 Dispatch（`current.json` → inbox）、`.gateflow/` 读写纪律、汇报规则、注入防护 |
+| `skills/consumer` | 规划角色：读 TASK.md / FEEDBACK.md 与真实仓库 → 产出 `outbox/PLAN.md`，`result=plan_ready` |
+| `skills/executor` | 执行角色：严格按 inbox 的 PLAN.md 实现 + 真实验证 → `REPORT.md`，`result=completed` |
+| `skills/producer` | 起草任务；用户明确要求时写 `.gateflow/submit/` 本地提交请求（Driver 负责 建 Issue） |
 
----
+装完新开会话让客户端重新加载。**验证方式**：对 Agent 说"看看有没有 GateFlow 任务"——正确行为是读 `.gateflow/current.json`，没有就如实说没有；若它试图访问 GitHub 或要求配 token，说明装的是 V0 旧 Skill（V1 Skill 禁止一切 GitHub 访问，见 [agent-skills.md](agent-skills.md)）。
 
-## 7. 第五步：验收——跑通第一个 Issue 闭环
+## 10. 第五步：验收——跑通第一个 Driver + Agent 闭环
 
-冒烟测试逐条做，每步对照"你应该看到什么"。以下假定目标仓库 `owner/target`、Issue 编号 `#N` 以实际为准。**全程不 push 任何代码到目标仓库之外的地方**；闭环跑完建议关掉测试 Issue。
+冒烟测试逐条做，每步对照"你应该看到什么"。以下假定目标仓库 `owner/target`、Issue 编号 `#N`、检出目录 `/path/to/target-checkout`。**全程不需要 GitHub MCP**；闭环跑完建议关掉测试 Issue。
 
-### 7.1 让测试 Issue 进入工作流（`ai:planning`）
+### 10.1 让测试 Issue 进入工作流（`ai:planning`）
 
-- **操作**：在 GitHub 上手动新建一个测试 Issue（标题随意，如"GateFlow 冒烟测试"），然后在 Issue 下评论一条命令（**整条评论只写这五个字符**）：
+- **操作**：在 GitHub 上手动新建一个测试 Issue（标题随意，如"GateFlow V1 冒烟测试"），评论一条命令（**整条评论只写这五个字符**）：
 
   ```text
   /ai-plan
   ```
 
-  （或者：直接用 6.2 验证时 Producer 建的那条 Issue——它创建时已带 `ai:planning`，可跳过本步。）
+- **你应该看到**：几秒后该命令评论出现 **✅ reaction**，Issue 标签变为 **`ai:planning`**；Actions 页出现一条绿色 run。
 
-- **你应该看到**：几秒后该命令评论出现 **✅ reaction**，Issue 标签变为 **`ai:planning`**；Actions 页出现一条绿色 run（事件 `issue_comment.created`）。若无标签且无 run → 第 8 章 FAQ-1。
+### 10.2 Driver 单轮执行：`once` → inbox 出现
 
-### 7.2 让 Consumer 规划（`ai:review`）
+- **操作**：在目标仓库检出目录（`GITHUB_TOKEN` 已导出、`gateflow.config.yml` 已就位）：
 
-- **操作**：在 Claude Code 里说：`规划 owner/target#N`。
-
-- **你应该看到**：Consumer 读取 Issue 与仓库后，发布一条以 `<!-- ai-workflow:plan:v1 -->` 开头的 **Plan 评论**（Execution Plan：Objective / Design / Tasks / Acceptance Criteria …）；随后 Actions 页出现新的绿色 run；Issue 标签自动变为 **`ai:review`**（Gate 检测到 plan marker 触发 T1）。注意：标签迁移发生在你发完消息之后由 Gate 完成，偶尔有数秒延迟属正常。
-
-### 7.3 批准 Plan（`ai:ready`）
-
-- **操作**：在 Issue 下评论（整条评论只写这八个字符）：
-
-  ```text
-  /approve
+  ```bash
+  gateflow driver once
   ```
 
-- **你应该看到**：该评论获得 **✅ reaction**，标签变为 **`ai:ready`**（Gate T2），Actions 页有对应绿色 run。
+- **你应该看到**：Driver 日志显示发现 `ai:planning` 并派发 Consumer；`.gateflow/inbox/gf_r<repo_id>_i<N>_consumer_01/` 目录出现，内含 `dispatch.json`、`TASK.md`（Issue 标题 + 正文 + `## Goal`），`current.json` 指向该 dispatch。Issue 标签**不变**（派发不迁移状态）。
 
-### 7.4 让 Executor 执行（`ai:working`）
+### 10.3 Agent 规划：读 inbox → 写 outbox
 
-- **操作**：对 AI 说：`执行 owner/target#N`。
+- **操作**：打开装有 consumer Skill 的客户端（ChatGPT / ZCode），让它开始当前任务（`manual` 激活模式即"人打开客户端"这一步）。
+- **你应该看到**：Agent 读 `current.json` → `dispatch.json` → `TASK.md` 与真实仓库，把 Execution Plan 写进 `.gateflow/outbox/gf_r…_consumer_01/PLAN.md`，最后写 `result.json`（`result=plan_ready`）。**Agent 全程不碰 GitHub**。
 
-- **你应该看到**：Executor 读取 Approved Plan，在 Issue 发布一条以 `<!-- ai-workflow:execution-tracker:v1 -->` 开头的 **Execution Tracker 评论**（TodoList + `**Status:** In Progress`），随后持续**编辑**这条评论（勾选 Todo、更新 Current / Notes）；标签变为 **`ai:working`**（Gate T3）。此后看进度不需要问 AI——打开 Issue 看 Tracker 勾选即可。
+### 10.4 Driver 再跑一轮：Plan 评论出现（`ai:review`）
 
-### 7.5（可选）试 /change 与 Blocked 流程
+- **操作**：再次 `gateflow driver once`。
 
-- **`/change`**：评论 `/change 计划里不要引入新依赖` → 该评论出现 ✅、**标签保持 `ai:review`**（`/change` 不迁移状态）；再对 AI 说"按 owner/target#N 的 /change 意见更新 Plan"→ Consumer 发布 Plan v2 **新评论**（旧 Plan 不编辑）。（在 7.3 之前做这一步。）
-- **Blocked**：执行期间让 Executor 遇阻（或直接让它把 Tracker 的 `**Status:**` 改为 `Blocked`）→ 标签 `ai:working → ai:blocked`（Gate T4，仅在 Tracker 评论的 edited 事件上触发）；处理后改回 `In Progress` → `ai:blocked → ai:working`（T5）。
+- **你应该看到**：Driver 校验 outbox（schema / role / dispatch_id / 白名单）通过后，以 Driver Bot 身份（如 `gateflow-agent[bot]`）发布一条以 `<!-- ai-workflow:plan:v1 -->` 开头的 **Plan 评论**；Actions 页出现新的绿色 run；Issue 标签自动变为 **`ai:review`**（Gate 检测 marker 触发 T1）。**记下这条 Plan 评论的 id**（评论 URL 末尾数字），下一步要用。
 
-### 7.6 Completion Report 与收尾（`ai:done` → Close）
+  > 若 Plan 评论已发布但标签**没有**变 `ai:review`：检查 workflow 的 `trusted-agents` 是否登记了 Driver Bot 身份（第 5 章）——未登记时 marker 不触发迁移（第 11 章 FAQ-9）。
 
-- **操作**：等 Executor 完成（可先给它一个极小任务，比如"在 README 加一行测试段落"）。
-- **你应该看到**：Executor 发布以 `<!-- ai-workflow:completion-report:v1 -->` 开头的 **Completion Report 评论**（Result / Completed / Key Changes / References / Validation / Deviations …）；标签变为 **`ai:done`**（Gate T6）。**Issue 保持 Open**——`ai:done` 的含义是"AI 完成，等你检查"，不是关闭。你检查 Report / 变更内容无误后，**手动 Close 这个 Issue**（关闭永远是人的职权）。闭环完成。
+### 10.5 批准（`ai:ready`）
 
-### 7.7 负面用例：无权限账号发命令必须无效
+- **操作**：在 Issue 下评论（整条评论只写这一句，`<plan-comment-id>` 换成 10.4 记下的 id）：
 
-- **操作**：用另一个无 Trusted Human 身份的账号（协作者、小号、或请朋友），在同一个 Issue（需再建一个新测试 Issue 走到 `ai:review`）评论 `/approve`。
-- **你应该看到**：该评论获得 **👎 reaction**（含义："invalid owner command"），**标签不迁移**，Actions 页对应的 Gate run 依然绿色（拒绝是正常业务结果，不是错误）。这就是"审批权只在 Trusted Human 手里"的确定性保证——即使 AI 被诱导也不可能出现例外，因为判定根本不经 AI。
+  ```text
+  /approve <plan-comment-id>
+  ```
+
+- **你应该看到**：该评论获得 **✅ reaction**，标签变为 **`ai:ready`**（Gate T2）。
+
+### 10.6 Driver 派发 Executor：Tracker 与执行（`ai:working`）
+
+- **操作**：让 Executor 角色的 Agent 可用后，再次 `gateflow driver once`。
+
+- **你应该看到**：Driver 在派发前独立校验 Approval Proof（`ai:ready` + 有效 `/approve <id>` + id 指向 Current Plan + Plan 未被编辑）→ 构建 `.gateflow/inbox/gf_r…_i<N>_executor_p<plan-comment-id>/`（TASK.md + PLAN.md）→ Agent 写 `status.json`（`state=working`）→ Driver 创建以 `<!-- ai-workflow:execution-tracker:v1 -->` 开头的 **Execution Tracker 评论**；标签变为 **`ai:working`**（Gate T3）。此后 Agent 更新 PROGRESS，Driver 以默认 60s debounce 编辑同一条 Tracker。
+
+### 10.7 完成报告与收尾（`ai:done` → Close）
+
+- **操作**：等 Executor 完成（可先给它一个极小任务，如"在 README 加一行测试段落"）。
+
+- **你应该看到**：Agent 写 `REPORT.md` + `result.json`（`completed`）→ Driver 校验后发布以 `<!-- ai-workflow:completion-report:v1 -->` 开头的 **Completion Report 评论**；标签变为 **`ai:done`**（Gate T6）。**Issue 保持 Open**——你检查 Report / 变更无误后，**手动 Close 这个 Issue**。闭环完成。
+
+### 10.8 常驻运行与可选负面用例
+
+- 日常使用把每一步的 `once` 换成常驻的 `gateflow driver start`（默认每 30s 一轮），以上迁移全部自动发生；
+- **负面用例**：用非 Trusted Human 账号评论 `/approve <id>` → 该评论得 **👎 reaction**、标签不迁移、Gate run 依然绿色（拒绝是正常业务结果）；
+- 更多排障见第 11 章 FAQ 与 [driver.md](driver.md) §9。
 
 ---
 
-## 8. 故障排查 FAQ
+## 11. 故障排查 FAQ
 
 **FAQ-1 workflow 完全没触发（Actions 页没有 run）**
-现象：评论了 `/ai-plan` / 发了 Plan，Actions 页干干净净。
-原因与解决（按概率排序）：① workflow 文件没推上去，或推到了非默认分支——`issues` / `issue_comment` 事件只认**默认分支**上的 workflow 定义，确认 `origin/<默认分支>` 上存在 `.github/workflows/ai-workflow.yml`；② 仓库 Settings → Actions 里 Actions 被禁用（组织策略常见）；③ YAML 语法错误导致 workflow 加载失败（Actions 页会显示警告横幅）。逐一检查后重发一条评论验证。
+现象：评论了 `/ai-plan` / Driver 发了 Plan，Actions 页干干净净。
+原因与解决（按概率排序）：① workflow 文件没推上去，或推到了非默认分支——`issues` / `issue_comment` 事件只认**默认分支**上的 workflow 定义；② 仓库 Settings → Actions 里 Actions 被禁用；③ YAML 语法错误导致 workflow 加载失败。逐一检查后重发一条评论验证。
 
 **FAQ-2 Gate run 红叉**
 现象：Actions 页 run 失败。
-原因：Gate 对无效命令 / 错误状态一律 no-op 并**正常退出**（不会红叉），红叉一定是运行时故障而非业务拒绝。点开 run 看 log（首行应为 `gateflow <GATE_VERSION>`，没有这行说明 Action 根本没启动）：常见原因有 `uses:` 解析失败（见 FAQ-3）、API 限流或 token 权限不足（换 `github-token` 为有 Issues 写权限的 PAT 可定位）、workflow YAML 非法。修复后可重跑该 run（Gate 幂等：迁移前会重读标签，不会二次迁移）。
+原因：Gate 对无效命令 / 错误状态一律 no-op 并**正常退出**（不会红叉），红叉一定是运行时故障而非业务拒绝。点开 run 看 log（首行应为 `gateflow <GATE_VERSION>`）：常见原因有 `uses:` 解析失败（见 FAQ-3）、API 限流或 token 权限不足、workflow YAML 非法。修复后可重跑该 run（Gate 幂等：迁移前会重读标签，不会二次迁移）。
 
 **FAQ-3 `uses:` 解析失败 / "Can't find action" / 404 Resource not found**
-现象：run 启动即失败，log 显示找不到 action。
-原因：`uses: owner/gateflow@v0` 指向的仓库不存在、**还是 private 且未开 Access 共享策略**（默认 "Not accessible" 就是被禁）、或 tag 不存在。
-解决：回到**第一步**三模式自查——模式 A 确认仓库是 public 且 `v0` tag 已推（`git ls-remote --tags origin v0`）；模式 B 确认 gateflow 仓库 Settings → Actions → General → Access 已选同用户 / 同组织可访问，且**目标仓库也是私有**（公开目标仓库引用私有 action 永远不行）；模式 C 确认 `.github/actions/gateflow/{action.yml,dist/index.js}` 已提交且与 workflow 同 commit。完全没有组织、又不想公开 → 模式 C。
+原因：`uses: owner/gateflow@v1` 指向的仓库不存在、**还是 private 且未开 Access 共享策略**（默认 "Not accessible" 就是被禁）、或 `v1` tag 不存在。
+解决：回到第 2 章三模式自查——模式 A 确认仓库 public 且 `v1` tag 已推；模式 B 确认 Access 已开且**目标仓库也是私有**；模式 C 确认 `.github/actions/gateflow/{action.yml,dist/index.js}` 已提交且与 workflow 同 commit。
 
 **FAQ-4 bootstrap 报错（401 / 404 / 网络等）**
-- `[error] token 无效或已过期（HTTP 401）`：token 抄错 / 已撤销 / 用了错误的 token 类型。重新生成。
-- `[error] 仓库不存在或 token 无权访问（HTTP 404）`：`--repo` 拼写错，或 fine-grained PAT 的 Repository access **没勾选目标仓库**（fine-grained 对未授权仓库一律 404）。
-- `[error] 创建标签失败：…（HTTP 403）`：token 缺 Issues 写权限——classic 缺 `repo` scope；fine-grained 缺 **Issues: Read and write**。
-- `[warn] 当前 token 对该仓库没有写权限（push=false）…`：token 能读不能写，建标签会失败，换 token。
-- 422 相关无需处理：脚本把"标签已被并发创建"的 422 视为跳过（`[warn] 标签已被并发创建，跳过`），不是错误。
-- `[error] 缺少 GitHub token…` / `缺少目标仓库…`：参数没传或环境变量没设（**`--dry-run` 也要求**，见步骤 2.2）。
+- `[error] token 无效或已过期（HTTP 401）`：token 抄错 / 已撤销，重新生成；
+- `[error] 仓库不存在或 token 无权访问（HTTP 404）`：`--repo` 拼写错，或 fine-grained PAT 没勾选目标仓库；
+- `[error] 创建标签失败：…（HTTP 403）`：token 缺 Issues 写权限；
+- `[warn] 当前不是交互式终端…`：非交互环境跳过 workflow 生成（标签仍创建），在终端重跑一次；
+- `[error] 缺少 GitHub token…` / `缺少目标仓库…`：参数没传或环境变量没设（**`--dry-run` 也要求**）。
 
 **FAQ-5 push workflow 文件被拒**
-现象：`git push` 报 `refusing to allow a Personal Access Token to create or update workflow … without workflow scope`（或 fine-grained PAT 类似拒绝）。
-原因：HTTPS + PAT 推送含 workflow 文件的提交，需要专门的 workflow 权限。
-解决：classic PAT 勾 **`workflow`** scope；fine-grained PAT 加 **Workflows: Read and write**（外加 Contents 读写）。改完 PAT 记得更新本地凭据（Windows 凭据管理器 / `git credential`）。改用 SSH remote 则不受此限。
+现象：`git push` 报 `refusing to allow a Personal Access Token to create or update workflow … without workflow scope`。
+解决：classic PAT 勾 **`workflow`** scope；fine-grained PAT 加 **Workflows: Read and write**（外加 Contents 读写）。改完 PAT 更新本地凭据；改用 SSH remote 则不受此限。
 
-**FAQ-6 标签没建出来 / 建错了**
-- 脚本输出 `[skip] 标签已存在`：仓库里本来就有同名标签，脚本按设计**跳过且绝不修改**。若已有标签名称对但颜色 / 描述不合意，可在 GitHub 界面手工改，脚本永远不会碰它。
-- 名称写错（如漏了 `ai:` 前缀）：删掉错误标签重建；**名称必须与 protocol.md §1 逐字一致**，否则 Gate 找不到状态标签。
-- dry-run 不建标签——它只打印计划。
+**FAQ-6 标签没建出来 / 建错了 / 想换 `uses:` 引用**
+- `[skip] 标签已存在`：按设计跳过且绝不修改；颜色 / 描述可在 GitHub 界面手工改；
+- 名称写错（漏 `ai:` 前缀等）：删掉重建，名称必须与 protocol.md §1 逐字一致；
+- 已生成的 workflow 想换 `uses:` 引用（如 `@v0` → `@v1`）：直接编辑该文件的 `uses:` 行并 push（bootstrap 绝不覆盖已有文件）。
 
-**FAQ-7 AI 说它改不了标签 / 你也想让 AI 直接改标签**
-这是**设计使然**，不是故障：`ai:*` 标签的迁移只归 Gate（protocol.md §6.3——AI 不能绕过 Gate 修改正式工作流状态，手工增删标签属协议违规）。正确姿势：AI 通过发布 Plan / Tracker / Report（marker）或你发命令来推动状态，标签由 Gate 写。若某次迁移没发生，先看 Actions 页 run 与 Issue 评论（Gate 的拒绝是静默 no-op 或 👎，不在 AI 的报错里）。
+**FAQ-7 AI 说它改不了标签 / 你想让 AI 直接操作 GitHub**
+这是**设计使然**，不是故障：V1 的 Agent 没有 GitHub 凭证、不参与状态迁移；标签只由 Gate 写，GitHub 访问只由 Driver 做。正确姿势：让 Agent 写好 outbox，Driver 负责同步，你发命令推动状态。若某次迁移没发生，看 Actions 页 run 与 Issue 评论（Gate 的拒绝是静默 no-op 或 👎）。
+
+**FAQ-8 `gateflow driver once` 没有任何派发**
+按顺序检查：① `GITHUB_TOKEN` 是否已导出且有效（`driver status` 离线可用，先看本地回执）；② `gateflow.config.yml` 的 `repository` / git remote 是否指向目标仓库；③ Issue 是否真的处于会触发派发的状态（`ai:planning`；或 `ai:ready` 且批准有效）；④ `--root` 是否指向目标仓库检出目录；⑤ receipts 里该 dispatch 是否已 `synced`（去重生效，重复派发需 `gateflow driver retry <dispatch_id>`）。详见 [driver.md](driver.md) §9。
+
+**FAQ-9 Driver 发了 Plan / Tracker / Report 评论，但标签不变**
+原因：Driver 的 Bot 身份没有登记进 workflow 的 `trusted-agents`（或登记的账号与 `GITHUB_TOKEN` 所属账号不一致）——Gate 把 marker 评论当普通文本，不触发 T1 / T3 / T6。解决：按第 5 章登记后重试（已发布的评论不会追溯触发，让 Driver 走完下一轮即可）。
+
+**FAQ-10 `.gateflow/` 出现在 `git status` 里**
+`.gateflow/` 是本地运行时目录（inbox / outbox / receipts / logs），**必须加入 `.gitignore`**。它不是正式状态——即使被误删，Driver 也能从 GitHub 重建；被误提交则应从索引移除并补 `.gitignore`。
 
 ---
 
-## 9. 卸载 / 回退
+## 12. 卸载 / 回退
 
-- **停用**：删除（或重命名）目标仓库的 `.github/workflows/ai-workflow.yml` 并 push——Gate 即不再运行，任何 Issue 事件都不会再触发它。这是唯一的"开关"。
-- **标签**：6 个 `ai:*` 标签可以留着（它们只是普通 GitHub 标签，不影响不参与工作流的 Issue），也可以在 Labels 页删除。删除后若再接入，重跑 bootstrap 或按第 4 章重建即可。
-- **已完成的 Issue**：状态不受任何影响。已关闭的 Issue 就是终态；仍带 `ai:*` 标签的未关闭 Issue 会保留残留标签，想让它们回到"普通 Issue"可手工移除标签，或由 Trusted Human 评论 `/cancel`（停用 workflow 后 `/cancel` 不再有效，直接手工删标签）。
-- **AI 侧**：删除 `.claude/skills/{producer,consumer,executor}`（项目级）或 `~/.claude/skills/` 下对应目录，以及 `.mcp.json` 里的 `github` server 配置即完全移除。
+- **停用 Gate**：删除（或重命名）目标仓库的 `.github/workflows/ai-workflow.yml` 并 push——Gate 即不再运行。这是唯一的"开关"；
+- **停用 Driver**：终止 `gateflow driver start` 进程即可；`.gateflow/` 目录可整目录删除（全部可由 GitHub 重建），`gateflow.config.yml` 一并删除即完全移除本地接入；
+- **标签**：6 个 `ai:*` 标签可以留着（普通 GitHub 标签，不影响其他 Issue），也可在 Labels 页删除；删除后再接入重跑 bootstrap 即可；
+- **已完成的 Issue**：状态不受任何影响；仍带 `ai:*` 标签的未关闭 Issue 可由 Trusted Human 评论 `/cancel`（Gate 停用后改为手工删标签）；
+- **AI 侧**：删除客户端 skills 目录下的 `agent / consumer / executor / producer` 四个目录即完全移除；
 - **模式 C 的内嵌副本**：删除 `.github/actions/gateflow/` 目录一并提交。
+
+---
+
+## 附录：MCP 直连（旧模式，V1 不再需要）
+
+V0 的接入要求给 AI 配置官方 GitHub MCP Server（远端 `https://api.githubcopilot.com/mcp/` + PAT + `X-MCP-Toolsets: repos,issues,pull_requests`），由人对 AI 说"规划 / 执行 #<n>"手动唤醒，Agent 直接读写 GitHub。**V1 中这套配置不再需要，也不再是标准架构**：
+
+- V1 的 Agent 只读写本地 `.gateflow/`（inbox / outbox），GitHub 访问全部由 Driver 完成——给 Agent 配 MCP / PAT 不仅多余，还违反"Agent 零凭证"的 V1 安全模型（见 [security.md](security.md) §8.1）；
+- V1 的四个 Skill 已删除全部 GitHub 集成知识；带着 MCP 配置跑 V1 Skill 不会让 Agent"恢复"GitHub 能力，只会制造干扰；
+- 保留它的唯一场景是**孤立调试 Gate**（不启动 Driver，人工构造命令 / marker 验证 Gate 判定），且需自行承担 actor 身份混同与绕过 Workspace Protocol 的代价（[usage.md](usage.md) 附录）。新接入请一律走 Part 2 的 Driver + Workspace 流程。

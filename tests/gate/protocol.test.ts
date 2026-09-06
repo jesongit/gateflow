@@ -81,9 +81,9 @@ describe('Phase 0 protocol freeze (docs/protocol.md <-> src/protocol.ts)', () =>
   });
 
   it('has a gate entry with a version', () => {
-    // Gate version tracks the implementation phase (Phase 6 = 0.3.0, tracker
-    // status transitions T4/T5); the frozen protocol schema itself stays at 1
-    // (SCHEMA_VERSION above).
-    expect(GATE_VERSION).toBe('0.3.0');
+    // Gate version tracks the implementation milestone (V1 plan-ID approval =
+    // 1.0.0, protocol v2 command surface); the frozen protocol schema itself
+    // stays at 1 (SCHEMA_VERSION above).
+    expect(GATE_VERSION).toBe('1.0.0');
   });
 });

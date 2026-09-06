@@ -1,0 +1,357 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gateflow.dev/schemas/github-schema-v2.json",
+  "title": "GateFlow GitHub-side protocol v2 (gate command surface)",
+  "description": "Documentation-only mirror of the V1 GitHub-side protocol that the Gate (GitHub Action) enforces: the five comment commands (exact and anchored shapes, including the V1 '/approve <plan-comment-id>' binding), the four comment markers, the six ai:* labels and the frozen transition table T0-T6. Source of truth: docs/protocol.md (section 3 Commands, section 3.4 'V1 审批证明（Plan-ID 绑定）', section 2 state machine); architecture: docs/architecture-v1.md section 3.3. This schema DOCUMENTS the protocol and is NOT used for runtime validation; the issue-body schema block and all marker strings are unchanged from V0 and SCHEMA_VERSION stays 1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "labels",
+    "states",
+    "transitions",
+    "commands",
+    "markers"
+  ],
+  "properties": {
+    "schema": {
+      "description": "GitHub-side protocol document version. Protocol v2 changes only the /approve command shape; labels, markers and the issue-body schema version remain frozen at 1.",
+      "const": 2
+    },
+    "labels": {
+      "description": "The six workflow labels. An issue holds at most one ai:* label at any time.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/label" },
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true
+    },
+    "states": {
+      "description": "Canonical workflow state names, one per label.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/state" },
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true
+    },
+    "transitions": {
+      "description": "The frozen transition table, exactly T0-T6. T2 is the only human-command-triggered approval and is bound to a plan comment id since V1.",
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/transitionT0" },
+          { "$ref": "#/$defs/transitionT1" },
+          { "$ref": "#/$defs/transitionT2" },
+          { "$ref": "#/$defs/transitionT3" },
+          { "$ref": "#/$defs/transitionT4" },
+          { "$ref": "#/$defs/transitionT5" },
+          { "$ref": "#/$defs/transitionT6" }
+        ]
+      },
+      "minItems": 7,
+      "maxItems": 7
+    },
+    "commands": {
+      "description": "The five frozen comment commands. Parsing is strict (exact whole-body match after trim, or anchored regex over the trimmed body); substring/prefix matching is forbidden. A body that matches no shape is a normal comment and is silently ignored.",
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/commandAiPlan" },
+          { "$ref": "#/$defs/commandApprove" },
+          { "$ref": "#/$defs/commandChoose" },
+          { "$ref": "#/$defs/commandChange" },
+          { "$ref": "#/$defs/commandCancel" }
+        ]
+      },
+      "minItems": 5,
+      "maxItems": 5
+    },
+    "markers": {
+      "description": "The four comment markers. A marker must occupy a line of its own (exact match after trim); a comment with more than one marker occurrence is invalid. Markers are structural hints, NEVER proof of permission.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/marker" },
+      "minItems": 4,
+      "maxItems": 4,
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "label": {
+      "enum": ["ai:planning", "ai:review", "ai:ready", "ai:working", "ai:blocked", "ai:done"]
+    },
+    "state": {
+      "enum": ["PLANNING", "REVIEW", "READY", "WORKING", "BLOCKED", "DONE"]
+    },
+    "stateOrNull": {
+      "description": "Transition source state; null means the issue carries no ai:* label (not yet in the workflow).",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/state" }]
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "to", "trigger", "description"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^T[0-6]$"
+        },
+        "from": { "$ref": "#/$defs/stateOrNull" },
+        "to": { "$ref": "#/$defs/state" },
+        "trigger": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "transitionT0": {
+      "$ref": "#/$defs/transition",
+      "properties": {
+        "id": { "const": "T0" },
+        "from": { "type": "null" },
+        "to": { "const": "PLANNING" },
+        "trigger": { "const": "/ai-plan by Trusted Human, or Producer CREATE with ai:planning" },
+        "description": {
+          "const": "Issue enters the workflow; /ai-plan requires no ai:* label present."
+        }
+      }
+    },
+    "transitionT1": {
+      "$ref": "#/$defs/transition",
+      "properties": {
+        "id": { "const": "T1" },
+        "from": { "const": "PLANNING" },
+        "to": { "const": "REVIEW" },
+        "trigger": {
+          "const": "valid plan-marker comment published by Trusted Human or Trusted Agent"
+        },
+        "description": {
+          "const": "Plan published. The marker is a structural hint only; publisher identity and the re-read PLANNING state are both required."
+        }
+      }
+    },
+    "transitionT2": {
+      "$ref": "#/$defs/transition",
+      "properties": {
+        "id": { "const": "T2" },
+        "from": { "const": "REVIEW" },
+        "to": { "const": "READY" },
+        "trigger": {
+          "const": "/approve <plan-comment-id> by Trusted Human (V1: plan-comment-id bound)"
+        },
+        "description": {
+          "const": "V1 approval (protocol section 3.4): the gate validates, in order, that (1) the actor is a Trusted Human, (2) the issue is open and re-reads as REVIEW, (3) the referenced comment exists and belongs to this issue, (4) it carries a valid plan marker (unique, line-owning), (5) it is the CURRENT plan (the last valid plan-marker comment on the issue, chronological by comment id), and (6) the frozen table allows REVIEW -> READY. Any failure is a logged no-op without a reaction. The durable Approval Record is the human's own '/approve <id>' comment; before executor dispatch the Driver independently re-validates current-plan match and plan-unedited-since-approval (docs/architecture-v1.md section 3.3), so a fake ai:ready label flip cannot produce a valid dispatch."
+        }
+      }
+    },
+    "transitionT3": {
+      "$ref": "#/$defs/transition",
+      "properties": {
+        "id": { "const": "T3" },
+        "from": { "const": "READY" },
+        "to": { "const": "WORKING" },
+        "trigger": {
+          "const": "valid execution-tracker-marker comment published by Trusted Human or Trusted Agent"
+        },
+        "description": {
+          "const": "Execution tracker created; execution begins."
+        }
+      }
+    },
+    "transitionT4": {
+      "$ref": "#/$defs/transition",
+      "properties": {
+        "id": { "const": "T4" },
+        "from": { "const": "WORKING" },
+        "to": { "const": "BLOCKED" },
+        "trigger": {
+          "const": "tracker comment edited to the machine value '**Status:** Blocked'"
+        },
+        "description": {
+          "const": "Deterministically parsed from the tracker Status field; never guessed."
+        }
+      }
+    },
+    "transitionT5": {
+      "$ref": "#/$defs/transition",
+      "properties": {
+        "id": { "const": "T5" },
+        "from": { "const": "BLOCKED" },
+        "to": { "const": "WORKING" },
+        "trigger": {
+          "const": "tracker comment edited to the machine value '**Status:** In Progress'"
+        },
+        "description": {
+          "const": "Deterministically parsed from the tracker Status field; never guessed."
+        }
+      }
+    },
+    "transitionT6": {
+      "$ref": "#/$defs/transition",
+      "properties": {
+        "id": { "const": "T6" },
+        "from": { "const": "WORKING" },
+        "to": { "const": "DONE" },
+        "trigger": {
+          "const": "valid completion-report-marker comment published by Trusted Human or Trusted Agent"
+        },
+        "description": {
+          "const": "Completion goes exclusively through the completion-report marker; tracker Status 'Completed' never transitions. DONE is terminal."
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "match", "actor", "precondition", "effect"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "match": {
+          "description": "exact: whole comment equals the command after trim. anchored: the given regex must match the entire trimmed body ('.' never crosses newlines).",
+          "enum": ["exact", "anchored"]
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Required when match is 'anchored'."
+        },
+        "args": {
+          "description": "Parsed argument shape; null for parameterless commands."
+        },
+        "actor": {
+          "enum": ["trusted-human"]
+        },
+        "precondition": { "type": "string", "minLength": 1 },
+        "effect": { "type": "string", "minLength": 1 },
+        "breakingChange": {
+          "type": "string",
+          "description": "Present when V1 changed the command shape."
+        }
+      }
+    },
+    "commandAiPlan": {
+      "$ref": "#/$defs/command",
+      "properties": {
+        "command": { "const": "/ai-plan" },
+        "match": { "const": "exact" },
+        "args": { "const": null },
+        "actor": { "const": "trusted-human" },
+        "precondition": { "const": "issue carries no ai:* label (outside the workflow)" },
+        "effect": {
+          "const": "T0: add ai:planning; react +1 on acceptance"
+        }
+      }
+    },
+    "commandApprove": {
+      "$ref": "#/$defs/command",
+      "properties": {
+        "command": { "const": "/approve" },
+        "match": { "const": "anchored" },
+        "pattern": { "const": "^/approve (\\d+)$" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["planCommentId"],
+          "properties": {
+            "planCommentId": {
+              "description": "Id of the plan comment being approved: a GitHub issue-comment id in decimal digits (positive integer).",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "actor": { "const": "trusted-human" },
+        "precondition": {
+          "const": "issue is open and re-reads as REVIEW, and the referenced comment passes every V1 validation of docs/protocol.md section 3.4 (exists on this issue; valid plan marker; current plan)"
+        },
+        "effect": {
+          "const": "T2: add ai:ready then remove ai:review (add-then-remove); react +1 on acceptance. A failing validation is a logged no-op WITHOUT any reaction; a bare '/approve' is no longer a command at all and is ignored as a normal comment."
+        },
+        "breakingChange": {
+          "const": "V1 (protocol v2): the parameterless '/approve' command was removed; approval is bound to a plan comment id."
+        }
+      }
+    },
+    "commandChoose": {
+      "$ref": "#/$defs/command",
+      "properties": {
+        "command": { "const": "/choose" },
+        "match": { "const": "anchored" },
+        "pattern": { "const": "^/choose (\\S+) (\\S+)$" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["questionId", "choice"],
+          "properties": {
+            "questionId": { "type": "string", "minLength": 1 },
+            "choice": { "type": "string", "minLength": 1 }
+          }
+        },
+        "actor": { "const": "trusted-human" },
+        "precondition": { "const": "issue re-reads as REVIEW" },
+        "effect": {
+          "const": "No state migration: the two arguments are forwarded verbatim to the Consumer as untrusted data; react +1 on acceptance"
+        }
+      }
+    },
+    "commandChange": {
+      "$ref": "#/$defs/command",
+      "properties": {
+        "command": { "const": "/change" },
+        "match": { "const": "anchored" },
+        "pattern": { "const": "^/change (.+)$" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text"],
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Free text after the command word, preserved verbatim as untrusted data."
+            }
+          }
+        },
+        "actor": { "const": "trusted-human" },
+        "precondition": { "const": "issue re-reads as REVIEW" },
+        "effect": {
+          "const": "No state migration: the free text is forwarded verbatim to the Consumer as untrusted data; react +1 on acceptance"
+        }
+      }
+    },
+    "commandCancel": {
+      "$ref": "#/$defs/command",
+      "properties": {
+        "command": { "const": "/cancel" },
+        "match": { "const": "exact" },
+        "args": { "const": null },
+        "actor": { "const": "trusted-human" },
+        "precondition": { "const": "issue carries at least one ai:* label (any state, including BLOCKED and terminal DONE)" },
+        "effect": {
+          "const": "Remove ALL ai:* labels; the issue is NOT closed; react +1 on acceptance"
+        }
+      }
+    },
+    "markerName": {
+      "enum": ["append", "plan", "execution-tracker", "completion-report"]
+    },
+    "marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value", "publisher", "editAllowed", "triggers"],
+      "properties": {
+        "name": { "$ref": "#/$defs/markerName" },
+        "value": {
+          "type": "string",
+          "pattern": "^<!-- ai-workflow:[a-z-]+:v1 -->$",
+          "description": "Exact marker string; must occupy a line of its own (exact match after trim). Unchanged from V0 (:v1 suffix frozen)."
+        },
+        "publisher": {
+          "description": "Who may publish marker comments that trigger transitions; unknown actors' markers are plain text.",
+          "enum": ["trusted-human", "trusted-agent", "producer"]
+        },
+        "editAllowed": { "type": "boolean" },
+        "triggers": {
+          "description": "Transition triggered by a valid marker comment, or 'none' when the marker never transitions.",
+          "oneOf": [{ "const": "none" }, { "$ref": "#/$defs/transition" }]
+        }
+      }
+    }
+  }
+}

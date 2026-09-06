@@ -1,5 +1,17 @@
 # 架构（Architecture）
 
+> ⚠️ **V0 架构文档（历史）— V1 架构见 [docs/architecture-v1.md](architecture-v1.md)。**
+>
+> V1 相对本文（V0）的核心变化：
+>
+> 1. 新增本地确定性 **Driver**（`gateflow` CLI）：任务发现、inbox 派发、outbox 校验与 GitHub 同步；V0 的"人手动对 AI 说'规划 / 执行 #123'"不再是标准流程；
+> 2. 新增 **Workspace Protocol**（`.gateflow/`：inbox / outbox / receipts）：Agent 不再配置 GitHub MCP / PAT，只读写本地工作区；
+> 3. **Trusted Agent 重定义**为受控 Driver 的 GitHub Identity（如 `gateflow-agent[bot]`），登记在 `trusted-agents` 输入；
+> 4. `/approve` 变为 `/approve <plan-comment-id>`（Plan 绑定审批），Executor 派发前 Driver 独立校验 Approval Proof；
+> 5. Gate 的职责与 V0 协议（Labels / 状态机 / 命令 / Marker）保持不变——本文描述的 Gate 部分仍然有效。
+>
+> 以下正文保留 V0 原貌，仅供追溯，不作为 V1 的实现依据。
+
 > 版本：V0（Phase 0 冻结骨架）
 > 权威协议见 [protocol.md](protocol.md)；安全模型见 [security.md](security.md)。
 

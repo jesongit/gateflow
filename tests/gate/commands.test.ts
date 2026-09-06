@@ -3,32 +3,73 @@ import { parseCommand } from '../../src/gate/commands';
 import { COMMANDS } from '../../src/gate/protocol';
 
 describe('strict command parsing (protocol 3.1)', () => {
-  it('accepts the five frozen commands when the comment is exactly the command', () => {
+  it('accepts the frozen commands when the comment matches the whole body', () => {
     expect(parseCommand('/ai-plan')).toEqual({ command: COMMANDS.aiPlan, args: null });
-    expect(parseCommand('/approve')).toEqual({ command: COMMANDS.approve, args: null });
     expect(parseCommand('/cancel')).toEqual({ command: COMMANDS.cancel, args: null });
   });
 
+  it('parses the V1 anchored /approve <plan-comment-id> (protocol 3.2 / 3.4)', () => {
+    expect(parseCommand('/approve 3472198451')).toEqual({
+      command: COMMANDS.approve,
+      args: { planCommentId: 3472198451 },
+    });
+    expect(parseCommand('/approve 123')).toEqual({
+      command: COMMANDS.approve,
+      args: { planCommentId: 123 },
+    });
+  });
+
   it('tolerates leading/trailing whitespace (trim before match)', () => {
-    expect(parseCommand('  /approve  ')).toEqual({ command: '/approve', args: null });
+    expect(parseCommand('  /approve 123  ')).toEqual({
+      command: '/approve',
+      args: { planCommentId: 123 },
+    });
     expect(parseCommand('\t/ai-plan\n')).toEqual({ command: '/ai-plan', args: null });
     expect(parseCommand('/cancel\r\n')).toEqual({ command: '/cancel', args: null });
   });
 
+  it('V1 breaking change: a bare /approve is no longer a command (normal comment, rule 7)', () => {
+    expect(parseCommand('/approve')).toBeNull();
+    expect(parseCommand('  /approve  ')).toBeNull(); // trims to the bare command
+    expect(parseCommand('/approve\n')).toBeNull();
+  });
+
   it('rejects substring and embedded occurrences (no includes matching)', () => {
-    expect(parseCommand('请看 /approve')).toBeNull();
-    expect(parseCommand('x/approve')).toBeNull();
+    expect(parseCommand('请看 /approve 123')).toBeNull();
+    expect(parseCommand('x/approve 123')).toBeNull();
     expect(parseCommand('text /approve text')).toBeNull();
     expect(parseCommand('/approve/approve')).toBeNull();
+    expect(parseCommand('/approve/approve 123')).toBeNull();
     expect(parseCommand('/approve please')).toBeNull();
+    expect(parseCommand('/approve 123 please')).toBeNull();
     expect(parseCommand('/approve\nsomeone else')).toBeNull();
   });
 
   it('is case-sensitive', () => {
     expect(parseCommand('/Approve')).toBeNull();
-    expect(parseCommand('/APPROVE')).toBeNull();
+    expect(parseCommand('/Approve 123')).toBeNull();
+    expect(parseCommand('/APPROVE 123')).toBeNull();
     expect(parseCommand('/Cancel')).toBeNull();
     expect(parseCommand('/AI-PLAN')).toBeNull();
+  });
+
+  it('rejects malformed /approve arguments (normal comments, rule 7)', () => {
+    expect(parseCommand('/approve abc')).toBeNull(); // non-numeric argument
+    expect(parseCommand('/approve 12abc')).toBeNull(); // trailing garbage in the token
+    expect(parseCommand('/approve 123 extra')).toBeNull(); // more than one argument
+    expect(parseCommand('/approve 12.5')).toBeNull(); // not decimal digits
+    expect(parseCommand('/approve -5')).toBeNull(); // sign is not a digit
+    expect(parseCommand('/approve 0x10')).toBeNull(); // hex is not decimal digits
+    expect(parseCommand('/approve 123 456')).toBeNull();
+    expect(parseCommand('/approve ')).toBeNull(); // trims to the bare command
+    expect(parseCommand('/approve\t123')).toBeNull(); // tab is not the single required space
+    expect(parseCommand('/approve  123')).toBeNull(); // double space after the command word
+  });
+
+  it('rejects a multi-line /approve (`.` never crosses newlines, anchored match)', () => {
+    expect(parseCommand('/approve 123\n456')).toBeNull();
+    expect(parseCommand('/approve\n123')).toBeNull();
+    expect(parseCommand('/approve 123\n/approve 123')).toBeNull();
   });
 
   it('rejects near-misses, punctuation and non-commands', () => {
@@ -107,6 +148,6 @@ describe('/choose and /change strict parsing (Phase 2, protocol 3.2)', () => {
     expect(parseCommand('请 /choose 1 B')).toBeNull();
     expect(parseCommand('/choose 1 B thanks')).toBeNull();
     expect(parseCommand('please /change it')).toBeNull();
-    expect(parseCommand('/change it\n/approve')).toBeNull();
+    expect(parseCommand('/change it\n/approve 123')).toBeNull();
   });
 });

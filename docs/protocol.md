@@ -1,5 +1,7 @@
-# 协议（Protocol）—— V0 冻结版
+# 协议（Protocol）—— V0 冻结版 · V1 修订
 
+> **文档版本：V1（2026-09）。** V1 修订仅改变 `/approve` 命令形态与审批校验（见 §3.4 "V1 审批证明（Plan-ID 绑定）"，破坏性变更：裸 `/approve` 不再是命令）；issue body schema 块、Labels、状态机、Markers 均保持不变，`SCHEMA_VERSION` 仍为 `1`。机器可读的 GitHub 侧协议面见 [`protocol/github-schema-v2.json`](../protocol/github-schema-v2.json)。
+>
 > **Schema 版本：1（冻结）**
 > 冻结范围：Labels / 状态机 / Commands / Markers / Maturity / Permissions / 并发与一致性规则。
 > 本文档是协议的唯一权威来源；协议常量同步实现在 [`src/protocol.ts`](../src/protocol.ts)。任何修改必须同时更新两处并视为协议升级（提升 schema / marker 版本号）。
@@ -36,7 +38,7 @@
    (非 Workflow Issue) ───► PLANNING
                            │  Consumer 发布 Plan（plan marker，T1）
                            ▼
-                         REVIEW ──── /approve (Trusted Human, T2) ───► READY
+                         REVIEW ──── /approve <plan-comment-id> (Trusted Human, T2) ───► READY
                                                                          │
                                             Executor 创建 Tracker（tracker marker，T3）
                                                                          ▼
@@ -53,7 +55,7 @@
 | --- | --- | --- | --- |
 | T0 | 无（无任何 `ai:*` 标签） | PLANNING | Trusted Human 发 `/ai-plan`；或 Producer CREATE 时直接打 `ai:planning` |
 | T1 | PLANNING | REVIEW | Gate 检测到包含有效 plan marker 的新 Comment；发布 actor ∈ Trusted Human ∪ Trusted Agent |
-| T2 | REVIEW | READY | Trusted Human 发 `/approve` |
+| T2 | REVIEW | READY | Trusted Human 发 `/approve <plan-comment-id>`（V1 Plan-ID 绑定，见 §3.4） |
 | T3 | READY | WORKING | Gate 检测到包含有效 execution-tracker marker 的新 Comment；actor ∈ Trusted Human ∪ Trusted Agent |
 | T4 | WORKING | BLOCKED | Gate 从 Tracker 的 `**Status:** Blocked` 机器值确定性解析（Tracker Comment edited） |
 | T5 | BLOCKED | WORKING | Gate 从 Tracker 的 `**Status:** In Progress` 机器值确定性解析（Tracker Comment edited） |
@@ -87,8 +89,8 @@
 
 1. 输入 = Issue Comment 的 body（`issue_comment.created` / `edited`）。
 2. 先 `trim(body)` 去除首尾空白，再匹配。
-3. 无参命令（`/ai-plan`、`/approve`、`/cancel`）使用**全等匹配**，例如 `trim(body) === "/approve"`。
-4. 带参命令（`/choose`、`/change`）使用**锚定正则**（`^...$`）匹配。
+3. 无参命令（`/ai-plan`、`/cancel`）使用**全等匹配**，例如 `trim(body) === "/cancel"`。（V1 修订：`/approve` 不再是无参命令，见 §3.4。）
+4. 带参命令（`/choose`、`/change`、`/approve`）使用**锚定正则**（`^...$`）匹配。
 5. **禁止 `body.includes(...)` 等子串 / 前缀匹配**——命令必须独占整条评论。
 6. 大小写敏感：`/Approve`、`/approve `（带尾随空格已被 trim）以外的写法都不是命令。
 7. 一条 Comment 只识别一个命令；不匹配任何命令的 Comment 是普通评论，静默忽略。
@@ -101,7 +103,7 @@
 | 命令 | 精确语法（trim 后） | Actor | 前提状态 | 执行效果 |
 | --- | --- | --- | --- | --- |
 | `/ai-plan` | 全等 `/ai-plan` | Trusted Human | 无任何 `ai:*` 标签 | T0：打 `ai:planning`，✅ |
-| `/approve` | 全等 `/approve` | Trusted Human | REVIEW | T2：`ai:review` → `ai:ready`，✅ |
+| `/approve` | 锚定 `^/approve (\d+)$`：`<plan-comment-id>` = 被批准 Plan 评论的 id（十进制数字，整条评论匹配）。**V1 破坏性变更：裸 `/approve` 不再是命令**，按普通评论静默忽略（规则 7） | Trusted Human | REVIEW | T2：`ai:review` → `ai:ready`，✅；目标评论必须通过 §3.4 全部校验，否则为无 reaction 的 no-op |
 | `/choose` | 锚定 `^/choose (\S+) (\S+)$` | Trusted Human | REVIEW | ✅；解析出 `问题号` `选项` 两参数原样转交 Consumer；**不迁移状态** |
 | `/change` | 锚定 `^/change (.+)$`（自由文本至少 1 个字符） | Trusted Human | REVIEW | ✅；自由文本原样转交 Consumer；**不迁移状态** |
 | `/cancel` | 全等 `/cancel` | Trusted Human | 任一 `ai:*` 状态（含 BLOCKED、DONE） | 移除该 Issue 全部 `ai:*` 标签；**不关闭 Issue**；✅ |
@@ -110,8 +112,29 @@
 
 - `/choose 1 B` 表示"问题 1 选 B"。Gate **只校验格式**（恰好两个非空白参数，多一个少一个都无效），不解释参数含义；选项语义由 Consumer 根据当前 Plan 的 Open Decisions 处理。
 - `/change` 之后的全部文本是**不可信自由数据**，Gate 原样传递给 Consumer；Consumer 只修改受影响的 Plan 部分并发布 Plan vN+1（新 Comment，不编辑旧 Plan）。
-- `/approve` 的"目标 Plan 是当前版本"：Gate 只认可最后一条含有效 plan marker 的 Comment 为当前版本；V0 仅强校验 REVIEW 状态（版本级校验在 Phase 5 完善）。
+- `/approve` 的"目标 Plan 是当前版本"：V1 起审批绑定 Plan 评论 id（`/approve <plan-comment-id>`），Gate 只认可最后一条含有效 plan marker 的 Comment 为当前版本；完整校验见 §3.4。
 - Reaction 只是操作反馈（成功 ✅ / Owner 无效命令 👎），**不是权限证明，也不是状态的一部分**。
+
+### 3.4 V1 审批证明（Plan-ID 绑定）
+
+V1 将审批绑定到具体 Plan 评论：`/approve <plan-comment-id>`。**持久化的 Approval Record 就是人类自己发出的这条 `/approve <id>` 评论**——作者 = 审批人，参数 = 被批准的 Plan 评论 id，二者在 GitHub 上天然可审计。
+
+Gate 在执行 T2 前按顺序校验以下全部条件；**任何一条不满足即为记 Actions log 的 no-op：不迁移、不加任何 reaction**（状态前提不满足约定，见 §2.3 / 实现备注）：
+
+1. actor 是 Trusted Human（不满足时保持原有 👎 反馈路径，见实现备注 Phase 2）；
+2. Issue 处于 open 且 REVIEW 状态（迁移前照例按 §7 经 API 重读 labels）；
+3. 被引用评论（`<plan-comment-id>`）**存在且属于本 Issue**（Issue 归属只能通过本 Issue 的评论列表核实）；
+4. 被引用评论携带**有效** plan marker（与一切 marker 评论相同的唯一性 / 独占整行规则，§4.3）；
+5. 被引用评论是**当前 Plan**：本 Issue 上按评论 id 时间序的**最后一条**有效 plan-marker 评论（更新的 Plan 发布后，指向旧 Plan 的 `/approve` 立即失效）；
+6. 冻结迁移表允许 REVIEW → READY（T2）。
+
+全部通过后：执行 T2（`ai:review` → `ai:ready`，先加后删）并对命令评论加 ✅。
+
+边界与分工：
+
+- **Executor 派发前的二次校验由 Driver 负责**（见 [architecture-v1.md](architecture-v1.md) §3.3）：`ai:ready` + 有效 `/approve <id>` 评论（作者 ∈ Trusted Humans）+ id 指向当前 Plan + Plan 在批准后未被编辑（内容哈希 / 陈旧性校验发生在派发时）。Gate 只保证标签迁移本身是 Plan 绑定的。
+- **伪造 `ai:ready`（手工把 `ai:review` 改成 `ai:ready`）无法产生合法 Executor 派发**：不存在对应的 Approval Record。
+- Marker 只是结构标记（§4）：plan marker 的存在永远不等于审批；审批只来自 Trusted Human 的 `/approve <id>` 评论。
 
 ---
 
@@ -241,7 +264,7 @@ AI **不能**：
 
 - 本协议为 V0 冻结版：字段、枚举、语法、迁移表均不得随意变更。
 - 变更必须：更新本文档 + 同步 `src/protocol.ts` + 提升 schema 版本（issue body `schema:` 字段、comment marker 的 `:v1` 后缀），保证新旧内容可区分。
-- 已知留白（不算协议变更）：`/approve` 的版本级校验（Phase 5）、👎 反馈实装（Phase 2）、Tracker Status 解析细节（Phase 6）。
+- 已知留白（不算协议变更）：`/approve` 的版本级校验已由 **V1 §3.4（Plan-ID 绑定）** 落实；👎 反馈实装（Phase 2）、Tracker Status 解析细节（Phase 6）均已落实。
 
 ---
 
@@ -261,3 +284,8 @@ AI **不能**：
   - 解析规则：按行扫描评论 body，使用与 4.3 相同的 ``` 围栏约定（围栏内的行一律不计数，引用模板不触发）；取第一条 trim 后以字面量 `**Status:**` 开头的行，冒号后文本 trim 后与三个机器值 `In Progress` / `Blocked` / `Completed` 做**大小写敏感全等比较**。行首不是 `**Status:**` 字面量（如列表项、`Status:` 无加粗）不算 Status 行；找不到 Status 行 → log + no-op；值非机器值（含大小写不符、空值）→ log + no-op，绝不猜测。存在多条 Status 行时取第一条（模板恰有一条，第一条为权威）。
   - 迁移映射：WORKING + `Blocked` → T4（加 `ai:blocked` 移除 `ai:working`）；BLOCKED + `In Progress` → T5（加 `ai:working` 移除 `ai:blocked`），加标签先于移除标签（与其余迁移一致）。同值编辑（WORKING 下 `In Progress`、BLOCKED 下 `Blocked`）为 log no-op，保证事件重复投递幂等；`Completed` 在任何状态下都**不触发迁移**（完成只走 completion-report marker 的 T6；BLOCKED 状态必须先由人处理后改回 `In Progress` 恢复 WORKING，再发布 Report）。
 - 2026-09-05（Phase 6 实装）：Gate 实现版本号 `GATE_VERSION` 升至 `0.3.0`；冻结的 `schema: 1` 与 marker `:v1` 后缀不变，非协议升级。
+- **2026-09-06（V1 Phase 9 实装）：`/approve` 升级为 `/approve <plan-comment-id>`（§3.4）。**
+  - 命令形态：裸 `/approve` 自 V1 起**不再是命令**（`parseCommand` 返回 null，按普通评论静默忽略）；新形态为锚定 `^/approve (\d+)$`，参数为被批准 Plan 评论的数字 id。破坏性变更，无兼容模式（开发期，V1 breaking change）。
+  - Gate 校验顺序：Trusted Human（否则 👎）→ Issue open → 重读 labels 后 REVIEW → 目标评论存在且属于本 Issue → 携带有效 plan marker → 是最后一条（当前）Plan 评论；任一失败 = 记 log 的 no-op，**无迁移、无 reaction**；全部通过 = T2（先加 `ai:ready` 后删 `ai:review`）+ ✅。日志含绑定的 Plan 评论 id（形如 `T2 on #42: ai:review -> ai:ready (REVIEW -> READY approving plan comment 123).`）。
+  - Approval Record = 人类自己的 `/approve <id>` 评论；Executor 派发前由 Driver 二次校验（当前 Plan 匹配 + Plan 批准后未被编辑），见 architecture-v1 §3.3。
+  - Gate 实现版本号 `GATE_VERSION` 升至 `1.0.0`；冻结的 `schema: 1` 与 marker `:v1` 后缀不变，非协议升级。机器可读协议面新增 `protocol/github-schema-v2.json`（仅文档性质，不参与运行时校验）。

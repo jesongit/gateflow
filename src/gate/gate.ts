@@ -24,6 +24,16 @@
  *    Progress -> ai:working). "Completed" never transitions: completion goes
  *    exclusively through the completion-report marker (T6). Non-machine
  *    values and missing values are logged no-ops.
+ *  - V1 approval hardening (plan phases 9 + protocol v2): /approve is bound
+ *    to a specific plan comment ("/approve <plan-comment-id>"). After the
+ *    existing permission / open-issue / REVIEW checks, the referenced
+ *    comment must exist on this issue, carry a valid plan marker and be the
+ *    CURRENT plan (the last valid plan-marker comment, chronological by id).
+ *    A failing target is a logged no-op WITHOUT a reaction (state-
+ *    precondition convention); a passing one performs T2 exactly as before
+ *    and reacts with ✅. The durable Approval Record is the human's own
+ *    "/approve <id>" comment; the Driver re-validates it before executor
+ *    dispatch (architecture-v1 section 3.3).
  *  - The current state is derived from labels re-read via the GitHub API
  *    immediately before every migration; the event payload snapshot is never
  *    trusted (protocol section 7).
@@ -41,11 +51,13 @@ import {
 } from './protocol';
 import {
   parseCommand,
+  type ApproveArgs,
   type ChangeArgs,
   type ChooseArgs,
   type ParsedCommand,
 } from './commands';
-import { inspectCommentMarkers, parseIssueSchemaBlock } from './markers';
+import { validatePlanCommentForApproval } from './approvals';
+import { detectCommentMarker, inspectCommentMarkers, parseIssueSchemaBlock } from './markers';
 import { isLegalTransition, readSnapshot, type WorkflowSnapshot } from './states';
 import { parseTrackerStatus } from './tracker';
 import { isTrustedAgent, isTrustedHuman } from './permissions';
@@ -231,7 +243,7 @@ async function handleCommand(
       accepted = await applyAiPlan(ref, snapshot, client, log);
       break;
     case COMMANDS.approve:
-      accepted = await applyApprove(ref, snapshot, client, log);
+      accepted = await applyApprove(ref, snapshot, parsed.args, client, log);
       break;
     case COMMANDS.choose:
       accepted = await applyChoose(ref, snapshot, parsed.args, log);
@@ -407,10 +419,21 @@ async function applyAiPlan(
   return true;
 }
 
-/** T2: REVIEW -> READY by adding ai:ready and removing ai:review. */
+/**
+ * T2: REVIEW -> READY by adding ai:ready and removing ai:review.
+ *
+ * V1: the approval is bound to a specific plan comment. After the unchanged
+ * state preconditions (single ai:* label, in REVIEW), the comment named by
+ * `/approve <plan-comment-id>` is validated (see approvals.ts): it must
+ * exist on this issue, carry a valid plan marker and be the CURRENT plan —
+ * the last valid plan-marker comment in chronological (id) order. A failed
+ * validation is a logged no-op WITHOUT a reaction; a passed one performs the
+ * add-then-remove label swap exactly as before and earns the ✅ reaction.
+ */
 async function applyApprove(
   ref: IssueRef,
   snapshot: WorkflowSnapshot,
+  args: ApproveArgs,
   client: GitHubClient,
   log: GateLogger,
 ): Promise<boolean> {
@@ -439,12 +462,37 @@ async function applyApprove(
     log.warning('Frozen transition table rejects T2; no transition.');
     return false;
   }
+
+  // V1 plan-ID binding: validate the referenced plan comment before any
+  // write. The issue's comment list (id-ascending) establishes both issue
+  // membership and which plan marker is the current plan; the id-targeted
+  // fetch proves the referenced comment still exists with a valid marker.
+  const allComments = await client.listComments(ref);
+  const planMarkerComments = allComments.filter(
+    (comment) => detectCommentMarker(comment.body) === MARKERS.plan,
+  );
+  const referencedComment = await client.getComment(ref, args.planCommentId);
+  const inspection = validatePlanCommentForApproval({
+    planCommentId: args.planCommentId,
+    referencedComment,
+    planMarkerComments,
+  });
+  if (inspection.status === 'invalid') {
+    log.warning(
+      `Invalid /approve on #${ref.issueNumber}: referenced plan comment ` +
+        `${args.planCommentId} rejected (${inspection.reason}); the approval must name the ` +
+        'current plan comment; no transition, no reaction.',
+    );
+    return false;
+  }
+
   // Add-then-remove keeps the issue holding exactly one ai:* label even if a
   // reader observes it between the two calls.
   await client.addLabels(ref, [LABELS.ready]);
   await client.removeLabel(ref, LABELS.review);
   log.info(
-    `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} (REVIEW -> READY, plan approved).`,
+    `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} ` +
+      `(REVIEW -> READY approving plan comment ${inspection.planCommentId}).`,
   );
   return true;
 }
