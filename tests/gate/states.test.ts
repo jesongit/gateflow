@@ -5,8 +5,8 @@ import {
   TRANSITIONS,
   type Label,
   type State,
-} from '../src/protocol';
-import { aiLabelsIn, isLegalTransition, readSnapshot } from '../src/states';
+} from '../../src/gate/protocol';
+import { aiLabelsIn, isLegalTransition, readSnapshot } from '../../src/gate/states';
 
 describe('state snapshot reading', () => {
   it('filters ai:* labels out of a raw label list', () => {

@@ -1,3 +1,6 @@
 # Dependencies only. dist/ is intentionally NOT ignored:
 # GitHub JavaScript Actions require the bundled dist/index.js to be committed.
 node_modules/
+
+# GateFlow V1 local runtime (Workspace Protocol: inbox/outbox/receipts/logs).
+.gateflow/

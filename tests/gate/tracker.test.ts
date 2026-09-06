@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseTrackerStatus, TRACKER_STATUSES } from '../src/tracker';
+import { parseTrackerStatus, TRACKER_STATUSES } from '../../src/gate/tracker';
 
 const TRACKER_BODY = [
   '<!-- ai-workflow:execution-tracker:v1 -->',

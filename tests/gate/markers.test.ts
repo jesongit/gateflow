@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { MARKERS } from '../src/protocol';
-import { detectCommentMarker, inspectCommentMarkers, parseIssueSchemaBlock } from '../src/markers';
+import { MARKERS } from '../../src/gate/protocol';
+import { detectCommentMarker, inspectCommentMarkers, parseIssueSchemaBlock } from '../../src/gate/markers';
 
 describe('comment marker detection (Phase 1 skeleton)', () => {
   it('recognizes a marker that occupies its own line', () => {

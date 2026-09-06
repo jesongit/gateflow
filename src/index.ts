@@ -11,8 +11,8 @@
  */
 import * as core from '@actions/core';
 import { context, getOctokit } from '@actions/github';
-import { runGate, type GateInput, type GateLogger } from './gate';
-import { createGitHubClient, type GitHubClient } from './github';
+import { runGate, type GateInput, type GateLogger } from './gate/gate';
+import { createGitHubClient, type GitHubClient } from './gate/github';
 
 export const GATE_VERSION = '0.3.0';
 

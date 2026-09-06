@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runGate, type GateInput, type GateLogger } from '../src/gate';
-import type { GitHubClient, IssueRef } from '../src/github';
-import { LABELS } from '../src/protocol';
+import { runGate, type GateInput, type GateLogger } from '../../src/gate/gate';
+import type { GitHubClient, IssueRef } from '../../src/gate/github';
+import { LABELS } from '../../src/gate/protocol';
 
 /* ---------------------------------------------------------------- helpers */
 

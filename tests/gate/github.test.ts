@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createGitHubClient, type OctokitLike } from '../src/github';
-import type { IssueRef } from '../src/github';
+import { createGitHubClient, type OctokitLike } from '../../src/gate/github';
+import type { IssueRef } from '../../src/gate/github';
 
 /* Build a structurally-typed fake octokit; no real GitHub API is touched. */
 function fakeOctokit() {

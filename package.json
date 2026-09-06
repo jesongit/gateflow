@@ -1,13 +1,19 @@
 {
   "name": "gateflow",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "GateFlow (GitHub-native AI Workflow V0): deterministic TypeScript gate, frozen protocol, and Markdown skills. State lives in GitHub (Issues, Comments, Labels); AI never performs authorization decisions.",
+  "description": "GateFlow V1: GitHub-native Human-Gated Agent Runtime. GitHub stores canonical state; the deterministic Gate controls authorization and state transitions; the local Driver handles discovery, dispatch and sync; Agents communicate only through the local Workspace Protocol.",
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "gateflow": "dist/cli.js"
+  },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js",
+    "build": "npm run build:gate && npm run build:cli",
+    "build:gate": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node20 --outfile=dist/cli.js",
+    "check:dist": "node scripts/check-dist.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -18,5 +24,9 @@
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "octokit": "^5.0.5",
+    "yaml": "^2.9.0"
   }
 }

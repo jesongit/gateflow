@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTrustedAgent, isTrustedHuman, parseLoginList } from '../src/permissions';
+import { isTrustedAgent, isTrustedHuman, parseLoginList } from '../../src/gate/permissions';
 
 describe('trusted humans', () => {
   it('accepts the repository owner', () => {

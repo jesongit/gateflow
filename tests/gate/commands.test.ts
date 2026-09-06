@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseCommand } from '../src/commands';
-import { COMMANDS } from '../src/protocol';
+import { parseCommand } from '../../src/gate/commands';
+import { COMMANDS } from '../../src/gate/protocol';
 
 describe('strict command parsing (protocol 3.1)', () => {
   it('accepts the five frozen commands when the comment is exactly the command', () => {

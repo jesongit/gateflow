@@ -13,8 +13,8 @@ import {
   SCHEMA_VERSION,
   STATES,
   TRANSITIONS,
-} from '../src/protocol';
-import { GATE_VERSION } from '../src/index';
+} from '../../src/gate/protocol';
+import { GATE_VERSION } from '../../src/index';
 
 describe('Phase 0 protocol freeze (docs/protocol.md <-> src/protocol.ts)', () => {
   it('freezes the schema version', () => {
