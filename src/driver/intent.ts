@@ -2,35 +2,51 @@
  * DispatchIntent type and derivation — PURE functions, no I/O (docs/
  * architecture-v1.md §5: "GitHub Canonical State → DispatchIntent").
  *
- * FROZEN CONSTRAINTS (docs/workspace-protocol.md §3, architecture-v1.md §3):
- * - Consumer revision (planning round) = 1 + TOTAL human feedback commands
- *   (/change, /choose) on the issue, zero-padded to two digits — ALL-TIME
- *   count, so a re-plan after feedback always yields a fresh dispatch_id.
- * - Executor revision = `p<plan_comment_id>`; the executor dispatch is bound
- *   to one specific approved Plan comment.
+ * SCHEMA 2 FROZEN CONSTRAINTS (docs/plans/v1_hardening_decisions.md §4-§5):
+ * - Every dispatch binds the issue's CURRENT workflow epoch (the
+ *   highest-comment-id Gate/Driver-issued epoch record). No epoch record →
+ *   no intent (the Driver bootstraps one for planning issues elsewhere).
+ * - Consumer revision = 1 + Gate-ACCEPTED feedback events of the current
+ *   epoch (feedback_accepted records whose command comment still exists and
+ *   parses). Raw command counts are NEVER used: rejected, duplicated,
+ *   foreign-epoch and plain-text comments don't count.
+ * - Executor dispatches bind the Gate-issued approval RECORD: epoch match,
+ *   plan-comment-id match AND plan_sha256 equality against the CURRENT plan
+ *   body. A plan edited after its approval produces a hash mismatch → no
+ *   intent (the stale approval cannot execute).
+ * - Any suspect record (unparsable, or authored outside the gate-logins
+ *   allowlist) fails the whole issue closed: no intents.
  *
- * THIS IS WHERE ATTACKS DIE (architecture-v1.md §3.3): a fake `ai:ready`
- * label (hand-set by anyone) produces an executor dispatch ONLY when ALL of
- * the following hold, checked independently here on every cycle:
- *   (a) a Plan comment exists (the Current Plan candidate),
- *   (b) a trusted-human `/approve <plan-comment-id>` record exists whose id
- *       equals the latest plan comment's id,
- *   (c) the Plan comment was NOT edited after the approval moment
- *       (plan.updatedAt <= approval.createdAt).
- * Any failed condition yields NO intent (logless — the caller logs at the
- * discovery level), never a degraded intent.
+ * THIS IS WHERE ATTACKS DIE: a fake `ai:ready` label, a hand-copied
+ * `/approve` comment, or an approval from a rejected/old round all produce
+ * NO intent, because none of them is a valid Gate-issued record bound to
+ * the current epoch and the exact current plan bytes.
  *
  * The Driver NEVER calls an LLM and NEVER transitions labels; it only turns
  * canonical GitHub state into dispatch intents for the dispatch layer.
  */
 import type { CommentDetail, IssueDetail } from '../github/client';
 import {
-  findApprovalRecords,
-  findHumanFeedbackCommands,
-  findLatestPlanComment,
+  acceptedFeedbackEvents,
+  approvalRecordAnchorFailure,
+  findPlanComments,
+  readIssueRecords,
+  type IssueRecordView,
 } from '../github/issue-sync';
-import type { HumanFeedbackEntry } from '../github/issue-sync';
+import { planSha256 } from '../protocol/plan';
+import { approvalRecordsConflict } from '../protocol/records';
 import type { Role } from '../workspace/protocol';
+import type { HumanFeedbackEntry } from '../github/issue-sync';
+
+/** Inputs the intent derivation reads from canonical state + config. */
+export interface IntentContext {
+  repositoryId: number;
+  repoOwner: string;
+  /** Trusted humans (config + repo owner) for feedback anchoring. */
+  trustedHumans: ReadonlySet<string>;
+  /** Driver-side allowlist of Gate record identities. */
+  gateLogins: ReadonlySet<string>;
+}
 
 /** One to-be-dispatched unit of work derived from canonical GitHub state. */
 export interface DispatchIntent {
@@ -39,10 +55,14 @@ export interface DispatchIntent {
   reason: 'planning' | 'feedback_applied' | 'approved_plan';
   /** Consumer: zero-padded round (`'01'`). Executor: `'p<plan_comment_id>'`. */
   revision: string;
+  /** The workflow epoch this dispatch belongs to (schema 2, always present). */
+  epoch: string;
   /** Executor only: the approved Plan comment id. */
   planCommentId: number | null;
-  /** Executor only: the Approval Record comment id. */
+  /** Executor only: the Gate-issued approval RECORD comment id. */
   approvalCommentId: number | null;
+  /** Executor only: the approval-bound plan content hash. */
+  planSha256: string | null;
 }
 
 /**
@@ -54,11 +74,6 @@ export function aiLabels(labels: readonly string[]): string[] {
   return labels.filter((label) => label.startsWith('ai:'));
 }
 
-/** Mirrors issue-sync's anchored /change pattern (whole-comment matches). */
-const CHANGE_PATTERN = /^\/change (.+)$/;
-/** Mirrors issue-sync's anchored /choose pattern (whole-comment matches). */
-const CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
-
 function consumerRound(feedbackCount: number): string {
   return String(1 + feedbackCount).padStart(2, '0');
 }
@@ -67,21 +82,21 @@ function consumerRound(feedbackCount: number): string {
  * Derive dispatch intents for one issue from canonical state.
  *
  * - closed issue, or 0 / >1 `ai:*` labels → [] (caller logs).
+ * - no epoch record, or ANY suspect record → [] (fail closed).
  * - `ai:planning` → consumer planning round (reason `feedback_applied` when
- *   any human feedback command exists — contract §3: round = 1 + total).
- * - `ai:review` → consumer round ONLY when a feedback command is NEWER than
- *   the latest Plan comment (comments arrive in ascending id order; a plan
- *   comment newer than all feedback means the plan already incorporates it).
- * - `ai:ready` → executor dispatch, gated by the independent Approval Record
- *   re-validation (a)–(c) in the file header.
+ *   accepted feedback exists in this epoch).
+ * - `ai:review` → consumer round ONLY when an accepted feedback event is
+ *   NEWER than the latest Plan comment (a plan comment newer than all
+ *   feedback means the plan already incorporates it).
+ * - `ai:ready` → executor dispatch, gated by the independent approval-record
+ *   re-validation (epoch + plan id + plan hash).
  * - `ai:working` | `ai:blocked` | `ai:done` → [] (sync-only states: the
  *   Driver's job here is outbox syncing, not dispatching).
  */
 export function deriveIntents(
   issue: IssueDetail,
   comments: CommentDetail[],
-  trustedHumans: ReadonlySet<string>,
-  repoOwner: string,
+  ctx: IntentContext,
 ): DispatchIntent[] {
   if (issue.state === 'closed') return [];
   const labels = aiLabels(issue.labels);
@@ -89,8 +104,17 @@ export function deriveIntents(
   const state = labels[0];
   if (state === undefined) return []; // unreachable given length check; keeps noUncheckedIndexedAccess honest
 
-  const feedback = findHumanFeedbackCommands(comments, trustedHumans, repoOwner);
-  const feedbackCount = feedback.length;
+  const view: IssueRecordView = readIssueRecords(comments, ctx.gateLogins);
+  // Fail closed: any record with a broken body or an untrusted author means
+  // someone may be forging authorization facts on this issue.
+  if (view.suspect.length > 0) return [];
+  if (view.epoch === null) return [];
+  const epoch = view.epoch.record.workflow_epoch;
+
+  // Only Gate-accepted feedback events of the current epoch, still anchored
+  // to a valid trusted-human command comment.
+  const accepted = acceptedFeedbackEvents(view, comments, ctx.trustedHumans, ctx.repoOwner);
+  const feedbackCount = accepted.length;
 
   switch (state) {
     case 'ai:planning': {
@@ -100,15 +124,18 @@ export function deriveIntents(
           issueNumber: issue.number,
           reason: feedbackCount > 0 ? 'feedback_applied' : 'planning',
           revision: consumerRound(feedbackCount),
+          epoch,
           planCommentId: null,
           approvalCommentId: null,
+          planSha256: null,
         },
       ];
     }
     case 'ai:review': {
-      const plan = findLatestPlanComment(comments);
-      if (plan === null) return [];
-      const newerFeedback = feedback.some((entry) => entry.comment.id > plan.id);
+      const plans = findPlanComments(comments);
+      const plan = plans[plans.length - 1];
+      if (plan === undefined) return [];
+      const newerFeedback = accepted.some((entry) => entry.comment.id > plan.id);
       if (!newerFeedback) return [];
       return [
         {
@@ -116,30 +143,43 @@ export function deriveIntents(
           issueNumber: issue.number,
           reason: 'feedback_applied',
           revision: consumerRound(feedbackCount),
+          epoch,
           planCommentId: null,
           approvalCommentId: null,
+          planSha256: null,
         },
       ];
     }
     case 'ai:ready': {
-      const plan = findLatestPlanComment(comments);
-      if (plan === null) return [];
-      const approvals = findApprovalRecords(comments, trustedHumans, repoOwner);
-      const approval = approvals.find((record) => record.planCommentId === plan.id);
+      const plans = findPlanComments(comments);
+      const plan = plans[plans.length - 1];
+      if (plan === undefined) return [];
+      // Approval record binding: epoch + plan id + exact plan content hash,
+      // PLUS the human anchor — the record must reference a still-existing
+      // anchored /approve by a trusted human matching the recorded approver.
+      const candidates = view.approvals.filter(
+        (entry) =>
+          entry.record.workflow_epoch === epoch &&
+          entry.record.plan_comment_id === plan.id &&
+          entry.record.plan_sha256 === planSha256(plan.body) &&
+          approvalRecordAnchorFailure(entry.record, comments, ctx.trustedHumans, ctx.repoOwner) ===
+            null,
+      );
+      if (candidates.length === 0) return [];
+      const conflict = approvalRecordsConflict(candidates);
+      if (conflict.conflict) return []; // fail closed on divergent records
+      const approval = candidates[candidates.length - 1];
       if (approval === undefined) return [];
-      const planEditedAt = Date.parse(plan.updatedAt);
-      const approvedAt = Date.parse(approval.comment.createdAt);
-      // (c) the plan must not have been edited after the approval moment.
-      // NaN (unparseable timestamps) compares false → no dispatch: fail closed.
-      if (!(planEditedAt <= approvedAt)) return [];
       return [
         {
           role: 'executor',
           issueNumber: issue.number,
           reason: 'approved_plan',
           revision: `p${plan.id}`,
+          epoch,
           planCommentId: plan.id,
-          approvalCommentId: approval.comment.id,
+          approvalCommentId: approval.commentId,
+          planSha256: approval.record.plan_sha256,
         },
       ];
     }
@@ -181,20 +221,20 @@ function formatTimestamp(iso: string): string {
 function feedbackEntryText(entry: HumanFeedbackEntry): string {
   const trimmed = entry.comment.body.trim();
   if (entry.kind === 'choose') {
-    const match = CHOOSE_PATTERN.exec(trimmed);
+    const match = /^\/choose (\S+) (\S+)$/.exec(trimmed);
     const question = match?.[1];
     const answer = match?.[2];
     if (question !== undefined && answer !== undefined) {
       return `Q: ${question} → A: ${answer}`;
     }
   } else {
-    const match = CHANGE_PATTERN.exec(trimmed);
+    const match = /^\/change (.+)$/.exec(trimmed);
     const text = match?.[1];
     if (text !== undefined) {
       return text;
     }
   }
-  return trimmed; // defensive: findHumanFeedbackCommands already anchored these
+  return trimmed; // defensive: accepted events are anchored commands
 }
 
 /**
@@ -210,27 +250,4 @@ export function buildFeedbackMarkdown(entries: HumanFeedbackEntry[]): string | n
     return `## ${n} — ${when} (/${entry.kind})\n${feedbackEntryText(entry)}`;
   });
   return `# Human Feedback\n\n${sections.join('\n\n')}\n`;
-}
-
-/** Marker-shaped HTML comment lines dropped by extractPlanContent. */
-const MARKER_LINE_PATTERN = /^<!--\s*ai-workflow:[a-z-]+:v\d+\s*-->$/;
-/** The dispatch-id HTML comment embedded in every protocol comment. */
-const DISPATCH_ID_LINE_PATTERN = /<!--\s*gateflow:dispatch-id:\s*\S+\s*-->/;
-
-/**
- * Inverse of buildPlanCommentBody (docs §7): the executor's inbox PLAN.md is
- * the approved Plan comment MINUS the marker line and the
- * `<!-- gateflow:dispatch-id ... -->` comment line, trimmed. Everything else
- * — including any other HTML comments the plan author wrote — is preserved
- * verbatim.
- */
-export function extractPlanContent(planCommentBody: string): string {
-  const kept = planCommentBody
-    .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      return !MARKER_LINE_PATTERN.test(trimmed) && !DISPATCH_ID_LINE_PATTERN.test(trimmed);
-    })
-    .join('\n');
-  return kept.trim();
 }

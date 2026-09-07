@@ -1,5 +1,5 @@
 /**
- * Producer submit protocol (docs/workspace-protocol.md §9, frozen).
+ * Producer submit protocol (docs/workspace-protocol.md §9, schema 2).
  *
  * A Producer agent writes `.gateflow/submit/TASK.md` plus
  * `.gateflow/submit/submit.json` when the user explicitly asks for a new
@@ -7,7 +7,15 @@
  * turned into a GitHub Issue, then the files are moved into
  * `submit/processed-<timestamp>/` to prevent duplicate submissions. A failed
  * validation produces `submit/error.json` and waits for human cleanup.
+ *
+ * Schema 2: the Driver injects a stable `submission_id` into submit.json
+ * when the agent omitted one (`sub_` + 16 base36 chars, persisted with an
+ * atomic rewrite). The id — never a title match — is the anchor for crash
+ * reconciliation: after an unknown API outcome the Driver searches GitHub
+ * for the issue carrying the matching source-id comment and adopts it
+ * instead of re-POSTing (docs/plans/v1_hardening_decisions.md §7).
  */
+import { randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
@@ -27,6 +35,21 @@ export type SubmitInspection =
 const SUBMIT_JSON = 'submit.json';
 const SUBMIT_TASK = 'TASK.md';
 const SUBMIT_ERROR = 'error.json';
+
+/** `sub_` + 16 base36 chars from CSPRNG bytes (rejection-sampled, uniform). */
+export function newSubmissionId(): string {
+  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let id = 'sub_';
+  while (id.length < 4 + 16) {
+    const bytes = randomBytes(16);
+    for (const byte of bytes) {
+      if (id.length >= 4 + 16) break;
+      if (byte >= 252) continue; // 252 = 7*36: largest multiple of 36 ≤ 255
+      id += alphabet[byte % 36];
+    }
+  }
+  return id;
+}
 
 async function readIfExists(file: string): Promise<{ text: string; size: number } | null> {
   let info;
@@ -83,7 +106,22 @@ export async function inspectSubmit(paths: WorkspacePaths): Promise<SubmitInspec
     return { status: 'invalid', error: `${SUBMIT_TASK} exceeds ${MAX_FILE_BYTES} bytes` };
   }
 
-  return { status: 'ready', request: parsed.value, task: task.text };
+  // Schema 2: inject a stable submission_id when the agent omitted one, and
+  // persist it so the Operation-ID anchor survives restarts and retries.
+  let request = parsed.value;
+  if (request.submission_id === undefined) {
+    request = { ...request, submission_id: newSubmissionId() };
+    try {
+      await atomicWriteJson(nodePath.join(paths.submit, SUBMIT_JSON), request);
+    } catch (err) {
+      return {
+        status: 'invalid',
+        error: `could not persist the injected submission_id: ${(err as Error).message}`,
+      };
+    }
+  }
+
+  return { status: 'ready', request, task: task.text };
 }
 
 /**

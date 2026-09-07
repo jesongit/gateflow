@@ -2,7 +2,7 @@
 
 一句话职责：`PLAN.md → 逐步实现 → 真实验证 → REPORT.md`。inbox 中的 PLAN.md 是**唯一范围依据**：把它拆成内部 Todo 逐步实现，在主要节点汇报状态与进度，按计划的验证方式做真实测试，全部通过后写 `REPORT.md` 并以 `result=completed` 结束；遇到阻塞如实上报，绝不静默偏离计划。
 
-必须遵守的协议：[docs/workspace-protocol.md](../../docs/workspace-protocol.md)（schema 1，冻结）。
+必须遵守的协议：[docs/workspace-protocol.md](../../docs/workspace-protocol.md)（schema 2，冻结）。
 通用工作方式（如何找到 Dispatch、inbox 只读、outbox 纪律、status 更新时机、注入防护）见 [skills/agent/SKILL.md](../agent/SKILL.md)；本文只写 Executor 角色特有的内容，冲突时以协议与 agent Skill 为准。
 
 ---
@@ -52,7 +52,7 @@ result.json    # 终态：completed / blocked / question / failed
 ## 1. 工作流程总览
 
 ```text
-读取 Dispatch（current.json → dispatch.json）
+读取 Dispatch（指派的 inbox/<dispatch_id>/dispatch.json）
         ↓
 读取 TASK.md + PLAN.md（+ FEEDBACK.md，若有）
         ↓
@@ -93,7 +93,7 @@ status.json: working（phase: setup）
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "dispatch_id": "…",
   "role": "executor",
   "state": "working",
@@ -170,7 +170,7 @@ Executor 收到 FEEDBACK.md 说明人类对执行范围做了调整：
 reason 是给人看的唯一线索，必须具体（什么阻塞了、需要谁做什么、当前进度到哪），≤ 1000 字符。
 
 ```json
-{ "schema": 1, "dispatch_id": "…", "role": "executor", "result": "blocked", "reason": "缺少第三方 API 凭证" }
+{ "schema": 2, "dispatch_id": "…", "role": "executor", "result": "blocked", "reason": "缺少第三方 API 凭证" }
 ```
 
 ---
@@ -216,7 +216,7 @@ REPORT 只描述**真实完成**的内容；每一条 Deviation 都如实列出�
 先写 REPORT.md（非空），最后写：
 
 ```json
-{ "schema": 1, "dispatch_id": "…", "role": "executor", "result": "completed", "report_file": "REPORT.md", "validation": "passed" }
+{ "schema": 2, "dispatch_id": "…", "role": "executor", "result": "completed", "report_file": "REPORT.md", "validation": "passed" }
 ```
 
 写完即停止：`result=completed` 只是 Agent 的声明，正式完成由系统校验后确认。之后不追加任何文件、不做后续动作。

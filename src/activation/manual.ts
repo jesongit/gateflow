@@ -3,6 +3,7 @@ import type {
   ActivationCapabilities,
   ActivationDispatch,
   ActivationResult,
+  CancelResult,
 } from './types';
 
 /**
@@ -12,8 +13,8 @@ import type {
  * The loop it implements is the backbone of the Workspace architecture:
  *
  *   Driver prepares dispatch → OS/CLI notice → human opens the project in
- *   ChatGPT/ZCode → agent loads the gateflow-agent skill → agent reads
- *   `.gateflow/current.json` → agent starts working.
+ *   ChatGPT/ZCode → agent loads the gateflow-agent skill → agent reads the
+ *   EXACT `.gateflow/inbox/<dispatch-id>/dispatch.json` → agent starts working.
  *
  * As long as this loop closes, the architecture holds; automatic launch
  * adapters are merely optimizations on top of it.
@@ -63,13 +64,29 @@ export class ManualActivationAdapter implements ActivationAdapter {
       'Steps:',
       '  1. Open the project in ChatGPT / ZCode.',
       '  2. Tell the agent to load the gateflow-agent skill.',
-      '  3. The agent reads .gateflow/current.json and processes the dispatch.',
+      `  3. The agent reads exactly ${workspaceRoot}/.gateflow/inbox/${dispatch.dispatchId}/dispatch.json`,
+      '     and processes ONLY that dispatch (never .gateflow/current.json —',
+      '     that file is a manual UI pointer, not task identity).',
       '============================================================',
     ];
     for (const line of lines) {
       this.out(line);
     }
     this.bell();
-    return { notified: true, detail: 'manual' };
+    return { state: 'notified', detail: 'manual' };
+  }
+
+  /**
+   * There is no session handle to cancel: the human activated the client.
+   * The answer is explicit (hardening §9) — cancel support is `unsupported`,
+   * and stopping the agent is a human/Skill-level action.
+   */
+  async cancel(_dispatchId: string): Promise<CancelResult> {
+    return {
+      state: 'unsupported',
+      detail:
+        'manual activation has no session handle; ask the running agent to stop and let ' +
+        'the Driver refuse the dispatch\'s outbox (revocation happens at sync time)',
+    };
   }
 }

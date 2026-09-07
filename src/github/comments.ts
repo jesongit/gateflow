@@ -31,12 +31,14 @@ import { MARKERS } from '../gate/protocol';
 import { parseTrackerStatus, type TrackerStatus } from '../gate/tracker';
 
 /**
- * Matches the dispatch-id HTML comment and captures the id
- * (`gf_r<repo_id>_i<issue>_<role>_<revision>`, docs/workspace-protocol.md
- * section 3). Not anchored to a line: discovery is string-level.
+ * Matches the dispatch-id HTML comment and captures the id (schema 2 grammar
+ * `gf_r<repo_id>_i<issue>_w<epoch_code>_<role>_<revision>`, docs/
+ * workspace-protocol.md section 3; the epoch segment is optional in the
+ * pattern so schema-1 comments published before an upgrade still parse). Not
+ * anchored to a line: discovery is string-level.
  */
 export const DISPATCH_ID_COMMENT_PATTERN: RegExp =
-  /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+_(?:consumer|executor)_\S+) -->/;
+  /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:consumer|executor)_\S+) -->/;
 
 /**
  * Matches a tracker Status machine line: literal bold label, optional

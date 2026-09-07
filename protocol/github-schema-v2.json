@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://gateflow.dev/schemas/github-schema-v2.json",
-  "title": "GateFlow GitHub-side protocol v2 (gate command surface)",
-  "description": "Documentation-only mirror of the V1 GitHub-side protocol that the Gate (GitHub Action) enforces: the five comment commands (exact and anchored shapes, including the V1 '/approve <plan-comment-id>' binding), the four comment markers, the six ai:* labels and the frozen transition table T0-T6. Source of truth: docs/protocol.md (section 3 Commands, section 3.4 'V1 审批证明（Plan-ID 绑定）', section 2 state machine); architecture: docs/architecture-v1.md section 3.3. This schema DOCUMENTS the protocol and is NOT used for runtime validation; the issue-body schema block and all marker strings are unchanged from V0 and SCHEMA_VERSION stays 1.",
+  "title": "GateFlow GitHub Protocol schema 2 (hardening)",
+  "description": "Documentation-only mirror of the schema-2 GitHub-side protocol that the Gate (GitHub Action) enforces: the five comment commands (exact and anchored shapes), the frozen label state machine, workflow markers, and — new in the hardening (docs/plans/v1_hardening_decisions.md) — the Gate-issued RECORD comments (workflow_epoch / approval / feedback_accepted), the Producer source-id anchor, and the fail-closed Organization identity rule. The executable sources of truth are src/gate/* and src/protocol/records.ts.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -21,7 +21,9 @@
     "labels": {
       "description": "The six workflow labels. An issue holds at most one ai:* label at any time.",
       "type": "array",
-      "items": { "$ref": "#/$defs/label" },
+      "items": {
+        "$ref": "#/$defs/label"
+      },
       "minItems": 6,
       "maxItems": 6,
       "uniqueItems": true
@@ -29,7 +31,9 @@
     "states": {
       "description": "Canonical workflow state names, one per label.",
       "type": "array",
-      "items": { "$ref": "#/$defs/state" },
+      "items": {
+        "$ref": "#/$defs/state"
+      },
       "minItems": 6,
       "maxItems": 6,
       "uniqueItems": true
@@ -39,13 +43,27 @@
       "type": "array",
       "items": {
         "oneOf": [
-          { "$ref": "#/$defs/transitionT0" },
-          { "$ref": "#/$defs/transitionT1" },
-          { "$ref": "#/$defs/transitionT2" },
-          { "$ref": "#/$defs/transitionT3" },
-          { "$ref": "#/$defs/transitionT4" },
-          { "$ref": "#/$defs/transitionT5" },
-          { "$ref": "#/$defs/transitionT6" }
+          {
+            "$ref": "#/$defs/transitionT0"
+          },
+          {
+            "$ref": "#/$defs/transitionT1"
+          },
+          {
+            "$ref": "#/$defs/transitionT2"
+          },
+          {
+            "$ref": "#/$defs/transitionT3"
+          },
+          {
+            "$ref": "#/$defs/transitionT4"
+          },
+          {
+            "$ref": "#/$defs/transitionT5"
+          },
+          {
+            "$ref": "#/$defs/transitionT6"
+          }
         ]
       },
       "minItems": 7,
@@ -56,11 +74,21 @@
       "type": "array",
       "items": {
         "oneOf": [
-          { "$ref": "#/$defs/commandAiPlan" },
-          { "$ref": "#/$defs/commandApprove" },
-          { "$ref": "#/$defs/commandChoose" },
-          { "$ref": "#/$defs/commandChange" },
-          { "$ref": "#/$defs/commandCancel" }
+          {
+            "$ref": "#/$defs/commandAiPlan"
+          },
+          {
+            "$ref": "#/$defs/commandApprove"
+          },
+          {
+            "$ref": "#/$defs/commandChoose"
+          },
+          {
+            "$ref": "#/$defs/commandChange"
+          },
+          {
+            "$ref": "#/$defs/commandCancel"
+          }
         ]
       },
       "minItems": 5,
@@ -69,7 +97,9 @@
     "markers": {
       "description": "The four comment markers. A marker must occupy a line of its own (exact match after trim); a comment with more than one marker occurrence is invalid. Markers are structural hints, NEVER proof of permission.",
       "type": "array",
-      "items": { "$ref": "#/$defs/marker" },
+      "items": {
+        "$ref": "#/$defs/marker"
+      },
       "minItems": 4,
       "maxItems": 4,
       "uniqueItems": true
@@ -77,37 +107,82 @@
   },
   "$defs": {
     "label": {
-      "enum": ["ai:planning", "ai:review", "ai:ready", "ai:working", "ai:blocked", "ai:done"]
+      "enum": [
+        "ai:planning",
+        "ai:review",
+        "ai:ready",
+        "ai:working",
+        "ai:blocked",
+        "ai:done"
+      ]
     },
     "state": {
-      "enum": ["PLANNING", "REVIEW", "READY", "WORKING", "BLOCKED", "DONE"]
+      "enum": [
+        "PLANNING",
+        "REVIEW",
+        "READY",
+        "WORKING",
+        "BLOCKED",
+        "DONE"
+      ]
     },
     "stateOrNull": {
       "description": "Transition source state; null means the issue carries no ai:* label (not yet in the workflow).",
-      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/state" }]
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/state"
+        }
+      ]
     },
     "transition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "from", "to", "trigger", "description"],
+      "required": [
+        "id",
+        "from",
+        "to",
+        "trigger",
+        "description"
+      ],
       "properties": {
         "id": {
           "type": "string",
           "pattern": "^T[0-6]$"
         },
-        "from": { "$ref": "#/$defs/stateOrNull" },
-        "to": { "$ref": "#/$defs/state" },
-        "trigger": { "type": "string", "minLength": 1 },
-        "description": { "type": "string", "minLength": 1 }
+        "from": {
+          "$ref": "#/$defs/stateOrNull"
+        },
+        "to": {
+          "$ref": "#/$defs/state"
+        },
+        "trigger": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "transitionT0": {
       "$ref": "#/$defs/transition",
       "properties": {
-        "id": { "const": "T0" },
-        "from": { "type": "null" },
-        "to": { "const": "PLANNING" },
-        "trigger": { "const": "/ai-plan by Trusted Human, or Producer CREATE with ai:planning" },
+        "id": {
+          "const": "T0"
+        },
+        "from": {
+          "type": "null"
+        },
+        "to": {
+          "const": "PLANNING"
+        },
+        "trigger": {
+          "const": "/ai-plan by Trusted Human, or Producer CREATE with ai:planning"
+        },
         "description": {
           "const": "Issue enters the workflow; /ai-plan requires no ai:* label present."
         }
@@ -116,9 +191,15 @@
     "transitionT1": {
       "$ref": "#/$defs/transition",
       "properties": {
-        "id": { "const": "T1" },
-        "from": { "const": "PLANNING" },
-        "to": { "const": "REVIEW" },
+        "id": {
+          "const": "T1"
+        },
+        "from": {
+          "const": "PLANNING"
+        },
+        "to": {
+          "const": "REVIEW"
+        },
         "trigger": {
           "const": "valid plan-marker comment published by Trusted Human or Trusted Agent"
         },
@@ -130,9 +211,15 @@
     "transitionT2": {
       "$ref": "#/$defs/transition",
       "properties": {
-        "id": { "const": "T2" },
-        "from": { "const": "REVIEW" },
-        "to": { "const": "READY" },
+        "id": {
+          "const": "T2"
+        },
+        "from": {
+          "const": "REVIEW"
+        },
+        "to": {
+          "const": "READY"
+        },
         "trigger": {
           "const": "/approve <plan-comment-id> by Trusted Human (V1: plan-comment-id bound)"
         },
@@ -144,9 +231,15 @@
     "transitionT3": {
       "$ref": "#/$defs/transition",
       "properties": {
-        "id": { "const": "T3" },
-        "from": { "const": "READY" },
-        "to": { "const": "WORKING" },
+        "id": {
+          "const": "T3"
+        },
+        "from": {
+          "const": "READY"
+        },
+        "to": {
+          "const": "WORKING"
+        },
         "trigger": {
           "const": "valid execution-tracker-marker comment published by Trusted Human or Trusted Agent"
         },
@@ -158,9 +251,15 @@
     "transitionT4": {
       "$ref": "#/$defs/transition",
       "properties": {
-        "id": { "const": "T4" },
-        "from": { "const": "WORKING" },
-        "to": { "const": "BLOCKED" },
+        "id": {
+          "const": "T4"
+        },
+        "from": {
+          "const": "WORKING"
+        },
+        "to": {
+          "const": "BLOCKED"
+        },
         "trigger": {
           "const": "tracker comment edited to the machine value '**Status:** Blocked'"
         },
@@ -172,9 +271,15 @@
     "transitionT5": {
       "$ref": "#/$defs/transition",
       "properties": {
-        "id": { "const": "T5" },
-        "from": { "const": "BLOCKED" },
-        "to": { "const": "WORKING" },
+        "id": {
+          "const": "T5"
+        },
+        "from": {
+          "const": "BLOCKED"
+        },
+        "to": {
+          "const": "WORKING"
+        },
         "trigger": {
           "const": "tracker comment edited to the machine value '**Status:** In Progress'"
         },
@@ -186,9 +291,15 @@
     "transitionT6": {
       "$ref": "#/$defs/transition",
       "properties": {
-        "id": { "const": "T6" },
-        "from": { "const": "WORKING" },
-        "to": { "const": "DONE" },
+        "id": {
+          "const": "T6"
+        },
+        "from": {
+          "const": "WORKING"
+        },
+        "to": {
+          "const": "DONE"
+        },
         "trigger": {
           "const": "valid completion-report-marker comment published by Trusted Human or Trusted Agent"
         },
@@ -200,12 +311,24 @@
     "command": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command", "match", "actor", "precondition", "effect"],
+      "required": [
+        "command",
+        "match",
+        "actor",
+        "precondition",
+        "effect"
+      ],
       "properties": {
-        "command": { "type": "string", "minLength": 1 },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
         "match": {
           "description": "exact: whole comment equals the command after trim. anchored: the given regex must match the entire trimmed body ('.' never crosses newlines).",
-          "enum": ["exact", "anchored"]
+          "enum": [
+            "exact",
+            "anchored"
+          ]
         },
         "pattern": {
           "type": "string",
@@ -215,10 +338,18 @@
           "description": "Parsed argument shape; null for parameterless commands."
         },
         "actor": {
-          "enum": ["trusted-human"]
+          "enum": [
+            "trusted-human"
+          ]
         },
-        "precondition": { "type": "string", "minLength": 1 },
-        "effect": { "type": "string", "minLength": 1 },
+        "precondition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effect": {
+          "type": "string",
+          "minLength": 1
+        },
         "breakingChange": {
           "type": "string",
           "description": "Present when V1 changed the command shape."
@@ -228,11 +359,21 @@
     "commandAiPlan": {
       "$ref": "#/$defs/command",
       "properties": {
-        "command": { "const": "/ai-plan" },
-        "match": { "const": "exact" },
-        "args": { "const": null },
-        "actor": { "const": "trusted-human" },
-        "precondition": { "const": "issue carries no ai:* label (outside the workflow)" },
+        "command": {
+          "const": "/ai-plan"
+        },
+        "match": {
+          "const": "exact"
+        },
+        "args": {
+          "const": null
+        },
+        "actor": {
+          "const": "trusted-human"
+        },
+        "precondition": {
+          "const": "issue carries no ai:* label (outside the workflow)"
+        },
         "effect": {
           "const": "T0: add ai:planning; react +1 on acceptance"
         }
@@ -241,13 +382,21 @@
     "commandApprove": {
       "$ref": "#/$defs/command",
       "properties": {
-        "command": { "const": "/approve" },
-        "match": { "const": "anchored" },
-        "pattern": { "const": "^/approve (\\d+)$" },
+        "command": {
+          "const": "/approve"
+        },
+        "match": {
+          "const": "anchored"
+        },
+        "pattern": {
+          "const": "^/approve (\\d+)$"
+        },
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["planCommentId"],
+          "required": [
+            "planCommentId"
+          ],
           "properties": {
             "planCommentId": {
               "description": "Id of the plan comment being approved: a GitHub issue-comment id in decimal digits (positive integer).",
@@ -256,7 +405,9 @@
             }
           }
         },
-        "actor": { "const": "trusted-human" },
+        "actor": {
+          "const": "trusted-human"
+        },
         "precondition": {
           "const": "issue is open and re-reads as REVIEW, and the referenced comment passes every V1 validation of docs/protocol.md section 3.4 (exists on this issue; valid plan marker; current plan)"
         },
@@ -271,20 +422,39 @@
     "commandChoose": {
       "$ref": "#/$defs/command",
       "properties": {
-        "command": { "const": "/choose" },
-        "match": { "const": "anchored" },
-        "pattern": { "const": "^/choose (\\S+) (\\S+)$" },
+        "command": {
+          "const": "/choose"
+        },
+        "match": {
+          "const": "anchored"
+        },
+        "pattern": {
+          "const": "^/choose (\\S+) (\\S+)$"
+        },
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["questionId", "choice"],
+          "required": [
+            "questionId",
+            "choice"
+          ],
           "properties": {
-            "questionId": { "type": "string", "minLength": 1 },
-            "choice": { "type": "string", "minLength": 1 }
+            "questionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "choice": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
-        "actor": { "const": "trusted-human" },
-        "precondition": { "const": "issue re-reads as REVIEW" },
+        "actor": {
+          "const": "trusted-human"
+        },
+        "precondition": {
+          "const": "issue re-reads as REVIEW"
+        },
         "effect": {
           "const": "No state migration: the two arguments are forwarded verbatim to the Consumer as untrusted data; react +1 on acceptance"
         }
@@ -293,13 +463,21 @@
     "commandChange": {
       "$ref": "#/$defs/command",
       "properties": {
-        "command": { "const": "/change" },
-        "match": { "const": "anchored" },
-        "pattern": { "const": "^/change (.+)$" },
+        "command": {
+          "const": "/change"
+        },
+        "match": {
+          "const": "anchored"
+        },
+        "pattern": {
+          "const": "^/change (.+)$"
+        },
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["text"],
+          "required": [
+            "text"
+          ],
           "properties": {
             "text": {
               "type": "string",
@@ -308,8 +486,12 @@
             }
           }
         },
-        "actor": { "const": "trusted-human" },
-        "precondition": { "const": "issue re-reads as REVIEW" },
+        "actor": {
+          "const": "trusted-human"
+        },
+        "precondition": {
+          "const": "issue re-reads as REVIEW"
+        },
         "effect": {
           "const": "No state migration: the free text is forwarded verbatim to the Consumer as untrusted data; react +1 on acceptance"
         }
@@ -318,25 +500,48 @@
     "commandCancel": {
       "$ref": "#/$defs/command",
       "properties": {
-        "command": { "const": "/cancel" },
-        "match": { "const": "exact" },
-        "args": { "const": null },
-        "actor": { "const": "trusted-human" },
-        "precondition": { "const": "issue carries at least one ai:* label (any state, including BLOCKED and terminal DONE)" },
+        "command": {
+          "const": "/cancel"
+        },
+        "match": {
+          "const": "exact"
+        },
+        "args": {
+          "const": null
+        },
+        "actor": {
+          "const": "trusted-human"
+        },
+        "precondition": {
+          "const": "issue carries at least one ai:* label (any state, including BLOCKED and terminal DONE)"
+        },
         "effect": {
           "const": "Remove ALL ai:* labels; the issue is NOT closed; react +1 on acceptance"
         }
       }
     },
     "markerName": {
-      "enum": ["append", "plan", "execution-tracker", "completion-report"]
+      "enum": [
+        "append",
+        "plan",
+        "execution-tracker",
+        "completion-report"
+      ]
     },
     "marker": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "value", "publisher", "editAllowed", "triggers"],
+      "required": [
+        "name",
+        "value",
+        "publisher",
+        "editAllowed",
+        "triggers"
+      ],
       "properties": {
-        "name": { "$ref": "#/$defs/markerName" },
+        "name": {
+          "$ref": "#/$defs/markerName"
+        },
         "value": {
           "type": "string",
           "pattern": "^<!-- ai-workflow:[a-z-]+:v1 -->$",
@@ -344,14 +549,246 @@
         },
         "publisher": {
           "description": "Who may publish marker comments that trigger transitions; unknown actors' markers are plain text.",
-          "enum": ["trusted-human", "trusted-agent", "producer"]
+          "enum": [
+            "trusted-human",
+            "trusted-agent",
+            "producer"
+          ]
         },
-        "editAllowed": { "type": "boolean" },
+        "editAllowed": {
+          "type": "boolean"
+        },
         "triggers": {
           "description": "Transition triggered by a valid marker comment, or 'none' when the marker never transitions.",
-          "oneOf": [{ "const": "none" }, { "$ref": "#/$defs/transition" }]
+          "oneOf": [
+            {
+              "const": "none"
+            },
+            {
+              "$ref": "#/$defs/transition"
+            }
+          ]
         }
       }
+    },
+    "schemaVersion": {
+      "description": "GitHub protocol schema version, 2 since the hardening.",
+      "const": 2
+    },
+    "login": {
+      "description": "GitHub login shape (used for identities inside records).",
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?!$)){0,37}$"
+    },
+    "epochString": {
+      "description": "wf_ + 12 lowercase base36 chars, CSPRNG-generated by a trusted runtime.",
+      "type": "string",
+      "pattern": "^wf_[0-9a-z]{12}$"
+    },
+    "recordEnvelope": {
+      "description": "A Gate-issued record comment: the record marker line owning its line, a blank line, then a fenced ```json block whose object carries EXACTLY the frozen field set (unknown/missing keys reject the record). Record markers are NOT workflow markers and never trigger transitions. Authorization classes: workflow_epoch may be issued by the Gate OR the Driver (bootstrap); approval and feedback_accepted are Gate-ONLY. Comment-borne records are auditable and revocation-safe (protected identity + fail-closed validation) but NOT strongly tamper-proof.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/epochRecord"
+        },
+        {
+          "$ref": "#/$defs/approvalRecord"
+        },
+        {
+          "$ref": "#/$defs/feedbackRecord"
+        }
+      ]
+    },
+    "epochRecord": {
+      "description": "workflow_epoch record — names ONE formal workflow round of an issue. operation_id: epoch:<repository_id>:<issue_number>:<workflow_epoch>. Current epoch = the record with the highest comment id. A new round (fresh /ai-plan from outside the workflow) always mints a fresh epoch; old-epoch approvals/dispatches are dead.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "repository_id",
+        "issue_number",
+        "workflow_epoch",
+        "created_at",
+        "issued_by",
+        "operation_id"
+      ],
+      "properties": {
+        "schema": {
+          "const": 2
+        },
+        "kind": {
+          "const": "workflow_epoch"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "issue_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workflow_epoch": {
+          "$ref": "#/$defs/epochString"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "issued_by": {
+          "$ref": "#/$defs/login"
+        },
+        "operation_id": {
+          "type": "string",
+          "pattern": "^epoch:[0-9]+:[0-9]+:wf_[0-9a-z]{12}$"
+        }
+      }
+    },
+    "approvalRecord": {
+      "description": "approval record — the durable authorization fact behind T2, written AND content-verified BEFORE the ai:ready label swap. operation_id: approval:<repository_id>:<issue_number>:<workflow_epoch>:p<plan_comment_id>. plan_sha256 is the FROZEN canonicalization of the approved Plan comment body (src/protocol/plan.ts). Reuse-or-conflict: an existing record with the same operation id and identical content is reused (crash recovery); divergent content FAILS CLOSED (an edited plan stays burned). The Driver independently re-validates: author in gate_logins, repo/issue/epoch/plan binding, recomputed hash equality, and the anchored /approve command comment.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "repository_id",
+        "issue_number",
+        "workflow_epoch",
+        "plan_comment_id",
+        "plan_sha256",
+        "approval_command_comment_id",
+        "approved_by_id",
+        "approved_by_login",
+        "gate_login",
+        "gate_user_id",
+        "created_at",
+        "operation_id"
+      ],
+      "properties": {
+        "schema": {
+          "const": 2
+        },
+        "kind": {
+          "const": "approval"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "issue_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workflow_epoch": {
+          "$ref": "#/$defs/epochString"
+        },
+        "plan_comment_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "plan_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "approval_command_comment_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approved_by_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approved_by_login": {
+          "$ref": "#/$defs/login"
+        },
+        "gate_login": {
+          "$ref": "#/$defs/login"
+        },
+        "gate_user_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "operation_id": {
+          "type": "string",
+          "pattern": "^approval:[0-9]+:[0-9]+:wf_[0-9a-z]{12}:p[0-9]+$"
+        }
+      }
+    },
+    "feedbackRecord": {
+      "description": "feedback_accepted record — the Gate accepted one /choose or /change after identity, format and REVIEW preconditions. The ONLY input to Consumer revisions (1 + count in the current epoch, still anchored to an existing trusted-human command comment). operation_id: feedback:<repository_id>:<issue_number>:<workflow_epoch>:<feedback_comment_id>; event_id: fe<feedback_comment_id>. Rejected, duplicated, foreign-epoch and plain-text comments never produce one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "repository_id",
+        "issue_number",
+        "workflow_epoch",
+        "event_id",
+        "feedback_comment_id",
+        "feedback_kind",
+        "gate_login",
+        "gate_user_id",
+        "created_at",
+        "operation_id"
+      ],
+      "properties": {
+        "schema": {
+          "const": 2
+        },
+        "kind": {
+          "const": "feedback_accepted"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "issue_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workflow_epoch": {
+          "$ref": "#/$defs/epochString"
+        },
+        "event_id": {
+          "type": "string",
+          "pattern": "^fe[0-9]+$"
+        },
+        "feedback_comment_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "feedback_kind": {
+          "enum": [
+            "choose",
+            "change"
+          ]
+        },
+        "gate_login": {
+          "$ref": "#/$defs/login"
+        },
+        "gate_user_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "operation_id": {
+          "type": "string",
+          "pattern": "^feedback:[0-9]+:[0-9]+:wf_[0-9a-z]{12}:[0-9]+$"
+        }
+      }
+    },
+    "sourceIdAnchor": {
+      "description": "The `<!-- gateflow:source-id: <operation_id> -->` HTML comment embedded in Producer-submitted issue bodies (operation id `submit:<submission_id>`). Submit reconciliation adopts an existing issue by this anchor after unknown API outcomes instead of re-POSTing; titles are never used for dedup.",
+      "type": "string",
+      "pattern": "^<!--\\s*gateflow:source-id:\\s*submit:sub_[0-9a-z]{16}\\s*-->$"
     }
   }
 }

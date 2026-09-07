@@ -206,7 +206,11 @@ async function runStatus(args: CliArgs): Promise<number> {
   for (const receipt of receipts) {
     console.log(
       `  ${receipt.dispatch_id}  status=${receipt.status} attempts=${receipt.attempts} ` +
-        `tracker=${receipt.tracker_comment_id ?? '-'} last_sync=${receipt.last_sync_at ?? '-'}`,
+        `epoch=${receipt.workflow_epoch ?? '-'} ` +
+        `published=${receipt.published_comment_id ?? '-'} ` +
+        `activation=${receipt.activation ? receipt.activation.state : '-'} ` +
+        `last_sync=${receipt.last_sync_at ?? '-'}` +
+        `${receipt.error !== undefined && receipt.error !== null ? ` error=${receipt.error}` : ''}`,
     );
   }
 
@@ -230,7 +234,10 @@ async function runStatus(args: CliArgs): Promise<number> {
 async function runRetry(args: CliArgs): Promise<number> {
   const dispatchId = args.dispatchId ?? '';
   if (!DISPATCH_DIR_PATTERN.test(dispatchId)) {
-    console.error(`invalid dispatch id: ${JSON.stringify(dispatchId)} (expected gf_r<id>_i<issue>_<role>_<revision>)`);
+    console.error(
+      `invalid dispatch id: ${JSON.stringify(dispatchId)} ` +
+        '(expected gf_r<id>_i<issue>_w<epoch-code>_<role>_<revision>)',
+    );
     return 1;
   }
   const config = await loadConfig(args.root, args.config);

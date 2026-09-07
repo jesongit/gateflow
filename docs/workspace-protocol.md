@@ -1,8 +1,10 @@
-# Workspace Protocol v1（冻结契约）
+# Workspace Protocol v2（冻结契约）
 
-> 本文是 V1 Workspace Protocol 的**冻结契约**：目录结构、JSON Schema、dispatch_id 规则、角色输出白名单、文件生命周期与安全约束。
-> 实现以 `src/workspace/` 为准；机器 Schema 同步维护在 `protocol/workspace-schema-v1.json`。
+> 本文是 Workspace Protocol 的**冻结契约**（Schema 2，2026-09 Hardening）：目录结构、JSON Schema、dispatch_id 规则、角色输出白名单、文件生命周期与安全约束。决策依据见 [docs/plans/v1_hardening_decisions.md](plans/v1_hardening_decisions.md)。
+> 实现以 `src/workspace/` 为准；机器 Schema 同步维护在 `protocol/workspace-schema-v2.json`。
 > 原则：**状态和动作使用 JSON（严格 Schema），长内容使用 Markdown（不解析语义）。**
+>
+> **Schema 2 破坏性变化摘要**：所有机器文件 `schema: 2`；dispatch_id 绑定 workflow epoch；receipt 状态机 `dispatched → publishing → published → accepted`（+ `failed` / `obsolete`，单一 `synced` 已废除）；dispatch/context 绑定 `workflow_epoch`，context 携带 `input_snapshot_sha256`；Producer 提交携带稳定 `submission_id`；Driver 私有状态（receipts / locks / logs）移入 `.gateflow/driver/`。
 
 ## 1. 目录布局
 
@@ -10,22 +12,24 @@
 
 ```text
 .gateflow/
-├── current.json                  # 当前（最近派发的）dispatch 指针，Agent 入口
+├── current.json                  # 人工查看用指针（不是任务身份；Agent 只处理指派的 inbox/<id>/dispatch.json）
 ├── inbox/<dispatch_id>/
-│   ├── dispatch.json             # 机器协议：任务描述
-│   ├── context.json              # 机器协议：来源锚点（plan_comment_id / plan_sha256 / …）
+│   ├── dispatch.json             # 机器协议：任务描述（含 workflow_epoch；最后写入的就绪标记）
+│   ├── context.json              # 机器协议：来源锚点（plan_comment_id / plan_sha256 / input_snapshot_sha256 / …）
 │   ├── TASK.md                   # Issue 投影（标题 + 正文 + 目标）
-│   ├── PLAN.md                   # 仅 executor：被批准的 Plan 原文
-│   └── FEEDBACK.md               # 人类反馈投影（可有可无）
+│   ├── PLAN.md                   # 仅 executor：被批准的 Plan 原文（冻结规范化后的内容）
+│   └── FEEDBACK.md               # 人类反馈投影（仅 Gate 已接受的事件，可有可无）
 ├── outbox/<dispatch_id>/
 │   ├── status.json               # 运行状态（working/blocked/failed）
 │   ├── result.json               # 终态结果（completed/plan_ready/blocked/question/failed）
 │   ├── PROGRESS.md               # 人类可读进度（Driver 不解析语义）
 │   ├── PLAN.md                   # 仅 consumer：产出的 Execution Plan
 │   └── REPORT.md                 # 仅 executor：完成报告
-├── receipts/<dispatch_id>.json   # Driver 本地缓存（非正式状态，可重建）
-├── submit/                       # Producer 本地提交（TASK.md + submit.json）
-└── logs/driver.log
+├── submit/                       # Producer 本地提交（TASK.md + submit.json，schema 2 携带 submission_id）
+└── driver/                       # Driver 私有状态（Agent 通信面之外，禁止触碰）
+    ├── receipts/<dispatch_id>.json   # Driver 本地缓存（非正式状态，可重建）
+    ├── locks/                        # executor.lock（同 Worktree 单 Executor）+ driver.lock（同机单 Driver）
+    └── logs/driver.log
 ```
 
 写权限（冻结）：

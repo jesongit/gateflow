@@ -12,22 +12,26 @@ import * as nodePath from 'node:path';
 import type { CommentDetail, IssueDetail } from '../../src/github/client';
 import type { WorkspacePaths } from '../../src/workspace/paths';
 import type { GateComment } from '../../src/gate/approvals';
-import type { GitHubClient, ReactionContent } from '../../src/gate/github';
+import type { AuthenticatedUser, GitHubClient, ReactionContent, RepoIdentity } from '../../src/gate/github';
 import type { GateInput, GateLogger } from '../../src/gate/gate';
 import type { FakeDriverClient, WorkspaceFixture } from '../driver/helpers';
 import type { Discovery } from '../../src/driver/discovery';
 import { LABELS } from '../../src/gate/protocol';
 import { atomicWriteJson } from '../../src/workspace/inbox';
 import { deriveIntents } from '../../src/driver/intent';
-import { findHumanFeedbackCommands } from '../../src/github/issue-sync';
-import { ISSUE, writeOutboxFile } from '../driver/helpers';
+import { acceptedFeedbackEvents, readIssueRecords } from '../../src/github/issue-sync';
+import { epochCode } from '../../src/protocol/epoch';
+import { ISSUE, testEpoch, writeOutboxFile } from '../driver/helpers';
 
 export { ISSUE, OWNER, REPO } from '../driver/helpers';
 export type { WorkspaceFixture };
 
-/** Standard dispatch ids for issue 7 in repo octo/repo (id 123). */
-export const CONSUMER_ID = `gf_r123_i${ISSUE}_consumer_01`;
-export const EXECUTOR_ID = `gf_r123_i${ISSUE}_executor_p501`;
+/** The deterministic test epoch for issue 7 and the dispatch ids built on it. */
+export const EPOCH = testEpoch(ISSUE);
+
+/** Standard dispatch ids for issue 7 in repo octo/repo (id 123) — schema 2. */
+export const CONSUMER_ID = `gf_r123_i${ISSUE}_w${epochCode(EPOCH)!}_consumer_01`;
+export const EXECUTOR_ID = `gf_r123_i${ISSUE}_w${epochCode(EPOCH)!}_executor_p501`;
 
 /** Seed a valid inbox dispatch.json + context.json (the Driver's own layout). */
 export async function seedInbox(
@@ -36,11 +40,12 @@ export async function seedInbox(
   role: 'consumer' | 'executor',
 ): Promise<void> {
   const dispatch = {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
     repository: 'octo/repo',
     repository_id: 123,
     issue_number: ISSUE,
+    workflow_epoch: EPOCH,
     role,
     reason: role === 'executor' ? 'approved_plan' : 'planning',
     created_at: '2026-09-06T17:00:00Z',
@@ -52,10 +57,12 @@ export async function seedInbox(
         : { task: 'TASK.md', plan: null, feedback: null },
   } as const;
   const context = {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
+    workflow_epoch: EPOCH,
     ...(role === 'executor' ? { plan_comment_id: 501, plan_sha256: 'a'.repeat(64) } : {}),
     feedback_count: 0,
+    input_snapshot_sha256: 'b'.repeat(64),
   } as const;
   await atomicWriteJson(nodePath.join(fixture.paths.inbox, dispatchId, 'dispatch.json'), dispatch);
   await atomicWriteJson(nodePath.join(fixture.paths.inbox, dispatchId, 'context.json'), context);
@@ -118,6 +125,16 @@ export function countedClient(client: FakeDriverClient): CountedDriverClient {
 
 /* ------------------------------------------------------------- gate fakes */
 
+/** The Gate identity served by the harness (LOGIN-regex-safe). */
+export const GATE_IDENTITY: AuthenticatedUser = { id: 41898282, login: 'gate-bot' };
+
+/** Default API-verified repository identity (GF-H10). */
+export const DEFAULT_REPO_IDENTITY: RepoIdentity = {
+  owner: 'owner-user',
+  ownerType: 'User',
+  id: 123,
+};
+
 /** Every call the gate could ever make, fully recorded. */
 export interface GateCallStats {
   order: string[];
@@ -129,6 +146,9 @@ export interface GateCallStats {
   removeLabel: Array<{ label: string }>;
   addReaction: Array<{ commentId: number; content: string }>;
   editComment: Array<{ commentId: number; body: string }>;
+  addComment: Array<{ body: string }>;
+  getAuthenticatedUser: number;
+  getRepoIdentity: number;
 }
 
 export interface GateHarness {
@@ -140,12 +160,19 @@ export interface GateHarness {
   /** Labels returned by getLabels (the fresh re-read the gate must use). */
   labelStore: string[];
   commentStore: GateComment[];
+  repoIdentity: RepoIdentity;
+  gateIdentity: AuthenticatedUser;
   setLabelStore(labels: string[]): void;
   setComments(comments: GateComment[]): void;
 }
 
 export function makeGateHarness(
-  options: { labels?: string[]; state?: string; comments?: GateComment[] } = {},
+  options: {
+    labels?: string[];
+    state?: string;
+    comments?: GateComment[];
+    ownerType?: string;
+  } = {},
 ): GateHarness {
   const calls: GateCallStats = {
     order: [],
@@ -157,6 +184,9 @@ export function makeGateHarness(
     removeLabel: [],
     addReaction: [],
     editComment: [],
+    addComment: [],
+    getAuthenticatedUser: 0,
+    getRepoIdentity: 0,
   };
   const h: GateHarness = {
     calls,
@@ -164,6 +194,8 @@ export function makeGateHarness(
     issueLabels: [...(options.labels ?? [LABELS.review])],
     labelStore: [...(options.labels ?? [LABELS.review])],
     commentStore: [...(options.comments ?? [])],
+    repoIdentity: { ...DEFAULT_REPO_IDENTITY, ownerType: options.ownerType ?? 'User' },
+    gateIdentity: { ...GATE_IDENTITY },
     setLabelStore(labels: string[]) {
       h.labelStore = [...labels];
     },
@@ -204,6 +236,22 @@ export function makeGateHarness(
         calls.listComments += 1;
         return [...h.commentStore].sort((a, b) => a.id - b.id);
       },
+      async addComment(_ref, body) {
+        calls.order.push('addComment');
+        calls.addComment.push({ body });
+        // Faithful GitHub simulation: the comment exists afterwards, authored
+        // by the Gate identity.
+        h.commentStore.push({ id: 10000 + calls.addComment.length, user: GATE_IDENTITY.login, body });
+        return { id: 10000 + calls.addComment.length };
+      },
+      async getAuthenticatedUser() {
+        calls.getAuthenticatedUser += 1;
+        return { ...h.gateIdentity };
+      },
+      async getRepoIdentity(query) {
+        calls.getRepoIdentity += 1;
+        return { ...h.repoIdentity, owner: query.owner };
+      },
     },
   };
   return h;
@@ -224,6 +272,8 @@ export function makeGateInput(overrides: Partial<GateInput> = {}): GateInput {
     eventName: 'issue_comment',
     eventAction: 'created',
     actor: 'owner-user',
+    actorId: 1001,
+    repositoryId: 123,
     repoOwner: 'owner-user',
     repo: 'demo',
     issueNumber: 7,
@@ -303,19 +353,29 @@ export async function trySymlinkDir(target: string, linkPath: string): Promise<b
 /**
  * Build a `Discovery` for one issue WITHOUT routing through the
  * `DriverGitHubClient`-typed helper: the security suite derives intents and
- * feedback from plain data with the same pure functions discovery.ts uses,
- * so the tests stay decoupled from the (evolving) client interface.
+ * accepted feedback from plain data with the same pure functions discovery.ts
+ * uses, so the tests stay decoupled from the (evolving) client interface.
+ * `gateLogins` defaults to the standard Gate allowlist.
  */
 export function buildDiscovery(
   issueDetail: IssueDetail,
   comments: CommentDetail[],
   trustedHumans: ReadonlySet<string>,
   repoOwner: string,
+  options: { gateLogins?: ReadonlySet<string>; repositoryId?: number } = {},
 ): Discovery {
+  const gateLogins = options.gateLogins ?? new Set(['github-actions[bot]']);
+  const records = readIssueRecords(comments, gateLogins);
   return {
     issue: issueDetail,
     comments,
-    intents: deriveIntents(issueDetail, comments, trustedHumans, repoOwner),
-    feedback: findHumanFeedbackCommands(comments, trustedHumans, repoOwner),
+    records,
+    intents: deriveIntents(issueDetail, comments, {
+      repositoryId: options.repositoryId ?? 123,
+      repoOwner,
+      trustedHumans,
+      gateLogins,
+    }),
+    feedback: acceptedFeedbackEvents(records, comments, trustedHumans, repoOwner),
   };
 }

@@ -2,7 +2,7 @@
 
 一句话职责：`Chat → Task Draft`。帮用户把对话中形成的结论整理为结构清晰的任务描述。V1 中 GitHub Issue 通常由人手动创建；当用户**明确要求**创建 / 发布任务时，Producer 写一份**本地提交请求**（`.gateflow/submit/`），由系统（Driver）负责创建 Issue——Producer 自己永远不碰 GitHub。
 
-必须遵守的协议：[docs/workspace-protocol.md](../../docs/workspace-protocol.md)（schema 1，冻结，§9 Submit 协议）。
+必须遵守的协议：[docs/workspace-protocol.md](../../docs/workspace-protocol.md)（schema 2，冻结，§9 Submit 协议）。
 通用禁令（不调 GitHub、不改 Workflow State、注入防护）见 [skills/agent/SKILL.md](../agent/SKILL.md)。注意：Producer **不接收 Dispatch、不使用 inbox / outbox**，它与系统的唯一交集是 `.gateflow/submit/`（完整模式下）。
 
 ---
@@ -60,7 +60,7 @@
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "title": "支持导出 CSV 报表",
   "kind": "feature",
   "maturity_hint": "requirement",

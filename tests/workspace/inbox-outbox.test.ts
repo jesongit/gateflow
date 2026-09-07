@@ -23,6 +23,8 @@ import {
 } from '../../src/workspace/outbox';
 import { MAX_FILE_BYTES } from '../../src/workspace/validation';
 import {
+  CONSUMER_DISPATCH_ID,
+  EXECUTOR_DISPATCH_ID,
   consumerContext,
   consumerDispatch,
   currentPointer,
@@ -52,7 +54,8 @@ describe('atomic writes', () => {
     await atomicWriteText(file, 'hello');
     await atomicWriteJson(nodePath.join(paths.root, 'atomic.json'), { a: 1 });
     const entries = await readdir(paths.root);
-    expect(entries.sort()).toEqual(['atomic.json', 'atomic.txt', 'inbox', 'logs', 'outbox', 'receipts', 'submit']);
+    // Schema 2: driver-private state (receipts/locks/logs) lives under driver/.
+    expect(entries.sort()).toEqual(['atomic.json', 'atomic.txt', 'driver', 'inbox', 'outbox', 'submit']);
     expect(await readFile(file, 'utf8')).toBe('hello');
     expect(await readFile(nodePath.join(paths.root, 'atomic.json'), 'utf8')).toBe('{\n  "a": 1\n}\n');
   });
@@ -79,11 +82,11 @@ describe('inbox build', () => {
       plan: null,
       feedback: null,
     });
-    const dir = nodePath.join(paths.inbox, 'gf_r1_i2_consumer_01');
+    const dir = nodePath.join(paths.inbox, CONSUMER_DISPATCH_ID);
     const entries = (await readdir(dir)).sort();
     expect(entries).toEqual(['TASK.md', 'context.json', 'dispatch.json']);
     expect(await readFile(nodePath.join(dir, 'TASK.md'), 'utf8')).toBe('# Issue\n\nBody');
-    expect(await readInboxDispatch(paths, 'gf_r1_i2_consumer_01')).toEqual(dispatch);
+    expect(await readInboxDispatch(paths, CONSUMER_DISPATCH_ID)).toEqual(dispatch);
   });
 
   it('projects PLAN.md and FEEDBACK.md only when present', async () => {
@@ -97,7 +100,7 @@ describe('inbox build', () => {
       plan,
       feedback: '# Human Feedback\n\n## 1',
     });
-    const dir = nodePath.join(paths.inbox, 'gf_r1_i2_executor_p100');
+    const dir = nodePath.join(paths.inbox, EXECUTOR_DISPATCH_ID);
     const entries = (await readdir(dir)).sort();
     expect(entries).toEqual(['FEEDBACK.md', 'PLAN.md', 'TASK.md', 'context.json', 'dispatch.json']);
     expect(await readFile(nodePath.join(dir, 'PLAN.md'), 'utf8')).toBe(plan);
@@ -109,9 +112,9 @@ describe('inbox build', () => {
     const build = { dispatch, context: consumerContext(), task: 'v1', plan: null, feedback: null };
     await writeInbox(paths, build);
     await writeInbox(paths, { ...build, task: 'v2' });
-    const dir = nodePath.join(paths.inbox, 'gf_r1_i2_consumer_01');
+    const dir = nodePath.join(paths.inbox, CONSUMER_DISPATCH_ID);
     expect(await readFile(nodePath.join(dir, 'TASK.md'), 'utf8')).toBe('v2');
-    expect(await readInboxDispatch(paths, 'gf_r1_i2_consumer_01')).toEqual(dispatch);
+    expect(await readInboxDispatch(paths, CONSUMER_DISPATCH_ID)).toEqual(dispatch);
     const entries = await readdir(dir);
     expect(entries.filter((name) => name.includes('.tmp-'))).toEqual([]);
   });
@@ -126,15 +129,15 @@ describe('inbox build', () => {
 
   it('treats missing / corrupt / invalid dispatch.json as unreadable', async () => {
     const { paths } = await fresh();
-    expect(await readInboxDispatch(paths, 'gf_r1_i2_consumer_01')).toBeNull();
+    expect(await readInboxDispatch(paths, CONSUMER_DISPATCH_ID)).toBeNull();
 
-    const dir = nodePath.join(paths.inbox, 'gf_r1_i2_consumer_01');
+    const dir = nodePath.join(paths.inbox, CONSUMER_DISPATCH_ID);
     await mkdir(dir, { recursive: true });
     await writeFile(nodePath.join(dir, 'dispatch.json'), '{not json', 'utf8');
-    expect(await readInboxDispatch(paths, 'gf_r1_i2_consumer_01')).toBeNull();
+    expect(await readInboxDispatch(paths, CONSUMER_DISPATCH_ID)).toBeNull();
 
     await writeFile(nodePath.join(dir, 'dispatch.json'), JSON.stringify({ schema: 7 }), 'utf8');
-    expect(await readInboxDispatch(paths, 'gf_r1_i2_consumer_01')).toBeNull();
+    expect(await readInboxDispatch(paths, CONSUMER_DISPATCH_ID)).toBeNull();
   });
 });
 
@@ -160,28 +163,28 @@ describe('sha256Hex', () => {
 describe('outbox reads', () => {
   it('reads raw status/result JSON without semantic validation', async () => {
     const { paths } = await fresh();
-    const dir = nodePath.join(paths.outbox, 'gf_r1_i2_consumer_01');
+    const dir = nodePath.join(paths.outbox, CONSUMER_DISPATCH_ID);
     await mkdir(dir, { recursive: true });
-    expect(await readOutboxStatus(paths, 'gf_r1_i2_consumer_01')).toBeNull();
+    expect(await readOutboxStatus(paths, CONSUMER_DISPATCH_ID)).toBeNull();
 
     await writeFile(nodePath.join(dir, 'status.json'), JSON.stringify(statusFile()), 'utf8');
-    expect(await readOutboxStatus(paths, 'gf_r1_i2_consumer_01')).toEqual(statusFile());
+    expect(await readOutboxStatus(paths, CONSUMER_DISPATCH_ID)).toEqual(statusFile());
 
     // Raw parse: even schema-violating JSON is returned as-is.
     await writeFile(nodePath.join(dir, 'status.json'), JSON.stringify({ schema: 99, junk: true }), 'utf8');
-    expect(await readOutboxStatus(paths, 'gf_r1_i2_consumer_01')).toEqual({ schema: 99, junk: true });
+    expect(await readOutboxStatus(paths, CONSUMER_DISPATCH_ID)).toEqual({ schema: 99, junk: true });
 
     await writeFile(nodePath.join(dir, 'status.json'), 'nope{', 'utf8');
-    expect(await readOutboxStatus(paths, 'gf_r1_i2_consumer_01')).toBeNull();
+    expect(await readOutboxStatus(paths, CONSUMER_DISPATCH_ID)).toBeNull();
 
-    expect(await readOutboxResult(paths, 'gf_r1_i2_consumer_01')).toBeNull();
+    expect(await readOutboxResult(paths, CONSUMER_DISPATCH_ID)).toBeNull();
     await writeFile(nodePath.join(dir, 'result.json'), JSON.stringify(resultFile()), 'utf8');
-    expect(await readOutboxResult(paths, 'gf_r1_i2_consumer_01')).toEqual(resultFile());
+    expect(await readOutboxResult(paths, CONSUMER_DISPATCH_ID)).toEqual(resultFile());
   });
 
   it('reads markdown, null on missing/empty, throws OversizedFileError beyond 512KB', async () => {
     const { paths } = await fresh();
-    const id = 'gf_r1_i2_consumer_01';
+    const id = CONSUMER_DISPATCH_ID;
     const dir = nodePath.join(paths.outbox, id);
     await mkdir(dir, { recursive: true });
     expect(await readOutboxMarkdown(paths, id, 'PLAN.md')).toBeNull();
@@ -206,13 +209,13 @@ describe('outbox reads', () => {
 
   it('lists only dispatch-shaped directories', async () => {
     const { paths } = await fresh();
-    for (const name of ['gf_r1_i2_consumer_01', 'gf_r1_i2_executor_p100']) {
+    for (const name of [CONSUMER_DISPATCH_ID, EXECUTOR_DISPATCH_ID]) {
       await mkdir(nodePath.join(paths.outbox, name), { recursive: true });
     }
     await mkdir(nodePath.join(paths.outbox, 'junk'), { recursive: true });
-    await mkdir(nodePath.join(paths.outbox, 'gf_r1_i2_consumer_01', 'nested'), { recursive: true });
+    await mkdir(nodePath.join(paths.outbox, CONSUMER_DISPATCH_ID, 'nested'), { recursive: true });
     await writeFile(nodePath.join(paths.outbox, 'afile.txt'), 'x', 'utf8');
-    expect(await listOutboxDispatchIds(paths)).toEqual(['gf_r1_i2_consumer_01', 'gf_r1_i2_executor_p100']);
+    expect(await listOutboxDispatchIds(paths)).toEqual([CONSUMER_DISPATCH_ID, EXECUTOR_DISPATCH_ID]);
   });
 
   it('returns [] when the outbox does not exist', async () => {
@@ -225,32 +228,40 @@ describe('outbox reads', () => {
 describe('receipts', () => {
   it('round-trips and lists valid receipts', async () => {
     const { paths } = await fresh();
-    const first = receipt({ status: 'synced', attempts: 2, tracker_comment_id: 7 });
-    const second = receipt({ dispatch_id: 'gf_r1_i2_executor_p100', status: 'dispatched' });
+    // Schema 2: `synced` is gone — publication is `published` (+ comment id).
+    const first = receipt({
+      status: 'published',
+      attempts: 2,
+      tracker_comment_id: 7,
+      published_comment_id: 9,
+    });
+    const second = receipt({ dispatch_id: EXECUTOR_DISPATCH_ID, status: 'dispatched' });
     await writeReceipt(paths, first);
     await writeReceipt(paths, second);
-    expect(await readReceipt(paths, 'gf_r1_i2_consumer_01')).toEqual(first);
-    expect(await readReceipt(paths, 'gf_r1_i2_executor_p100')).toEqual(second);
+    expect(await readReceipt(paths, CONSUMER_DISPATCH_ID)).toEqual(first);
+    expect(await readReceipt(paths, EXECUTOR_DISPATCH_ID)).toEqual(second);
     expect(await listReceipts(paths)).toEqual([first, second]);
   });
 
   it('returns null for missing/invalid receipts and rejects invalid writes', async () => {
     const { paths } = await fresh();
-    expect(await readReceipt(paths, 'gf_r1_i2_consumer_01')).toBeNull();
+    expect(await readReceipt(paths, CONSUMER_DISPATCH_ID)).toBeNull();
     expect(await readReceipt(paths, '../escape')).toBeNull();
     await writeReceipt(paths, receipt());
-    const file = nodePath.join(paths.receipts, 'gf_r1_i2_consumer_01.json');
+    const file = nodePath.join(paths.receipts, `${CONSUMER_DISPATCH_ID}.json`);
     await writeFile(file, '}', 'utf8');
-    expect(await readReceipt(paths, 'gf_r1_i2_consumer_01')).toBeNull();
+    expect(await readReceipt(paths, CONSUMER_DISPATCH_ID)).toBeNull();
     await expect(writeReceipt(paths, receipt({ dispatch_id: 'junk' }))).rejects.toThrow();
   });
 
   it('writes receipts atomically (no temp litter)', async () => {
     const { paths } = await fresh();
     await writeReceipt(paths, receipt());
+    // Schema 2: receipts live under .gateflow/driver/receipts/.
+    expect(paths.receipts).toContain(nodePath.join('driver', 'receipts'));
     const entries = await readdir(paths.receipts);
-    expect(entries).toEqual(['gf_r1_i2_consumer_01.json']);
-    const info = await stat(nodePath.join(paths.receipts, 'gf_r1_i2_consumer_01.json'));
+    expect(entries).toEqual([`${CONSUMER_DISPATCH_ID}.json`]);
+    const info = await stat(nodePath.join(paths.receipts, `${CONSUMER_DISPATCH_ID}.json`));
     expect(info.isFile()).toBe(true);
   });
 });

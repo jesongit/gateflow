@@ -34,7 +34,7 @@ describe('watchOutbox', () => {
     const fired: string[] = [];
     watcher = watchOutbox(paths, { debounceMs: 120, pollIntervalMs: 40 }, (id) => fired.push(id));
 
-    const id = 'gf_r1_i2_consumer_01';
+    const id = 'gf_r1_i2_wabcdef012345_consumer_01';
     await writeStatus(paths.outbox, id, JSON.stringify(statusFile()));
     await waitFor(() => fired.includes(id), 2500);
     expect(fired.filter((entry) => entry === id)).toHaveLength(1);
@@ -45,7 +45,7 @@ describe('watchOutbox', () => {
     const fired: string[] = [];
     watcher = watchOutbox(paths, { debounceMs: 200, pollIntervalMs: 40 }, (id) => fired.push(id));
 
-    const id = 'gf_r1_i2_consumer_01';
+    const id = 'gf_r1_i2_wabcdef012345_consumer_01';
     await writeStatus(paths.outbox, id, JSON.stringify(statusFile()));
     await sleep(20);
     await writeStatus(paths.outbox, id, JSON.stringify({ ...statusFile(), phase: 'coding' }));
@@ -71,7 +71,7 @@ describe('watchOutbox', () => {
     const fired: string[] = [];
     watcher = watchOutbox(paths, { debounceMs: 100, pollIntervalMs: 40 }, (id) => fired.push(id));
 
-    const id = 'gf_r1_i2_consumer_01';
+    const id = 'gf_r1_i2_wabcdef012345_consumer_01';
     await writeStatus(paths.outbox, id, JSON.stringify(statusFile()));
     await waitFor(() => fired.includes(id), 2500);
 
@@ -79,15 +79,15 @@ describe('watchOutbox', () => {
     watcher = null;
 
     await writeStatus(paths.outbox, id, JSON.stringify({ ...statusFile(), state: 'blocked' }));
-    await mkdir(nodePath.join(paths.outbox, 'gf_r1_i2_consumer_02'), { recursive: true });
+    await mkdir(nodePath.join(paths.outbox, 'gf_r1_i2_wabcdef012345_consumer_02'), { recursive: true });
     await writeFile(
-      nodePath.join(paths.outbox, 'gf_r1_i2_consumer_02', 'status.json'),
-      JSON.stringify(statusFile({ dispatch_id: 'gf_r1_i2_consumer_02' })),
+      nodePath.join(paths.outbox, 'gf_r1_i2_wabcdef012345_consumer_02', 'status.json'),
+      JSON.stringify(statusFile({ dispatch_id: 'gf_r1_i2_wabcdef012345_consumer_02' })),
       'utf8',
     );
     await sleep(500);
     expect(fired.filter((entry) => entry === id)).toHaveLength(1);
-    expect(fired).not.toContain('gf_r1_i2_consumer_02');
+    expect(fired).not.toContain('gf_r1_i2_wabcdef012345_consumer_02');
   }, 10000);
 
   it('re-fires when a previously fired dispatch changes again', async () => {
@@ -95,7 +95,7 @@ describe('watchOutbox', () => {
     const fired: string[] = [];
     watcher = watchOutbox(paths, { debounceMs: 100, pollIntervalMs: 40 }, (id) => fired.push(id));
 
-    const id = 'gf_r1_i2_consumer_01';
+    const id = 'gf_r1_i2_wabcdef012345_consumer_01';
     await writeStatus(paths.outbox, id, JSON.stringify(statusFile()));
     await waitFor(() => fired.length === 1, 2500);
     await sleep(60);

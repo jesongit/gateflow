@@ -11,6 +11,7 @@ import type {
 export { ManualActivationAdapter } from './manual';
 export { ChatGPTActivationAdapter } from './chatgpt';
 export { ZCodeActivationAdapter } from './zcode';
+export { buildAgentEnv, CredentialInPassthroughError } from './env';
 export type {
   ActivationAdapter,
   ActivationAgentConfig,
@@ -18,6 +19,9 @@ export type {
   ActivationDispatch,
   ActivationKind,
   ActivationResult,
+  ActivationState,
+  CancelResult,
+  CancelState,
 } from './types';
 
 /**
@@ -33,9 +37,17 @@ export function createActivationAdapter(
 ): ActivationAdapter {
   switch (kind) {
     case 'chatgpt':
-      return new ChatGPTActivationAdapter({ command: opts?.command, autoStart: opts?.autoStart });
+      return new ChatGPTActivationAdapter({
+        command: opts?.command,
+        autoStart: opts?.autoStart,
+        envPassthrough: opts?.envPassthrough,
+      });
     case 'zcode':
-      return new ZCodeActivationAdapter({ command: opts?.command, autoStart: opts?.autoStart });
+      return new ZCodeActivationAdapter({
+        command: opts?.command,
+        autoStart: opts?.autoStart,
+        envPassthrough: opts?.envPassthrough,
+      });
     case 'manual':
     default:
       return new ManualActivationAdapter();

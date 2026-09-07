@@ -2,33 +2,58 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CommentDetail, DriverGitHubClient, IssueRef } from '../../src/github/client';
 import { buildTrackerCommentBody } from '../../src/github/comments';
 import {
-  findApprovalRecords,
+  acceptedFeedbackEvents,
   findCompletionReportComments,
   findHumanFeedbackCommands,
   findLatestPlanComment,
   findPlanComments,
   findTrackerComment,
+  isKnownLogin,
   publishCompletionReport,
   publishPlanComment,
   publishTrackerComment,
+  readIssueRecords,
   updateTracker,
 } from '../../src/github/issue-sync';
+import {
+  approvalOperationId,
+  buildRecordBody,
+  epochOperationId,
+  feedbackOperationId,
+  type ApprovalRecord,
+  type FeedbackAcceptedRecord,
+  type WorkflowEpochRecord,
+} from '../../src/protocol/records';
+import { planSha256 } from '../../src/protocol/plan';
 
 /*
  * Offline tests for the Driver's issue-sync use cases: marker-based comment
- * discovery, anchored human-command parsing, and protocol-comment
- * publishing. The client is a plain vi.fn() fake shaped like
- * DriverGitHubClient — no real GitHub API is ever touched.
+ * discovery, anchored human-command parsing, Gate-record reading (schema 2),
+ * and protocol-comment publishing. The client is a plain vi.fn() fake shaped
+ * like DriverGitHubClient — no real GitHub API is ever touched.
  */
 
 const ref: IssueRef = { owner: 'owner-user', repo: 'demo', issueNumber: 2 };
 const PLAN_MARKER = '<!-- ai-workflow:plan:v1 -->';
 const TRACKER_MARKER = '<!-- ai-workflow:execution-tracker:v1 -->';
 const COMPLETION_MARKER = '<!-- ai-workflow:completion-report:v1 -->';
+// NOTE: schema-1-shaped ids on purpose. findDispatchIdInComment (src/github/
+// comments.ts) still parses only the schema-1 id shape, and updateTracker
+// refuses to rebuild bodies whose dispatch id it cannot re-extract. These
+// constants exercise that parser, so they keep the shape it accepts.
 const DISPATCH_01 = 'gf_r1_i2_consumer_01';
 const DISPATCH_EXE = 'gf_r1_i2_executor_p5';
 const dispatchComment = (id: string) => `<!-- gateflow:dispatch-id: ${id} -->`;
 const TRUSTED = new Set(['alice', 'release-bot']);
+const REPO_ID = 1;
+const ISSUE_NUMBER = 2;
+const GATE = 'github-actions[bot]';
+const GATE_LOGINS = new Set(['github-actions[bot]']);
+const EPOCH = 'wf_0000000000a1';
+const OLD_EPOCH = 'wf_0000000000zz';
+const PLAN_COMMENT_ID = 501;
+const PLAN_CONTENT = '# Plan A\n\n1. step';
+const PLAN_BODY = `${PLAN_MARKER}\n\n${dispatchComment(DISPATCH_01)}\n\n${PLAN_CONTENT}\n`;
 
 function comment(id: number, user: string, body: string): CommentDetail {
   return {
@@ -40,17 +65,80 @@ function comment(id: number, user: string, body: string): CommentDetail {
   };
 }
 
+function epochRecord(epoch: string = EPOCH, issuedBy: string = GATE): WorkflowEpochRecord {
+  return {
+    schema: 2,
+    kind: 'workflow_epoch',
+    repository_id: REPO_ID,
+    issue_number: ISSUE_NUMBER,
+    workflow_epoch: epoch,
+    created_at: '2026-09-06T10:00:00Z',
+    issued_by: issuedBy,
+    operation_id: epochOperationId(REPO_ID, ISSUE_NUMBER, epoch),
+  };
+}
+
+function approvalRecord(
+  overrides: Partial<ApprovalRecord> & { workflow_epoch?: string; plan_comment_id?: number } = {},
+): ApprovalRecord {
+  const epoch = overrides.workflow_epoch ?? EPOCH;
+  const planCommentId = overrides.plan_comment_id ?? PLAN_COMMENT_ID;
+  const base: ApprovalRecord = {
+    schema: 2,
+    kind: 'approval',
+    repository_id: REPO_ID,
+    issue_number: ISSUE_NUMBER,
+    workflow_epoch: epoch,
+    plan_comment_id: planCommentId,
+    plan_sha256: planSha256(PLAN_BODY),
+    approval_command_comment_id: 600,
+    approved_by_id: 9001,
+    approved_by_login: 'alice',
+    gate_login: GATE,
+    gate_user_id: 41898282,
+    created_at: '2026-09-06T10:00:00Z',
+    operation_id: approvalOperationId(REPO_ID, ISSUE_NUMBER, epoch, planCommentId),
+  };
+  return { ...base, ...overrides };
+}
+
+function feedbackRecord(
+  feedbackCommentId: number,
+  kind: 'choose' | 'change' = 'change',
+  epoch: string = EPOCH,
+): FeedbackAcceptedRecord {
+  return {
+    schema: 2,
+    kind: 'feedback_accepted',
+    repository_id: REPO_ID,
+    issue_number: ISSUE_NUMBER,
+    workflow_epoch: epoch,
+    event_id: `fe${feedbackCommentId}`,
+    feedback_comment_id: feedbackCommentId,
+    feedback_kind: kind,
+    gate_login: GATE,
+    gate_user_id: 41898282,
+    created_at: '2026-09-06T10:00:00Z',
+    operation_id: feedbackOperationId(REPO_ID, ISSUE_NUMBER, epoch, feedbackCommentId),
+  };
+}
+
+/** A Gate-issued record comment (schema 2 marker + fenced JSON). */
+function gateComment(id: number, record: WorkflowEpochRecord | ApprovalRecord | FeedbackAcceptedRecord): CommentDetail {
+  return comment(id, GATE, buildRecordBody(record));
+}
+
 function fakeClient() {
   return {
-    getRepository: vi.fn(async () => ({ owner: 'owner-user', name: 'demo', id: 1 })),
+    getRepository: vi.fn(async () => ({ owner: 'owner-user', name: 'demo', id: 1, ownerType: 'User' })),
+    getAuthenticatedUser: vi.fn(async () => ({ id: 5001, login: 'gateflow-driver[bot]' })),
     getIssue: vi.fn(async (_r: IssueRef) => null),
     listComments: vi.fn(async (_r: IssueRef) => [] as CommentDetail[]),
     addIssueComment: vi.fn(async (_r: IssueRef, _body: string) => ({ id: 555 })),
     updateIssueComment: vi.fn(async (_r: IssueRef, _commentId: number, _body: string) => undefined),
     addReaction: vi.fn(async (_r: IssueRef, _commentId: number, _content: string) => undefined),
-    // Stub added when the Driver interface grew listOpenIssues; unused here.
-    listOpenIssues: vi.fn(async (_r: { owner: string; repo: string }) => []),
-    // Stub added when the Driver interface grew createIssue; unused here.
+    // Schema 2 discovery entry point.
+    listIssues: vi.fn(async (_r: { owner: string; repo: string; state?: string }) => []),
     createIssue: vi.fn(
       async (_r: IssueRef, _input: { title: string; body: string; labels: string[] }) => ({
         number: 42,
@@ -173,28 +261,108 @@ describe('human feedback command discovery', () => {
   });
 });
 
-describe('approval record discovery', () => {
-  it('parses anchored /approve <plan-comment-id> from trusted humans and the repo owner', () => {
+describe('gate-issued record discovery (schema 2: readIssueRecords)', () => {
+  it('parses epoch/approval/feedback records authored by a gate identity; current epoch = highest comment id', () => {
     const comments: CommentDetail[] = [
-      comment(10, 'Alice', '/approve 3472198451'),
-      comment(11, 'owner-user', '  /approve 42  '), // surrounding whitespace tolerated
+      gateComment(100, epochRecord(OLD_EPOCH)),
+      gateComment(101, epochRecord()), // newest epoch record wins
+      comment(200, 'alice', `${PLAN_MARKER}\n\nplan text`),
+      comment(210, 'alice', '/approve 501'), // raw command: NOT a record
+      gateComment(300, approvalRecord()),
+      comment(310, 'alice', '/change use postgres'),
+      gateComment(320, feedbackRecord(310, 'change')),
     ];
-    const records = findApprovalRecords(comments, TRUSTED, 'owner-user');
-    expect(records.map((r) => r.planCommentId)).toEqual([3472198451, 42]);
-    expect(records[0]?.comment.id).toBe(10);
-    expect(records[1]?.comment.id).toBe(11);
+
+    const view = readIssueRecords(comments, GATE_LOGINS);
+
+    expect(view.epoch).not.toBeNull();
+    expect(view.epoch?.record.workflow_epoch).toBe(EPOCH);
+    expect(view.epoch?.commentId).toBe(101);
+    expect(view.approvals).toHaveLength(1);
+    expect(view.approvals[0]?.commentId).toBe(300);
+    expect(view.approvals[0]?.record.plan_comment_id).toBe(PLAN_COMMENT_ID);
+    expect(view.approvals[0]?.record.plan_sha256).toBe(planSha256(PLAN_BODY));
+    expect(view.feedback).toHaveLength(1);
+    expect(view.feedback[0]?.record.feedback_comment_id).toBe(310);
+    expect(view.suspect).toEqual([]);
   });
 
-  it('rejects /approve from unknown authors and malformed bodies', () => {
+  it('a valid record body authored OUTSIDE the gate allowlist is excluded AND flagged suspect (forgery)', () => {
     const comments: CommentDetail[] = [
-      comment(1, 'mallory', '/approve 3472198451'), // untrusted author
-      comment(2, 'alice', '/approve abc'), // not a number
-      comment(3, 'alice', '/approve 42 done'), // trailing content
-      comment(4, 'alice', '/approve'), // missing id
-      comment(5, 'alice', 'please /approve 42'), // not whole-body
-      comment(6, 'alice', '/Approve 42'), // case-sensitive
+      gateComment(100, epochRecord()),
+      gateComment(101, epochRecord(OLD_EPOCH)),
+      comment(400, 'mallory', buildRecordBody(approvalRecord({ approved_by_login: 'mallory' }))),
+      comment(401, 'gateflow-driver[bot]', buildRecordBody(feedbackRecord(402, 'change'))),
     ];
-    expect(findApprovalRecords(comments, TRUSTED, 'owner-user')).toEqual([]);
+
+    const view = readIssueRecords(comments, GATE_LOGINS);
+
+    expect(view.approvals).toEqual([]);
+    expect(view.feedback).toEqual([]);
+    const suspectIds = view.suspect.map((entry) => entry.commentId);
+    expect(suspectIds).toEqual([400, 401]);
+    expect(view.suspect[0]?.reason).toContain('mallory');
+  });
+
+  it('unparsable record bodies fail closed into suspect (bad JSON, wrong schema, bad timestamp)', () => {
+    const brokenJson = `${'<!-- gateflow:approval:v2 -->'}\n\n\`\`\`json\n{ not json }\n\`\`\`\n`;
+    const wrongSchema = buildRecordBody({
+      ...approvalRecord(),
+      schema: 1,
+    } as unknown as ApprovalRecord);
+    const badTimestamp = buildRecordBody({
+      ...approvalRecord(),
+      created_at: 'not-a-timestamp',
+    } as unknown as ApprovalRecord);
+    const comments: CommentDetail[] = [
+      gateComment(100, epochRecord()),
+      comment(410, GATE, brokenJson),
+      comment(411, GATE, wrongSchema),
+      comment(412, GATE, badTimestamp),
+    ];
+
+    const view = readIssueRecords(comments, GATE_LOGINS);
+
+    expect(view.suspect.map((entry) => entry.commentId)).toEqual([410, 411, 412]);
+  });
+
+  it('acceptedFeedbackEvents counts only CURRENT-epoch records anchored to trusted-human commands', () => {
+    const trustedHumans = new Set([...TRUSTED, 'owner-user']);
+    const current = comment(310, 'alice', '/change use postgres');
+    const foreignEpoch = comment(311, 'release-bot', '/choose q1 B');
+    const editedAway = comment(312, 'alice', 'I changed my mind, plain text now');
+    const impostor = comment(313, 'mallory', '/change hijack');
+    const comments: CommentDetail[] = [
+      gateComment(100, epochRecord()),
+      current,
+      foreignEpoch,
+      editedAway,
+      impostor,
+      gateComment(320, feedbackRecord(310, 'change')),
+      gateComment(321, feedbackRecord(311, 'choose', OLD_EPOCH)),
+      gateComment(322, feedbackRecord(312, 'change')),
+      gateComment(323, feedbackRecord(313, 'change')),
+    ];
+
+    const view = readIssueRecords(comments, GATE_LOGINS);
+    // All records were authored by the trusted Gate identity, so none of them
+    // is suspect. The impostor's command (313) never yields a valid accepted
+    // event: the accepted projection re-checks the COMMAND author, and the
+    // old-epoch record (321) is dropped by the epoch binding. (This also
+    // models allowlist revocation: an event accepted while a human was
+    // trusted stops counting once the human is removed — without poisoning
+    // the whole issue as tampering.)
+    expect(view.suspect).toEqual([]);
+    const accepted = acceptedFeedbackEvents(view, comments, trustedHumans, 'owner-user');
+    expect(accepted.map((entry) => entry.comment.id)).toEqual([310]);
+    expect(accepted[0]?.kind).toBe('change');
+  });
+
+  it('isKnownLogin is case-insensitive against the allowlist', () => {
+    const allowlist = new Set(['github-actions[bot]']);
+    expect(isKnownLogin('GitHub-Actions[BOT]', allowlist)).toBe(true);
+    expect(isKnownLogin('github-actions[bot]', allowlist)).toBe(true);
+    expect(isKnownLogin('impostor', allowlist)).toBe(false);
   });
 });
 

@@ -4,15 +4,15 @@
   "private": true,
   "description": "GateFlow V1: GitHub-native Human-Gated Agent Runtime. GitHub stores canonical state; the deterministic Gate controls authorization and state transitions; the local Driver handles discovery, dispatch and sync; Agents communicate only through the local Workspace Protocol.",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "bin": {
     "gateflow": "dist/cli.js"
   },
   "scripts": {
     "build": "npm run build:gate && npm run build:cli",
-    "build:gate": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js",
-    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node20 --outfile=dist/cli.js",
+    "build:gate": "esbuild src/index.ts --bundle --platform=node --target=node24 --outfile=dist/index.js",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node24 --outfile=dist/cli.js",
     "check:dist": "node scripts/check-dist.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

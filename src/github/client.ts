@@ -33,6 +33,18 @@ export interface RepositoryInfo {
   owner: string;
   name: string;
   id: number;
+  /**
+   * GitHub owner TYPE as verified via the API ("User", "Organization", ...).
+   * The Organization fail-closed rule (hardening §8) reads this field — the
+   * configured slug is never used to decide identity semantics.
+   */
+  ownerType: string;
+}
+
+/** The authenticated identity behind the Driver's token (the Driver identity). */
+export interface DriverIdentity {
+  id: number;
+  login: string;
 }
 
 /** Issue projection freshly read from canonical state (GitHub). */
@@ -65,8 +77,14 @@ export type DriverReactionContent = '+1' | '-1' | 'eyes';
  * INITIALIZATION, docs/workspace-protocol.md §9 — see its doc comment.)
  */
 export interface DriverGitHubClient {
-  /** Fetches repository identity (owner login, name, database id). */
+  /** Fetches repository identity (owner login, name, database id, owner type). */
   getRepository(): Promise<RepositoryInfo>;
+  /**
+   * The authenticated user behind the Driver's token. Used to record
+   * `issued_by` on Driver-bootstrapped epoch records and to keep the Driver
+   * identity out of the Gate-record trust set (schema 2 hardening).
+   */
+  getAuthenticatedUser(): Promise<DriverIdentity>;
   /** Fetches one issue; null when it does not exist (404). */
   getIssue(ref: IssueRef): Promise<IssueDetail | null>;
   /** Lists ALL issue comments (paginated internally), ascending by id. */
@@ -78,10 +96,12 @@ export interface DriverGitHubClient {
   /** Adds a reaction to an issue comment (Driver feedback channel). */
   addReaction(ref: IssueRef, commentId: number, content: DriverReactionContent): Promise<void>;
   /**
-   * Lists ALL open issues of the repository (paginated internally),
-   * ascending by issue number. Discovery's entry point into canonical state.
+   * Lists issues of the repository (paginated internally), ascending by
+   * issue number. `state` defaults to 'open' (discovery); submit
+   * reconciliation searches with 'all' to find created issues regardless of
+   * their current state.
    */
-  listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]>;
+  listIssues(ref: { owner: string; repo: string; state?: 'open' | 'closed' | 'all' }): Promise<IssueDetail[]>;
   /**
    * Creates a new issue. The ONE deliberate exception to "the Driver never
    * creates issues" (docs/workspace-protocol.md §9, Producer submit): a
@@ -110,7 +130,16 @@ export interface OctokitRest {
       get(params: {
         owner: string;
         repo: string;
-      }): Promise<{ data: { owner?: { login?: string }; name?: string; id?: number } }>;
+      }): Promise<{
+        data: {
+          owner?: { login?: string; type?: string };
+          name?: string;
+          id?: number;
+        };
+      }>;
+    };
+    users: {
+      getAuthenticated(params: {}): Promise<{ data: { id?: number; login?: string } }>;
     };
     issues: {
       get(params: {
@@ -145,7 +174,7 @@ export interface OctokitRest {
       list(params: {
         owner: string;
         repo: string;
-        state: 'open';
+        state: 'open' | 'closed' | 'all';
         per_page: number;
         page: number;
       }): Promise<{
@@ -257,7 +286,13 @@ class OctokitDriverClient implements DriverGitHubClient {
       owner: data.owner?.login ?? target.owner,
       name: data.name ?? target.repo,
       id: data.id ?? 0,
+      ownerType: data.owner?.type ?? 'unknown',
     };
+  }
+
+  async getAuthenticatedUser(): Promise<DriverIdentity> {
+    const { data } = await this.octokit.rest.users.getAuthenticated({});
+    return { id: data.id ?? 0, login: data.login ?? 'unknown' };
   }
 
   async getIssue(ref: IssueRef): Promise<IssueDetail | null> {
@@ -342,13 +377,16 @@ class OctokitDriverClient implements DriverGitHubClient {
     });
   }
 
-  async listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
+  async listIssues(
+    ref: { owner: string; repo: string; state?: 'open' | 'closed' | 'all' },
+  ): Promise<IssueDetail[]> {
+    const state = ref.state ?? 'open';
     const issues: IssueDetail[] = [];
     for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
       const { data } = await this.octokit.rest.issues.list({
         owner: ref.owner,
         repo: ref.repo,
-        state: 'open',
+        state,
         per_page: ISSUES_PER_PAGE,
         page,
       });
@@ -357,7 +395,7 @@ class OctokitDriverClient implements DriverGitHubClient {
           number: raw.number ?? 0,
           title: raw.title ?? '',
           body: raw.body ?? '',
-          // We queried state:'open'; normalize defensively anyway.
+          // Defensive normalization for whatever the API reports.
           state: raw.state === 'closed' ? 'closed' : 'open',
           labels: labelNames(raw.labels),
           updatedAt: raw.updated_at ?? '',
@@ -370,6 +408,14 @@ class OctokitDriverClient implements DriverGitHubClient {
     }
     issues.sort((a, b) => a.number - b.number);
     return issues;
+  }
+
+  /**
+   * Backward-compatible alias for `listIssues({ state: 'open' })` — kept as
+   * the named discovery entry point used across the Driver.
+   */
+  async listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
+    return this.listIssues({ ...ref, state: 'open' });
   }
 
   async createIssue(

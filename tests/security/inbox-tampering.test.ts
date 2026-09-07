@@ -10,14 +10,16 @@ import { readFile, writeFile } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { dispatchIntent } from '../../src/driver/dispatch';
-import { clearReceipt } from '../../src/driver/dedup';
-import { extractPlanContent } from '../../src/driver/intent';
+import { retryDispatch } from '../../src/driver/retry';
+import { canonicalPlanContent } from '../../src/protocol/plan';
+import { planSha256 } from '../../src/protocol/plan';
 import { buildPlanCommentBody } from '../../src/github/comments';
 import { syncDispatch } from '../../src/driver/sync';
 import { sha256Hex } from '../../src/workspace/inbox';
 import { readReceipt } from '../../src/workspace/outbox';
 import {
   CONSUMER_ID,
+  EPOCH,
   ISSUE,
   buildDiscovery,
   countedClient,
@@ -42,9 +44,25 @@ describe('C. inbox tampering attacks (docs/workspace-protocol.md §8.2)', () => 
     const deps = makeDeps(client, testConfig(), fixture);
     try {
       client.addIssue(ISSUE, { labels: ['ai:planning'] });
-      client.addComment(ISSUE, 'octo', '/change 不要使用 SQLite。');
+      client.ensureEpoch(ISSUE, EPOCH);
+      const command = client.addComment(ISSUE, 'octo', '/change 不要使用 SQLite。');
+      // Schema 2: only Gate-ACCEPTED feedback is projected/counted.
+      client.addGateRecord(ISSUE, {
+        schema: 2,
+        kind: 'feedback_accepted',
+        repository_id: 123,
+        issue_number: ISSUE,
+        workflow_epoch: EPOCH,
+        event_id: `fe${command.id}`,
+        feedback_comment_id: command.id,
+        feedback_kind: 'change',
+        gate_login: 'github-actions[bot]',
+        gate_user_id: 41898282,
+        created_at: '2026-09-06T11:30:00Z',
+        operation_id: `feedback:123:${ISSUE}:${EPOCH}:${command.id}`,
+      });
 
-      const openIssues = await client.listOpenIssues({ owner: 'octo', repo: 'repo' });
+      const openIssues = await client.listIssues({ owner: 'octo', repo: 'repo' });
       const comments = await client.listComments({
         owner: 'octo',
         repo: 'repo',
@@ -53,11 +71,11 @@ describe('C. inbox tampering attacks (docs/workspace-protocol.md §8.2)', () => 
       const discovery = buildDiscovery(
         openIssues[0]!,
         comments,
-        new Set(testConfig().trustedHumans),
+        new Set(['octo']),
         'octo',
       );
       const intent = discovery.intents[0]!;
-      expect(intent.revision).toBe('02'); // round = 1 + all-time feedback
+      expect(intent.revision).toBe('02'); // round = 1 + ACCEPTED feedback
 
       const first = await dispatchIntent(deps, client.repository, discovery, intent);
       expect(first.dispatched).toBe(true);
@@ -78,7 +96,7 @@ describe('C. inbox tampering attacks (docs/workspace-protocol.md §8.2)', () => 
 
       // The official retry path (`gateflow driver retry <id>`) clears the
       // receipt; the next cycle rebuilds the whole directory from GitHub.
-      expect(await clearReceipt(fixture.paths, dispatchId)).toBe(true);
+      expect(await retryDispatch(fixture.paths, dispatchId)).toBe(true);
       const second = await dispatchIntent(deps, client.repository, discovery, intent);
       expect(second.dispatched).toBe(true);
 
@@ -97,6 +115,7 @@ describe('C. inbox tampering attacks (docs/workspace-protocol.md §8.2)', () => 
     try {
       const planBody = buildPlanCommentBody('# Approved Plan\n\n1. trusted step', 'gf_r123_i7_consumer_01');
       client.addIssue(ISSUE, { labels: ['ai:ready'] });
+      client.ensureEpoch(ISSUE, EPOCH);
       const planComment = client.addComment(ISSUE, 'gateflow-driver[bot]', planBody, {
         createdAt: '2026-09-06T11:00:00Z',
         updatedAt: '2026-09-06T11:00:00Z',
@@ -104,8 +123,25 @@ describe('C. inbox tampering attacks (docs/workspace-protocol.md §8.2)', () => 
       client.addComment(ISSUE, 'octo', `/approve ${planComment.id}`, {
         createdAt: '2026-09-06T12:00:00Z',
       });
+      // The Gate-issued record binding (epoch, plan, hash, command).
+      client.addGateRecord(ISSUE, {
+        schema: 2,
+        kind: 'approval',
+        repository_id: 123,
+        issue_number: ISSUE,
+        workflow_epoch: EPOCH,
+        plan_comment_id: planComment.id,
+        plan_sha256: planSha256(planBody),
+        approval_command_comment_id: planComment.id + 1,
+        approved_by_id: 9001,
+        approved_by_login: 'octo',
+        gate_login: 'github-actions[bot]',
+        gate_user_id: 41898282,
+        created_at: '2026-09-06T12:05:00Z',
+        operation_id: `approval:123:${ISSUE}:${EPOCH}:p${planComment.id}`,
+      });
 
-      const openIssues = await client.listOpenIssues({ owner: 'octo', repo: 'repo' });
+      const openIssues = await client.listIssues({ owner: 'octo', repo: 'repo' });
       const comments = await client.listComments({
         owner: 'octo',
         repo: 'repo',
@@ -114,7 +150,7 @@ describe('C. inbox tampering attacks (docs/workspace-protocol.md §8.2)', () => 
       const discovery = buildDiscovery(
         openIssues[0]!,
         comments,
-        new Set(testConfig().trustedHumans),
+        new Set(['octo']),
         'octo',
       );
       const intent = discovery.intents[0]!;
@@ -125,7 +161,7 @@ describe('C. inbox tampering attacks (docs/workspace-protocol.md §8.2)', () => 
       const dispatchId = first.dispatchId!;
       const dir = nodePath.join(fixture.paths.inbox, dispatchId);
       const canonicalPlan = await readFile(nodePath.join(dir, 'PLAN.md'), 'utf8');
-      expect(canonicalPlan).toBe(extractPlanContent(planBody));
+      expect(canonicalPlan).toBe(canonicalPlanContent(planBody));
 
       // Tamper: swap the plan AND desynchronize the hash anchor.
       await writeFile(nodePath.join(dir, 'PLAN.md'), '# HIJACKED PLAN\n\nrm -rf /', 'utf8');
@@ -134,7 +170,7 @@ describe('C. inbox tampering attacks (docs/workspace-protocol.md §8.2)', () => 
       context.plan_sha256 = 'e'.repeat(64);
       await writeFile(contextPath, JSON.stringify(context), 'utf8');
 
-      expect(await clearReceipt(fixture.paths, dispatchId)).toBe(true);
+      expect(await retryDispatch(fixture.paths, dispatchId)).toBe(true);
       const second = await dispatchIntent(deps, client.repository, discovery, intent);
       expect(second.dispatched).toBe(true);
 

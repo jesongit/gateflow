@@ -1,16 +1,17 @@
 /**
- * Hand-written validators for Workspace Protocol v1 machine files.
+ * Hand-written validators for Workspace Protocol v2 machine files.
  *
  * This module is the executable source of truth; the JSON Schema mirror in
- * protocol/workspace-schema-v1.json is kept in sync manually (no ajv, no new
+ * protocol/workspace-schema-v2.json is kept in sync manually (no ajv, no new
  * dependencies). Every constraint from docs/workspace-protocol.md §2 is
  * enforced here:
- * - `schema === 1` on every machine file (except receipts, which carry no
+ * - `schema === 2` on every machine file (except receipts, which carry no
  *   schema field);
  * - strict objects: unknown keys are rejected;
  * - role/reason/result/state enums and per-role whitelists;
+ * - the workflow epoch binding on dispatch/context/receipt;
  * - executor/consumer field constraints (plan_comment_id, approval_comment_id,
- *   input.plan);
+ *   input.plan) and the input snapshot hash;
  * - parseable ISO 8601 timestamps and string length caps;
  * - human-only values (`approve` / `ready` / `cancel` / `human-close`) in
  *   result/state positions are rejected with an explicit error naming the
@@ -181,6 +182,7 @@ const DISPATCH_KEYS = [
   'repository',
   'repository_id',
   'issue_number',
+  'workflow_epoch',
   'role',
   'reason',
   'created_at',
@@ -189,9 +191,20 @@ const DISPATCH_KEYS = [
   'input',
 ] as const;
 
+/** `wf_` + 12 base36 chars — the frozen workflow epoch shape. */
+const EPOCH_SHAPE = /^wf_[0-9a-z]{12}$/;
+
+function checkEpoch(value: unknown, what: string, errors: string[]): void {
+  if (value === undefined) return;
+  if (typeof value !== 'string' || !EPOCH_SHAPE.test(value)) {
+    errors.push(`${what}: must be a workflow epoch ("wf_" + 12 base36 chars), got ${JSON.stringify(value)}`);
+  }
+}
+
 /**
  * Validate inbox/<id>/dispatch.json (docs §2.1): role/reason coupling,
- * executor-only plan/approval comment ids, and the fixed input file names.
+ * executor-only plan/approval comment ids, the workflow epoch binding, and
+ * the fixed input file names.
  */
 export function validateDispatch(raw: unknown): Validation<Dispatch> {
   const what = 'dispatch';
@@ -209,11 +222,22 @@ export function validateDispatch(raw: unknown): Validation<Dispatch> {
     if (parsed !== null && parsed.role !== role) {
       errors.push(`${what}.dispatch_id: role component "${parsed.role}" does not match role "${role}"`);
     }
+    // The dispatch_id epoch code must agree with the explicit epoch field.
+    if (parsed !== null && typeof raw['workflow_epoch'] === 'string') {
+      const expected = `wf_${parsed.epochCode}`;
+      if (raw['workflow_epoch'] !== expected) {
+        errors.push(
+          `${what}.workflow_epoch "${String(raw['workflow_epoch'])}" does not match the ` +
+            `dispatch_id epoch code (expected "${expected}")`,
+        );
+      }
+    }
   }
 
   checkString(raw['repository'], `${what}.repository`, errors, { min: 1, max: REPOSITORY_MAX });
   checkPositiveInt(raw['repository_id'], `${what}.repository_id`, errors);
   checkPositiveInt(raw['issue_number'], `${what}.issue_number`, errors);
+  checkEpoch(raw['workflow_epoch'], `${what}.workflow_epoch`, errors);
   checkIsoDate(raw['created_at'], `${what}.created_at`, errors);
 
   if (role === 'consumer') {
@@ -262,13 +286,28 @@ export function validateDispatch(raw: unknown): Validation<Dispatch> {
   return { ok: true, value: raw as unknown as Dispatch };
 }
 
-const CONTEXT_KEYS = ['schema', 'dispatch_id', 'plan_comment_id', 'plan_sha256', 'feedback_count'] as const;
-const CONTEXT_REQUIRED = ['schema', 'dispatch_id', 'feedback_count'] as const;
+const CONTEXT_KEYS = [
+  'schema',
+  'dispatch_id',
+  'workflow_epoch',
+  'plan_comment_id',
+  'plan_sha256',
+  'feedback_count',
+  'input_snapshot_sha256',
+] as const;
+const CONTEXT_REQUIRED = [
+  'schema',
+  'dispatch_id',
+  'workflow_epoch',
+  'feedback_count',
+  'input_snapshot_sha256',
+] as const;
 
 /**
  * Validate inbox/<id>/context.json (docs §2.2). The file carries no role
  * field, so the role is derived from the dispatch_id: executors must carry
- * plan_comment_id and plan_sha256, consumers must not.
+ * plan_comment_id and plan_sha256, consumers must not. Schema 2 adds the
+ * workflow epoch and the input snapshot hash.
  */
 export function validateContext(raw: unknown): Validation<WorkspaceContext> {
   const what = 'context';
@@ -279,8 +318,19 @@ export function validateContext(raw: unknown): Validation<WorkspaceContext> {
   checkSchema(raw['schema'], what, errors);
 
   const dispatchId = checkDispatchId(raw['dispatch_id'], `${what}.dispatch_id`, errors);
+  checkEpoch(raw['workflow_epoch'], `${what}.workflow_epoch`, errors);
   const parsed = dispatchId !== undefined ? parseDispatchId(dispatchId) : null;
   const role = parsed?.role;
+  // The context epoch must agree with the dispatch_id epoch code.
+  if (parsed !== null && typeof raw['workflow_epoch'] === 'string') {
+    const expected = `wf_${parsed.epochCode}`;
+    if (raw['workflow_epoch'] !== expected) {
+      errors.push(
+        `${what}.workflow_epoch "${String(raw['workflow_epoch'])}" does not match the ` +
+          `dispatch_id epoch code (expected "${expected}")`,
+      );
+    }
+  }
 
   if (role === 'executor') {
     if (raw['plan_comment_id'] === undefined) {
@@ -303,6 +353,9 @@ export function validateContext(raw: unknown): Validation<WorkspaceContext> {
   }
 
   checkNonNegativeInt(raw['feedback_count'], `${what}.feedback_count`, errors);
+  if (typeof raw['input_snapshot_sha256'] !== 'undefined' && (typeof raw['input_snapshot_sha256'] !== 'string' || !SHA256_PATTERN.test(raw['input_snapshot_sha256']))) {
+    errors.push(`${what}.input_snapshot_sha256: must be a 64-character hex sha256, got ${JSON.stringify(raw['input_snapshot_sha256'])}`);
+  }
 
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: raw as unknown as WorkspaceContext };
@@ -431,17 +484,25 @@ const RECEIPT_KEYS = [
   'dispatch_id',
   'status',
   'attempts',
+  'workflow_epoch',
+  'plan_comment_id',
+  'approval_comment_id',
   'tracker_comment_id',
+  'published_comment_id',
   'last_progress_sha256',
   'last_feedback_comment_id',
   'last_sync_at',
   'error',
-  'last_notice_state',
+  'last_notice_key',
+  'activation',
+  'input_snapshot_sha256',
 ] as const;
 const RECEIPT_REQUIRED = ['dispatch_id', 'status', 'attempts'] as const;
 
 /**
- * Validate receipts/<id>.json (docs §2.6). Receipts are a Driver-local cache
+ * Validate receipts/<id>.json (docs §2.6, schema 2: the single `synced`
+ * status is replaced by published/accepted/obsolete and the receipt binds
+ * the workflow epoch + publication ids). Receipts are a Driver-local cache
  * and carry no `schema` field; a stray one is rejected as an unknown key.
  */
 export function validateReceipt(raw: unknown): Validation<Receipt> {
@@ -451,13 +512,17 @@ export function validateReceipt(raw: unknown): Validation<Receipt> {
   checkUnknownKeys(raw, RECEIPT_KEYS, what, errors);
   checkRequiredKeys(raw, RECEIPT_REQUIRED, what, errors);
   checkDispatchId(raw['dispatch_id'], `${what}.dispatch_id`, errors);
+  checkEpoch(raw['workflow_epoch'], `${what}.workflow_epoch`, errors);
 
   const status = raw['status'];
   if (status !== undefined && !RECEIPT_STATUSES.includes(status as (typeof RECEIPT_STATUSES)[number])) {
     errors.push(`${what}.status: must be one of ${RECEIPT_STATUSES.join('|')}, got ${JSON.stringify(status)}`);
   }
   checkPositiveInt(raw['attempts'], `${what}.attempts`, errors);
+  checkPositiveInt(raw['plan_comment_id'], `${what}.plan_comment_id`, errors);
+  checkPositiveInt(raw['approval_comment_id'], `${what}.approval_comment_id`, errors);
   checkPositiveInt(raw['tracker_comment_id'], `${what}.tracker_comment_id`, errors);
+  checkPositiveInt(raw['published_comment_id'], `${what}.published_comment_id`, errors);
   checkPositiveInt(raw['last_feedback_comment_id'], `${what}.last_feedback_comment_id`, errors);
   checkString(raw['last_progress_sha256'], `${what}.last_progress_sha256`, errors, { min: 1 });
   checkIsoDate(raw['last_sync_at'], `${what}.last_sync_at`, errors);
@@ -466,22 +531,59 @@ export function validateReceipt(raw: unknown): Validation<Receipt> {
   if (error !== undefined && error !== null) {
     checkString(error, `${what}.error`, errors, { min: 1, max: 2000 });
   }
-  checkString(raw['last_notice_state'], `${what}.last_notice_state`, errors, { min: 1, max: 64 });
+  checkString(raw['last_notice_key'], `${what}.last_notice_key`, errors, { min: 1, max: 64 });
+  // Decisions doc: notice_key is a 16-char lowercase hex sha256 prefix.
+  if (typeof raw['last_notice_key'] === 'string' && !/^[0-9a-f]{16}$/.test(raw['last_notice_key'])) {
+    errors.push(`${what}.last_notice_key: must be a 16-character lowercase hex sha256 prefix, got ${JSON.stringify(raw['last_notice_key'])}`);
+  }
+  if (typeof raw['input_snapshot_sha256'] !== 'undefined' && (typeof raw['input_snapshot_sha256'] !== 'string' || !SHA256_PATTERN.test(raw['input_snapshot_sha256']))) {
+    errors.push(`${what}.input_snapshot_sha256: must be a 64-character hex sha256, got ${JSON.stringify(raw['input_snapshot_sha256'])}`);
+  }
+
+  const activation = raw['activation'];
+  if (activation !== undefined) {
+    if (!isRecord(activation)) {
+      errors.push(`${what}.activation: expected a JSON object`);
+    } else {
+      const aWhat = `${what}.activation`;
+      checkUnknownKeys(activation, ['adapter', 'state', 'detail', 'at'], aWhat, errors);
+      checkRequiredKeys(activation, ['adapter', 'state', 'at'], aWhat, errors);
+      checkString(activation['adapter'], `${aWhat}.adapter`, errors, { min: 1, max: 64 });
+      const state = activation['state'];
+      if (state !== undefined && state !== 'notified' && state !== 'started' && state !== 'failed') {
+        errors.push(`${aWhat}.state: must be "notified"|"started"|"failed", got ${JSON.stringify(state)}`);
+      }
+      checkString(activation['detail'], `${aWhat}.detail`, errors, { max: 500 });
+      checkIsoDate(activation['at'], `${aWhat}.at`, errors);
+    }
+  }
 
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: raw as unknown as Receipt };
 }
 
-const SUBMIT_KEYS = ['schema', 'title', 'kind', 'maturity_hint', 'created_at'] as const;
+const SUBMIT_KEYS = ['schema', 'submission_id', 'title', 'kind', 'maturity_hint', 'created_at'] as const;
+const SUBMIT_REQUIRED = ['schema', 'title', 'kind', 'maturity_hint', 'created_at'] as const;
+const SUBMISSION_ID_SHAPE = /^sub_[0-9a-z]{16}$/;
 
-/** Validate submit/submit.json (docs §9). */
+/**
+ * Validate submit/submit.json (docs §9, schema 2: stable submission_id).
+ * `submission_id` MAY be absent in the raw agent-written file: the Driver
+ * then injects one and rewrites the file (inspectSubmit), after which the id
+ * is the stable Operation-ID anchor. When present it must match the shape.
+ */
 export function validateSubmit(raw: unknown): Validation<SubmitRequest> {
   const what = 'submit';
   if (!isRecord(raw)) return fail(what, 'expected a JSON object');
   const errors: string[] = [];
   checkUnknownKeys(raw, SUBMIT_KEYS, what, errors);
-  checkRequiredKeys(raw, SUBMIT_KEYS, what, errors);
+  checkRequiredKeys(raw, SUBMIT_REQUIRED, what, errors);
   checkSchema(raw['schema'], what, errors);
+  if (raw['submission_id'] !== undefined && (typeof raw['submission_id'] !== 'string' || !SUBMISSION_ID_SHAPE.test(raw['submission_id']))) {
+    errors.push(
+      `${what}.submission_id: must be "sub_" + 16 base36 chars, got ${JSON.stringify(raw['submission_id'])}`,
+    );
+  }
   checkString(raw['title'], `${what}.title`, errors, { min: 1, max: TITLE_MAX });
 
   const kind = raw['kind'];

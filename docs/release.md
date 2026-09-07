@@ -35,6 +35,13 @@ git status           # build 之后 dist/ 必须显示"无变化"
 - 若本次包含 Gate 行为变更，确认 [src/index.ts](../src/index.ts) 的 `GATE_VERSION` 已提升（V1 首版为 `1.0.0`），且测试中的 `GATE_VERSION` 断言已同步（见 §2）；
 - 确认工作树干净（所有改动已提交）。
 
+### Step 2.5：Schema 2 Hardening 发布门槛（2026-09 起）
+
+- [ ] `action.yml` 为 `using: node24`，`package.json` 构建目标为 `target=node24`、`engines >=24`（CI 有自动断言；Node20 已于 2026-09-23 从 GitHub runner 移除）；
+- [ ] `protocol/github-schema-v2.json` 与 `protocol/workspace-schema-v2.json` 可解析，且与 `src/gate/*`、`src/protocol/records.ts`、`src/workspace/schemas.ts` 的冻结形状一致（协议 JSON 镜像改动 = 协议改动，需同 PR 更新实现与测试向量）；
+- [ ] CI 的 `action-smoke` job（真实 GitHub-hosted runner：Node24 运行时、无 Issue 事件安全 no-op、非 Human 命令拒绝）最近一次运行全绿；
+- [ ] [docs/plans/v1_hardening_decisions.md](plans/v1_hardening_decisions.md) 与实现无漂移：记录格式、Operation ID 语法、receipt 状态机、`published ≠ accepted` 语义如文档所述。
+
 ### Step 3：打 tag 并推送
 
 ```bash
@@ -47,7 +54,7 @@ git push origin v1.0.0
 在 GitHub 上基于 `v1.0.0` tag 创建 Release。Release notes 至少包含：
 
 - 本次行为变化摘要（含 `GATE_VERSION` 从 / 到）；
-- 协议状态声明：Gate 协议仍为 `schema: 1` 冻结（[protocol.md](protocol.md)）；Workspace Protocol 为 `schema: 1` 冻结（[workspace-protocol.md](workspace-protocol.md)）；`gateflow.config.yml` 为 `version: 1`；
+- 协议状态声明：Gate 协议为 **`schema: 2` 冻结**（[protocol.md](protocol.md) §9：Gate 记录 / epoch / Organization 规则）；Workspace Protocol 为 **`schema: 2` 冻结**（[workspace-protocol.md](workspace-protocol.md)）；`gateflow.config.yml` 为 `version: 1`（`gate_logins` / `env_passthrough` 为增量字段）；
 - Action 输入接口现状（`github-token` / `trusted-humans` / `trusted-agents`，与 [action.yml](../action.yml) 一致）；V1 中 `trusted-agents` 的语义是登记 Driver 的 Bot 身份（如 `gateflow-agent[bot]`）；
 - Driver CLI 契约现状：`gateflow driver start|once|status|retry <dispatchId>`，flags `--root <dir>` / `--config <file>`。
 

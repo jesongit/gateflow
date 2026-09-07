@@ -39,6 +39,20 @@ export interface IssueInfo {
   labels: string[];
 }
 
+/** The authenticated identity behind the gate's token (the Gate identity). */
+export interface AuthenticatedUser {
+  id: number;
+  login: string;
+}
+
+/** Repository + owner identity, used for the Organization permission rule. */
+export interface RepoIdentity {
+  owner: string;
+  ownerType: string;
+  /** Repository database id; 0 when the API omits it. */
+  id: number;
+}
+
 /** The only GitHub operations the gate is allowed to perform. */
 export interface GitHubClient {
   /** Fetches the issue (state + labels) via the API. */
@@ -70,6 +84,24 @@ export interface GitHubClient {
    * protocol comments per issue stay far below this in practice).
    */
   listComments(ref: IssueRef): Promise<GateComment[]>;
+  /**
+   * Publishes a new issue comment (schema 2: Gate-issued records — epoch /
+   * approval / feedback_accepted). Returns the created comment id.
+   */
+  addComment(ref: IssueRef, body: string): Promise<{ id: number }>;
+  /**
+   * The authenticated user behind the gate's token. This is the GATE IDENTITY
+   * written into every record the gate issues (docs/plans/
+   * v1_hardening_decisions.md §3): authorization records issued by any other
+   * identity are untrusted by construction.
+   */
+  getAuthenticatedUser(): Promise<AuthenticatedUser>;
+  /**
+   * Repository + owner identity via the API (owner TYPE included). The
+   * Organization rule (hardening GF-H10) must verify the owner type against
+   * the API, never against the event payload.
+   */
+  getRepoIdentity(ref: { owner: string; repo: string }): Promise<RepoIdentity>;
 }
 
 /** Structural subset of Octokit used by the adapter below. */
@@ -99,6 +131,12 @@ export interface OctokitLike {
         issue_number: number;
         name: string;
       }): Promise<unknown>;
+      createComment(params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        body: string;
+      }): Promise<{ data: { id?: number } }>;
       updateComment(params: {
         owner: string;
         repo: string;
@@ -137,6 +175,16 @@ export interface OctokitLike {
         comment_id: number;
         content: ReactionContent;
       }): Promise<unknown>;
+    };
+    users: {
+      getAuthenticated(params: {}): Promise<{
+        data: { id?: number; login?: string };
+      }>;
+    };
+    repos: {
+      get(params: { owner: string; repo: string }): Promise<{
+        data: { id?: number; owner?: { login?: string; type?: string } };
+      }>;
     };
   };
 }
@@ -297,6 +345,30 @@ export class OctokitGitHubClient implements GitHubClient {
     // approval validation relies on; do not trust the API sort parameter.
     comments.sort((a, b) => a.id - b.id);
     return comments;
+  }
+
+  async addComment(ref: IssueRef, body: string): Promise<{ id: number }> {
+    const { data } = await this.octokit.rest.issues.createComment({
+      owner: ref.owner,
+      repo: ref.repo,
+      issue_number: ref.issueNumber,
+      body,
+    });
+    return { id: data.id ?? 0 };
+  }
+
+  async getAuthenticatedUser(): Promise<AuthenticatedUser> {
+    const { data } = await this.octokit.rest.users.getAuthenticated({});
+    return { id: data.id ?? 0, login: data.login ?? 'unknown' };
+  }
+
+  async getRepoIdentity(ref: { owner: string; repo: string }): Promise<RepoIdentity> {
+    const { data } = await this.octokit.rest.repos.get({ owner: ref.owner, repo: ref.repo });
+    return {
+      owner: data.owner?.login ?? ref.owner,
+      ownerType: data.owner?.type ?? 'unknown',
+      id: data.id ?? 0,
+    };
   }
 }
 

@@ -24,6 +24,7 @@ import { processSubmit } from './submit';
 import type { SubmitOutcome } from './submit';
 import { syncAll, syncDispatch } from './sync';
 import type { SyncOutcome } from './sync';
+import { acquireLock, releaseLock, driverLockFile, DRIVER_LOCK_HOLDER } from './workspace-lock';
 
 /** Minimal logging seam the CLI and tests inject. */
 export interface DriverLogger {
@@ -63,17 +64,39 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Fail-closed identity rule (hardening §8, GF-H10): on a non-personal
+ * repository (owner type != "User", verified via the API) the Driver refuses
+ * to run without an explicit trusted-humans allowlist. A repo-owner login
+ * that is really an Organization must never silently count as a Human.
+ */
+export function assertUsableRepository(config: DriverConfig, repositoryInfo: RepositoryInfo): void {
+  if (
+    config.requireExplicitHumans &&
+    repositoryInfo.ownerType !== 'User' &&
+    config.trustedHumans.length === 0
+  ) {
+    throw new Error(
+      `repository owner "${repositoryInfo.owner}" has GitHub type "${repositoryInfo.ownerType}"; ` +
+        'Driver refuses to run on an Organization-owned repository without an explicit ' +
+        '`trusted_humans` allowlist in gateflow.config.yml (fail closed, hardening GF-H10).',
+    );
+  }
+}
+
+/**
  * One full driver cycle: ensure the workspace, resolve repository identity
  * (the client is already bound to owner/repo at construction; getRepository
- * supplies the database id that dispatch_ids embed), process the local
- * Producer submit FIRST (workspace-protocol.md §9 — a new issue created from
- * `.gateflow/submit/` is discoverable in the SAME cycle), then dispatch fresh
- * intents and sync every outbox dispatch.
+ * supplies the database id that dispatch_ids embed and the OWNER TYPE the
+ * identity rule needs), process the local Producer submit FIRST (workspace-
+ * protocol.md §9 — a new issue created from `.gateflow/submit/` is
+ * discoverable in the SAME cycle), then dispatch fresh intents and sync
+ * every outbox dispatch.
  */
 export async function runOnce(deps: DriverDeps): Promise<DriverOnceResult> {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
   const repositoryInfo: RepositoryInfo = await deps.client.getRepository();
+  assertUsableRepository(deps.config, repositoryInfo);
   // Submit before intents: new work enters first, so the issue created from
   // `.gateflow/submit/` is picked up by this cycle's discovery below.
   const submit = await processSubmit(deps, {
@@ -96,13 +119,29 @@ export async function runOnce(deps: DriverDeps): Promise<DriverOnceResult> {
  * while idle (docs §6 — watcher debounce 500ms + stability polling; events
  * are only a latency optimization, syncDispatch revalidates everything).
  * SIGINT/SIGTERM close the watcher and exit cleanly.
+ *
+ * Single-instance guard (hardening §9): a `driver.lock` in the Driver-private
+ * locks directory is acquired on start; a second Driver on the SAME machine
+ * workspace fails fast instead of double-writing. The lock constrains
+ * same-machine processes only — cross-machine exclusivity needs an external
+ * coordinator (documented, never assumed).
  */
 export async function startDriver(deps: DriverDeps): Promise<void> {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
+  const now = deps.now ?? (() => new Date());
+  const lock = await acquireLock(driverLockFile(paths), DRIVER_LOCK_HOLDER, undefined, now);
+  if (!lock.ok) {
+    throw new Error(
+      'another GateFlow driver instance appears to be running for this workspace ' +
+        `(driver.lock held by ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : 'an unknown process'}); ` +
+        'refusing to start a second instance (single-writer rule, hardening §9)',
+    );
+  }
   // Fail fast when repository identity is unresolvable; afterwards it is
   // cached for watcher-driven syncs between cycles (ids are stable).
   const repositoryInfo: RepositoryInfo = await deps.client.getRepository();
+  assertUsableRepository(deps.config, repositoryInfo);
   const pollMs = Math.max(1, deps.config.driver.pollIntervalSeconds) * 1000;
 
   const pending = new Set<string>();
@@ -155,6 +194,7 @@ export async function startDriver(deps: DriverDeps): Promise<void> {
         // best-effort cleanup on the way out
       })
       .then(() => {
+        void releaseLock(driverLockFile(paths), DRIVER_LOCK_HOLDER);
         process.exit(0);
       });
   };
@@ -188,5 +228,6 @@ export async function startDriver(deps: DriverDeps): Promise<void> {
     await watcher.close().catch(() => {
       // best-effort cleanup
     });
+    await releaseLock(driverLockFile(paths), DRIVER_LOCK_HOLDER);
   }
 }

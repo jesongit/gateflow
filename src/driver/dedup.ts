@@ -1,11 +1,15 @@
 /**
  * dispatch_id deduplication over the Driver-local receipts cache (docs/
- * workspace-protocol.md §3 + §2.6, frozen).
+ * workspace-protocol.md §3 + §2.6, schema 2).
  *
  * Rules:
  * - no receipt → dispatch is allowed (fresh dispatch or post-retry).
- * - receipt dispatched | syncing | synced → NEVER re-dispatch (synced also
- *   blocks result replay at the sync layer, docs §8.4).
+ * - receipt dispatched | publishing | published | accepted → NEVER
+ *   re-dispatch (`published`/`accepted` also block result replay at the
+ *   sync layer, docs §8.4).
+ * - receipt obsolete → the dispatch is dead; a NEW dispatch id (new epoch /
+ *   revision) will be derived from canonical state instead — the old id
+ *   never resurrects.
  * - receipt failed with attempts < maxAttempts → automatic retry allowed;
  *   at/after the ceiling → no dispatch without an explicit
  *   `gateflow driver retry <dispatch_id>`.
@@ -29,10 +33,14 @@ export function shouldDispatch(
   }
   switch (existing.status) {
     case 'dispatched':
-    case 'syncing':
+    case 'publishing':
       return { ok: false, reason: 'already-dispatched' };
-    case 'synced':
-      return { ok: false, reason: 'synced' };
+    case 'published':
+      return { ok: false, reason: 'published' };
+    case 'accepted':
+      return { ok: false, reason: 'accepted' };
+    case 'obsolete':
+      return { ok: false, reason: 'obsolete' };
     case 'failed':
       if (existing.attempts < maxAttempts) {
         return { ok: true, reason: 'retry' };

@@ -11,7 +11,7 @@ import * as nodePath from 'node:path';
 
 import type { Receipt, ResultFile, StatusFile } from './protocol';
 import type { WorkspacePaths } from './paths';
-import { outboxDispatchDir } from './paths';
+import { listDispatchDirs, outboxDispatchDir } from './paths';
 import { atomicWriteJson } from './inbox';
 import { MAX_FILE_BYTES, OversizedFileError, validateDispatchDirName } from './validation';
 import { validateReceipt } from './schemas';
@@ -102,21 +102,10 @@ export async function readOutboxMarkdown(
 /**
  * List dispatch ids that have an outbox directory. Only names matching the
  * frozen dispatch_id grammar are returned; junk directories are ignored.
+ * Capped at MAX_DISPATCH_DIRS (anti-flood, hardening §8).
  */
 export async function listOutboxDispatchIds(paths: WorkspacePaths): Promise<string[]> {
-  let entries;
-  try {
-    entries = await readdir(paths.outbox, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const ids: string[] = [];
-  for (const entry of entries) {
-    if (entry.isDirectory() && validateDispatchDirName(entry.name)) {
-      ids.push(entry.name);
-    }
-  }
-  return ids.sort();
+  return listDispatchDirs(paths.outbox);
 }
 
 function receiptFile(paths: WorkspacePaths, dispatchId: string): string {

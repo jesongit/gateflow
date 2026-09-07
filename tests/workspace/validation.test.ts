@@ -2,17 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import { validateDispatchDirName, validateOutboxResult, validateOutboxStatus, MAX_FILE_BYTES } from '../../src/workspace/validation';
 import { OversizedFileError } from '../../src/workspace/outbox';
-import { resultFile, statusFile } from './helpers';
+import { EPOCH_CODE, resultFile, statusFile } from './helpers';
 
-const CONSUMER = { dispatchId: 'gf_r1_i2_consumer_01', role: 'consumer' as const };
-const EXECUTOR = { dispatchId: 'gf_r1_i2_executor_p100', role: 'executor' as const };
+const CONSUMER = { dispatchId: `gf_r1_i2_w${EPOCH_CODE}_consumer_01`, role: 'consumer' as const };
+const EXECUTOR = { dispatchId: `gf_r1_i2_w${EPOCH_CODE}_executor_p100`, role: 'executor' as const };
 
 describe('validateDispatchDirName', () => {
   it('accepts frozen ids and rejects everything else', () => {
-    expect(validateDispatchDirName('gf_r1_i2_consumer_01')).toBe(true);
-    expect(validateDispatchDirName('gf_r1_i2_executor_p3472198451')).toBe(true);
+    expect(validateDispatchDirName(CONSUMER.dispatchId)).toBe(true);
+    expect(validateDispatchDirName(`gf_r1_i2_w${EPOCH_CODE}_executor_p3472198451`)).toBe(true);
     expect(validateDispatchDirName('junk')).toBe(false);
-    expect(validateDispatchDirName('gf_r1_i2_consumer_01/../x')).toBe(false);
+    expect(validateDispatchDirName(CONSUMER.dispatchId + '/../x')).toBe(false);
+    // Schema-1 ids without the epoch component are rejected.
+    expect(validateDispatchDirName('gf_r1_i2_consumer_01')).toBe(false);
   });
 });
 
@@ -34,7 +36,10 @@ describe('validateOutboxStatus', () => {
   });
 
   it('rejects dispatch_id / role mismatches', () => {
-    const wrongId = validateOutboxStatus(statusFile({ dispatch_id: 'gf_r1_i2_consumer_02' }), CONSUMER);
+    const wrongId = validateOutboxStatus(
+      statusFile({ dispatch_id: `gf_r1_i2_w${EPOCH_CODE}_consumer_02` }),
+      CONSUMER,
+    );
     expect(wrongId.ok).toBe(false);
     const wrongRole = validateOutboxStatus(statusFile({ role: 'executor' }), CONSUMER);
     expect(wrongRole.ok).toBe(false);
@@ -101,20 +106,20 @@ describe('validateOutboxResult', () => {
     if (!noReport.ok) expect(noReport.errors.join(' ')).toContain('report_file is required');
 
     const noValidation = validateOutboxResult(
-      { schema: 1, ...base, report_file: 'REPORT.md' },
+      { schema: 2, ...base, report_file: 'REPORT.md' },
       EXECUTOR,
     );
     expect(noValidation.ok).toBe(false);
     if (!noValidation.ok) expect(noValidation.errors.join(' ')).toContain('validation is required');
 
     const ok = validateOutboxResult(
-      { schema: 1, ...base, report_file: 'REPORT.md', validation: 'passed' },
+      { schema: 2, ...base, report_file: 'REPORT.md', validation: 'passed' },
       EXECUTOR,
     );
     expect(ok.ok).toBe(true);
 
     const blockedWithReport = validateOutboxResult(
-      { schema: 1, dispatch_id: EXECUTOR.dispatchId, role: 'executor', result: 'blocked', report_file: 'REPORT.md', reason: 'stuck' },
+      { schema: 2, dispatch_id: EXECUTOR.dispatchId, role: 'executor', result: 'blocked', report_file: 'REPORT.md', reason: 'stuck' },
       EXECUTOR,
     );
     expect(blockedWithReport.ok).toBe(false);
@@ -154,7 +159,7 @@ describe('validateOutboxResult', () => {
   });
 
   it('rejects expected-identity mismatches', () => {
-    expect(validateOutboxResult(resultFile({ dispatch_id: 'gf_r1_i2_consumer_09' }), CONSUMER).ok).toBe(false);
+    expect(validateOutboxResult(resultFile({ dispatch_id: `gf_r1_i2_w${EPOCH_CODE}_consumer_09` }), CONSUMER).ok).toBe(false);
     expect(validateOutboxResult(resultFile(), EXECUTOR).ok).toBe(false);
   });
 

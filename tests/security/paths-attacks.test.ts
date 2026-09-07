@@ -13,8 +13,11 @@ import * as nodePath from 'node:path';
 import { inboxDispatchDir, outboxDispatchDir } from '../../src/workspace/paths';
 import { listOutboxDispatchIds } from '../../src/workspace/outbox';
 import { syncAll, syncDispatch } from '../../src/driver/sync';
+import { buildPlanCommentBody } from '../../src/github/comments';
+import { planSha256 } from '../../src/protocol/plan';
 import {
   CONSUMER_ID,
+  EPOCH,
   EXECUTOR_ID,
   ISSUE,
   countedClient,
@@ -30,11 +33,19 @@ import {
   writeOutboxFile,
 } from '../driver/helpers';
 
+/** Gate record comments are protocol plumbing — content comments only here. */
+function contentCommentCount(client: FakeDriverClient, issueNumber: number): number {
+  return (client.issues.get(issueNumber)?.comments ?? []).filter(
+    (comment) => !/<!-- gateflow:(workflow|approval|feedback):v2/.test(comment.body),
+  ).length;
+}
+
 async function setup() {
   const client = countedClient(new FakeDriverClient());
   const fixture = await makeWorkspace();
   const deps = makeDeps(client, testConfig(), fixture);
   client.addIssue(ISSUE, { labels: ['ai:planning'] });
+  client.ensureEpoch(ISSUE, EPOCH);
   return { client, fixture, deps, cleanup: fixture.cleanup };
 }
 
@@ -66,7 +77,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       }
       expect(client.writes).toBe(0);
       expect(client.reads).toBe(0);
-      expect(client.commentCount(ISSUE)).toBe(0);
+      expect(contentCommentCount(client, ISSUE)).toBe(0);
     } finally {
       await cleanup();
     }
@@ -78,9 +89,11 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       current: '.gateflow/current.json',
       inbox: '.gateflow/inbox',
       outbox: '.gateflow/outbox',
-      receipts: '.gateflow/receipts',
       submit: '.gateflow/submit',
-      logs: '.gateflow/logs',
+      driver: '.gateflow/driver',
+      receipts: '.gateflow/driver/receipts',
+      locks: '.gateflow/driver/locks',
+      logs: '.gateflow/driver/logs',
     };
     const absoluteIds = ['C:\\evil', '/etc', '\\\\server\\share\\x', 'D:/evil', 'C:evil'];
     for (const id of absoluteIds) {
@@ -88,7 +101,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       expect(() => inboxDispatchDir(paths, id), `inboxDispatchDir(${id})`).toThrow();
     }
     // A valid id always resolves strictly inside the workspace roots.
-    const valid = 'gf_r123_i7_executor_p501';
+    const valid = 'gf_r123_i7_w000000000007_executor_p501';
     const outDir = outboxDispatchDir(paths, valid);
     const inDir = inboxDispatchDir(paths, valid);
     expect(
@@ -131,7 +144,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       // status.json "{}" is invalid (missing keys) → rejected, no write.
       expect(outcomes[0]?.action).toBe('rejected');
       expect(client.writes).toBe(0);
-      expect(client.commentCount(ISSUE)).toBe(0);
+      expect(contentCommentCount(client, ISSUE)).toBe(0);
     } finally {
       await cleanup();
     }
@@ -151,7 +164,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       await writeFile(
         nodePath.join(outsideDir, 'result.json'),
         JSON.stringify({
-          schema: 1,
+          schema: 2,
           dispatch_id: escapeId,
           role: 'consumer',
           result: 'plan_ready',
@@ -182,7 +195,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       }
       // Invariant: nothing was ever published, and no file outside
       // .gateflow was read or written (canary untouched, no new files).
-      expect(client.commentCount(ISSUE)).toBe(0);
+      expect(contentCommentCount(client, ISSUE)).toBe(0);
       expect(client.writes).toBe(0);
       expect(await readFile(canaryPath, 'utf8')).toBe('CANARY — must never be read or written');
       const outsideFiles = (await readdir(outsideDir)).sort();
@@ -202,7 +215,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
       await writeOutboxFile(fixture.paths, CONSUMER_ID, 'PLAN.md', 'x'.repeat(513 * 1024));
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'plan_ready',
@@ -213,10 +226,33 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       expect(planOutcome.detail).toMatch(/exceeds 524288/);
 
       // REPORT.md oversized → executor completed rejected.
+      // (The executor preflight needs the authorization chain; the oversize
+      // bound must still fire inside the publication path.)
+      const planBody = buildPlanCommentBody('# Plan', EXECUTOR_ID);
+      client.addComment(ISSUE, 'gateflow-driver[bot]', planBody, { id: 501 });
+      client.addComment(ISSUE, 'octo', '/approve 501', { id: 600 });
+      client.addGateRecord(ISSUE, {
+        schema: 2,
+        kind: 'approval',
+        repository_id: 123,
+        issue_number: ISSUE,
+        workflow_epoch: EPOCH,
+        plan_comment_id: 501,
+        plan_sha256: planSha256(planBody),
+        approval_command_comment_id: 600,
+        approved_by_id: 9001,
+        approved_by_login: 'octo',
+        gate_login: 'github-actions[bot]',
+        gate_user_id: 41898282,
+        created_at: '2026-09-06T12:00:00Z',
+        operation_id: `approval:123:${ISSUE}:${EPOCH}:p501`,
+      });
+      // The report publication path requires ai:working (T6 from-state).
+      client.issues.get(ISSUE)!.labels = ['ai:working'];
       await seedInbox(fixture, EXECUTOR_ID, 'executor');
       await writeOutboxFile(fixture.paths, EXECUTOR_ID, 'REPORT.md', 'y'.repeat(513 * 1024));
       await writeOutboxJson(fixture.paths, EXECUTOR_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: EXECUTOR_ID,
         role: 'executor',
         result: 'completed',
@@ -229,7 +265,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
 
       // status.json oversized → rejected before any status is consumed.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'status.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         state: 'working',
@@ -243,7 +279,9 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       expect(statusOutcome.detail).toMatch(/exceeds the .*-byte limit/);
 
       expect(client.writes).toBe(0);
-      expect(client.commentCount(ISSUE)).toBe(0);
+      // The seeded executor chain (plan comment + /approve command) accounts
+      // for the two content comments; no publication ever happened.
+      expect(contentCommentCount(client, ISSUE)).toBe(2);
     } finally {
       await cleanup();
     }
@@ -257,7 +295,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       // the constant "PLAN.md" is accepted, and it is resolved inside the
       // dispatch dir. Smuggle a traversal value anyway and observe rejection.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'plan_ready',
@@ -267,7 +305,7 @@ describe('A. workspace path attacks (docs/workspace-protocol.md §8.5)', () => {
       expect(outcome.action).toBe('rejected');
       expect(outcome.detail).toMatch(/plan_file/);
       expect(client.writes).toBe(0);
-      expect(client.commentCount(ISSUE)).toBe(0);
+      expect(contentCommentCount(client, ISSUE)).toBe(0);
     } finally {
       await cleanup();
     }

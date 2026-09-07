@@ -20,14 +20,15 @@ import { readFile, readdir } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { runOnce } from '../../src/driver/driver';
-import { extractPlanContent } from '../../src/driver/intent';
+import { canonicalPlanContent } from '../../src/protocol/plan';
+import { epochCode } from '../../src/protocol/epoch';
 import { detectCommentMarker } from '../../src/gate/markers';
 import { MARKERS } from '../../src/gate/protocol';
 import { readCurrent, readInboxDispatch, sha256Hex } from '../../src/workspace/inbox';
 import { readReceipt } from '../../src/workspace/outbox';
 import { resolveWorkspace } from '../../src/workspace/paths';
 import type { WorkspacePaths } from '../../src/workspace/paths';
-import { FakeDriverClient, makeDeps, makeWorkspace } from '../driver/helpers';
+import { FakeDriverClient, makeDeps, makeWorkspace, testEpoch } from '../driver/helpers';
 import {
   GateSimulator,
   auditKind,
@@ -47,6 +48,12 @@ import {
 import type { ManualClock, StdoutCapture } from './helpers';
 
 const ISSUE = 101;
+/** The deterministic fixture epoch; its code rides inside every dispatch id. */
+const EPOCH = testEpoch(ISSUE);
+/** Gate record comments (schema 2) are audit entries, not content. */
+const RECORD_MARKER = /<!-- gateflow:(workflow|approval|feedback):v2/;
+const contentComments = (client: FakeDriverClient, issueNumber: number) =>
+  (client.issues.get(issueNumber)?.comments ?? []).filter((c) => !RECORD_MARKER.test(c.body));
 
 type Provider = 'chatgpt' | 'zcode';
 
@@ -93,6 +100,8 @@ async function startLifecycle(combo: Combo): Promise<Lifecycle> {
     body: 'Users need CSV export of their data.',
     labels: ['ai:planning'],
   });
+  // Schema 2: the issue's workflow epoch (as a Gate/Driver bootstrap record).
+  client.ensureEpoch(ISSUE, EPOCH);
   return {
     client,
     deps,
@@ -100,7 +109,7 @@ async function startLifecycle(combo: Combo): Promise<Lifecycle> {
     paths: resolveWorkspace(fixture.projectRoot),
     clock,
     stdout,
-    consumerId: (round: number) => `gf_r123_i${ISSUE}_consumer_0${round}`,
+    consumerId: (round: number) => `gf_r123_i${ISSUE}_w${epochCode(EPOCH)!}_consumer_0${round}`,
     cleanup: async () => {
       stdout.restore();
       await fixture.cleanup();
@@ -160,13 +169,13 @@ async function exerciseLifecycle(combo: Combo): Promise<void> {
     ]);
     gate.syncAll();
     expect(gate.labels(ISSUE)).toEqual(['ai:review']); // T1 fired
-    const afterPlan1 = client.issues.get(ISSUE)!.comments;
+    const afterPlan1 = contentComments(client, ISSUE);
     expect(afterPlan1).toHaveLength(1);
     const plan1 = afterPlan1[0]!;
     expect(plan1.body.startsWith(MARKERS.plan)).toBe(true); // published by the Driver bot
     expect(plan1.body).toContain(`<!-- gateflow:dispatch-id: ${consumer01} -->`);
     expect(plan1.body).toContain('Model the CSV schema');
-    expect((await readReceipt(paths, consumer01))?.status).toBe('synced');
+    expect((await readReceipt(paths, consumer01))?.status).toBe('published');
 
     // -- Step 4: human /change → round-02 consumer dispatch with FEEDBACK ---
     const round01Before = await snapshotDir(nodePath.join(paths.inbox, consumer01));
@@ -193,35 +202,44 @@ async function exerciseLifecycle(combo: Combo): Promise<void> {
     await writeOutboxResult(paths, planReadyResult(consumer02));
     const fourth = await runOnce(deps);
     expect(freshDispatches(fourth)).toEqual([]);
+    // consumer01 was already observed `accepted` during the previous cycle
+    // (its label was review by then) — the replay guard now skips it.
     expect(fourth.synced.map((o) => [o.dispatchId, o.action])).toEqual([
       [consumer01, 'skipped'],
       [consumer02, 'plan-published'],
     ]);
     gate.syncAll();
     expect(gate.labels(ISSUE)).toEqual(['ai:review']); // T1 needs PLANNING: no-op
-    const afterPlan2 = client.issues.get(ISSUE)!.comments;
-    expect(afterPlan2).toHaveLength(3);
+    const afterPlan2 = contentComments(client, ISSUE);
+    expect(afterPlan2).toHaveLength(3); // plan1 + /change + plan2
     const plan2 = afterPlan2[2]!;
     expect(plan2.body.startsWith(MARKERS.plan)).toBe(true);
     expect(plan2.body).toContain(`<!-- gateflow:dispatch-id: ${consumer02} -->`);
     expect(plan2.body).toContain('without SQLite');
 
     // -- Step 6: /approve → Gate T2 (REVIEW → READY) -------------------------
-    // A stale approval (the superseded first plan) must NOT unlock anything.
+    // A stale approval (the superseded first plan) must NOT unlock anything:
+    // the simulator mirrors the gate — no record, no transition.
     client.addComment(ISSUE, 'octo', `/approve ${plan1.id}`);
     gate.syncAll();
     expect(gate.labels(ISSUE)).toEqual(['ai:review']); // not the current plan
     const approval = client.addComment(ISSUE, 'octo', `/approve ${plan2.id}`);
     gate.syncAll();
     expect(gate.labels(ISSUE)).toEqual(['ai:ready']); // T2 fired
+    // The durable authorization fact is the Gate-issued approval RECORD.
+    const approvalRecordId = client
+      .issues.get(ISSUE)!
+      .comments.filter((c) => RECORD_MARKER.test(c.body) && c.body.includes('gateflow:approval:v2'))
+      .at(-1)!.id;
+    expect(approvalRecordId).toBeGreaterThan(approval.id);
 
     // -- Step 7: executor dispatch bound to the approved plan comment -------
-    const executorId = `gf_r123_i${ISSUE}_executor_p${plan2.id}`;
+    const executorId = `gf_r123_i${ISSUE}_w${epochCode(EPOCH)!}_executor_p${plan2.id}`;
     expect(executorId.endsWith(`_executor_p${plan2.id}`)).toBe(true);
     const fifth = await runOnce(deps);
     expect(freshDispatches(fifth)).toEqual([{ dispatchId: executorId, reason: 'new' }]);
     const inboxPlan = await readFile(nodePath.join(paths.inbox, executorId, 'PLAN.md'), 'utf8');
-    expect(inboxPlan).toBe(extractPlanContent(plan2.body)); // marker/dispatch-id stripped
+    expect(inboxPlan).toBe(canonicalPlanContent(plan2.body)); // marker/dispatch-id stripped
     const context = JSON.parse(
       await readFile(nodePath.join(paths.inbox, executorId, 'context.json'), 'utf8'),
     ) as { plan_comment_id?: number; plan_sha256?: string; feedback_count: number };
@@ -232,7 +250,8 @@ async function exerciseLifecycle(combo: Combo): Promise<void> {
     expect(executorDispatch?.role).toBe('executor');
     expect(executorDispatch?.reason).toBe('approved_plan');
     expect(executorDispatch?.plan_comment_id).toBe(plan2.id);
-    expect(executorDispatch?.approval_comment_id).toBe(approval.id);
+    // The dispatch binds the approval RECORD, not the human's command comment.
+    expect(executorDispatch?.approval_comment_id).toBe(approvalRecordId);
     expect(executorDispatch?.input.plan).toBe('PLAN.md');
     const taskExec = await readFile(nodePath.join(paths.inbox, executorId, 'TASK.md'), 'utf8');
     expect(taskExec).toContain('## Goal');
@@ -245,13 +264,14 @@ async function exerciseLifecycle(combo: Combo): Promise<void> {
     await writeOutboxStatus(paths, statusFileFor(executorId, 'executor', 'working', clock.iso()));
     const sixth = await runOnce(deps);
     expect(sixth.synced.map((o) => [o.dispatchId, o.action])).toEqual([
-      [consumer01, 'skipped'],
-      [consumer02, 'skipped'],
+      [consumer01, 'skipped'], // already accepted in step 5
+      [consumer02, 'skipped'], // already accepted in step 7 (review observed)
       [executorId, 'tracker-created'],
     ]);
     gate.syncAll();
     expect(gate.labels(ISSUE)).toEqual(['ai:working']); // T3 fired
-    const tracker = client.issues.get(ISSUE)!.comments.at(-1)!;
+    const contentSoFar = contentComments(client, ISSUE);
+    const tracker = contentSoFar.at(-1)!;
     expect(detectCommentMarker(tracker.body)).toBe(MARKERS.executionTracker);
     expect(tracker.body).toContain(`<!-- gateflow:dispatch-id: ${executorId} -->`);
     expect(tracker.body).toContain('**Status:** In Progress');
@@ -324,20 +344,25 @@ async function exerciseLifecycle(combo: Combo): Promise<void> {
       [consumer02, 'skipped'],
       [executorId, 'completed'],
     ]);
+    expect((await readReceipt(paths, executorId))?.status).toBe('published');
     gate.syncAll();
     expect(gate.labels(ISSUE)).toEqual(['ai:done']); // T6 fired
-    const completion = client.issues.get(ISSUE)!.comments.at(-1)!;
+    const completion = contentComments(client, ISSUE).at(-1)!;
     expect(completion.body.startsWith(MARKERS.completionReport)).toBe(true);
     expect(completion.body).toContain(`<!-- gateflow:dispatch-id: ${executorId} -->`);
     expect(completion.body).toContain('validation: all tests green');
-    expect((await readReceipt(paths, executorId))?.status).toBe('synced');
 
     // -- Step 13: no-op cycle + full audit trail ----------------------------
     const commentsBefore = [...(client.issues.get(ISSUE)!.comments)];
     const labelsBefore = gate.labels(ISSUE);
     const last = await runOnce(deps);
     expect(freshDispatches(last)).toEqual([]);
-    expect(last.synced.every((o) => o.action === 'skipped' || o.action === 'unchanged')).toBe(true);
+    // The executor's published report is now observed accepted (done label).
+    expect(last.synced.map((o) => [o.dispatchId, o.action])).toEqual([
+      [consumer01, 'skipped'],
+      [consumer02, 'skipped'],
+      [executorId, 'accepted'],
+    ]);
     gate.syncAll();
     expect(gate.labels(ISSUE)).toEqual(labelsBefore);
     expect(client.issues.get(ISSUE)!.comments.map((c) => c.id)).toEqual(
@@ -346,11 +371,14 @@ async function exerciseLifecycle(combo: Combo): Promise<void> {
 
     const comments = client.issues.get(ISSUE)!.comments;
     expect(comments.map((c) => auditKind(c.body))).toEqual([
+      'other', // workflow_epoch record (schema 2 bootstrap)
       'plan',
       'human-feedback',
+      'other', // feedback_accepted record
       'plan',
-      'human-approval', // stale /approve (superseded plan) — recorded, no transition
+      'human-approval', // stale /approve (superseded plan) — no record, no transition
       'human-approval', // current /approve → T2
+      'other', // approval record (the durable authorization fact)
       'tracker',
       'completion',
     ]);
@@ -361,8 +389,11 @@ async function exerciseLifecycle(combo: Combo): Promise<void> {
     expect(plans.map((p) => p.id)).toEqual([plan1.id, plan2.id]);
     expect(comments.filter((c) => detectCommentMarker(c.body) === MARKERS.executionTracker)).toHaveLength(1);
     expect(comments.filter((c) => detectCommentMarker(c.body) === MARKERS.completionReport)).toHaveLength(1);
-    expect((await readReceipt(paths, consumer01))?.status).toBe('synced');
-    expect((await readReceipt(paths, consumer02))?.status).toBe('synced');
+    // Round 01's plan was SUPERSEDED (never approved — the human approved
+    // plan2 instead), so its receipt truthfully stays `published`, never
+    // `accepted`. Round 02's plan2 earned the approval record → accepted.
+    expect((await readReceipt(paths, consumer01))?.status).toBe('published');
+    expect((await readReceipt(paths, consumer02))?.status).toBe('accepted');
 
     // -- Role ≠ Provider (E2E): each dispatch woke its ROUTED provider ------
     const out = stdout.text();

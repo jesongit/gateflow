@@ -48,9 +48,10 @@ Gate（GitHub Action，事件驱动）   Driver（本地进程，轮询 + 同步
 1. **所有能由确定性程序完成的事情，都不经过 AI**；AI 只参与真正需要理解、判断、规划和开发的部分。
 2. **GitHub 是唯一正式状态存储**：`.gateflow/` 工作区、receipts 都是本地缓存，不是正式状态。
 3. **状态迁移权唯一属于 Gate**：其余角色只能发布"协议对象"——`Agent Output → Driver（校验）→ GitHub Protocol Object → Gate → State Transition`。
-4. **审批永远是人类动作**：`/approve <plan-comment-id>`（Plan 绑定审批，V1）只由 Trusted Human 在 Issue 上发出，Gate 确定性校验；Agent 不猜测、不模拟、不代替批准。
+4. **审批永远是人类动作，但授权事实由 Gate 固化**：`/approve <plan-comment-id>`（Plan 绑定审批）只由 Trusted Human 在 Issue 上发出；Gate 校验通过后签发 **approval 记录**（绑定 epoch / Plan id / Plan 内容 SHA-256 / 审批人），先固化记录再迁移标签。Driver 派发与同步前独立重验该记录——**没有 Gate 记录，任何标签与评论都不能解锁执行**。
 5. **Marker 只是结构标记**：任何人都能写出 Marker 文本，Marker 永远不能当权限证明。
 6. **两个身份概念永不合并**：Trusted Human（默认 = repo owner）是唯一命令发布者；Trusted Agent 在 V1 重定义为**受控 Driver 的 GitHub Identity**（如 `gateflow-agent[bot]`），只用于让 Gate 认可 Driver 发布的 marker 评论——AI 本身永远不持有该凭证。
+7. **四层状态严格分离**（schema 2）：`published`（远端对象已确认）≠ `accepted`（Gate 消费完成）；Agent Claim ≠ 授权；旧 epoch 的记录与派发随新轮次自动作废。
 
 ## 文档导航
 
@@ -74,40 +75,48 @@ Gate（GitHub Action，事件驱动）   Driver（本地进程，轮询 + 同步
 src/
 ├── index.ts               # Gate Action 入口（不变）
 ├── cli.ts                 # gateflow driver CLI（start / once / status / retry）
-├── gate/                  # V0 Gate（原 src/*.ts 平移 + V1 审批增强）
-│   ├── gate.ts  commands.ts  states.ts  permissions.ts
+├── protocol/              # 共享协议层（Gate 与 Driver 的单一事实来源）
+│   ├── records.ts         # Gate-issued 记录（epoch / approval / feedback）+ Operation ID
+│   ├── plan.ts            # Plan 规范化 + plan_sha256（冻结唯一实现）
+│   └── epoch.ts           # workflow epoch（CSPRNG，非时间戳/计数推导）
+├── gate/                  # Gate（V1 审批增强 → schema 2 记录签发）
+│   ├── gate.ts  commands.ts  states.ts  permissions.ts  identity.ts
 │   ├── markers.ts  tracker.ts  github.ts  protocol.ts  approvals.ts
 ├── driver/                # V1 Local Driver
-│   ├── driver.ts          # 编排循环（once / start 共用）
-│   ├── discovery.ts       # GitHub Canonical State → DispatchIntent
-│   ├── intent.ts          # DispatchIntent 类型与推导
-│   ├── dispatch.ts        # Intent → inbox 构建 → 派发记录
-│   ├── routing.ts         # role → agent → activation adapter
-│   ├── sync.ts            # outbox → GitHub（plan/tracker/completion）
-│   ├── dedup.ts           # dispatch_id 去重（receipts）
-│   ├── retry.ts           # 重试与上限
-│   └── config.ts          # gateflow.config.yml 加载与校验
-├── workspace/             # Workspace Protocol 运行时
+│   ├── driver.ts          # 编排循环（once / start 共用）+ 单实例锁
+│   ├── discovery.ts       # GitHub Canonical State → DispatchIntent（含 epoch 引导）
+│   ├── intent.ts          # DispatchIntent 类型与推导（记录驱动）
+│   ├── dispatch.ts        # Intent → inbox 构建 → 派发（快照绑定 + executor 锁）
+│   ├── preflight.ts       # 同步前统一授权校验（epoch/plan/approval 绑定）
+│   ├── sync.ts            # outbox → GitHub（operation 调和 + published/accepted）
+│   ├── submit.ts          # Producer 提交（submission_id + source-id 调和）
+│   ├── workspace-lock.ts  # 同 Worktree 单 Executor + 同机单 Driver 锁
+│   ├── dedup.ts  retry.ts  config.ts
+├── workspace/             # Workspace Protocol 运行时（schema 2）
 │   ├── protocol.ts  schemas.ts  paths.ts  inbox.ts  outbox.ts
 │   ├── watcher.ts  validation.ts  submit.ts
-├── activation/            # Activation Adapters
-│   ├── types.ts  manual.ts  chatgpt.ts  zcode.ts
+├── activation/            # Activation Adapters（env 白名单 + notified/started/failed 语义）
+│   ├── types.ts  env.ts  manual.ts  chatgpt.ts  zcode.ts
 └── github/                # Driver 侧 GitHub 访问层（独立于 gate/github.ts）
     ├── client.ts  issue-sync.ts  comments.ts
 protocol/
-├── workspace-schema-v1.json
-└── README.md
-skills/
-├── agent/SKILL.md         # 通用 gateflow-agent（Workspace Protocol 用法）
-├── consumer/SKILL.md      # 重写：无 GitHub 依赖
-├── executor/SKILL.md      # 重写：无 GitHub 依赖
-└── producer/SKILL.md      # 重写：.gateflow/submit 本地提交
-templates/workflow.yml     # 目标仓库的 Gate workflow 模板
-scripts/bootstrap.mjs      # 目标仓库初始化脚本（创建 ai:* 标签 + 生成 workflow，幂等不覆盖）
-dist/                      # esbuild 产物（index.js = Gate Action；cli.js = Driver），必须提交
-docs/                      # architecture-v1 / workspace-protocol / driver / agent-skills / protocol / …
-tests/                     # vitest（gate / workspace / driver / github / activation / integration / security）
+├── workspace-schema-v2.json   # Workspace Protocol JSON 镜像（schema 2）
+└── github-schema-v2.json      # GitHub 协议 + Gate 记录 JSON 镜像（schema 2）
+skills/                        # agent / consumer / executor / producer（schema 2 语义）
+dist/                          # esbuild 产物（index.js = Gate Action；cli.js = Driver），必须提交
+docs/                          # 架构 / 协议 / Driver / 安全 / 发布等
+tests/                         # vitest（gate / workspace / driver / github / activation / integration / security / protocol / hardening）
 ```
+
+（目录结构以 [docs/architecture-v1.md](docs/architecture-v1.md) §5 为准。）
+
+## Schema 2 Hardening 摘要
+
+本轮 Hardening（决策全文见 [docs/plans/v1_hardening_decisions.md](docs/plans/v1_hardening_decisions.md)）是一次破坏性协议升级：
+
+- **GitHub Protocol Schema 2**：`/approve` 签发 Gate-issued **approval 记录**（Plan 内容哈希绑定，先固化记录再迁移标签）；`/choose` `/change` 签发 **feedback 记录**（Consumer Revision 的唯一来源）；`/ai-plan` 签发 **workflow epoch 记录**（旧轮次自动作废）；Organization 仓库必须显式配置 Trusted Humans（fail closed）。
+- **Workspace Protocol Schema 2**：dispatch id 绑定 epoch；receipt 拆分 `published` / `accepted`（取代单一 `synced`），新增 `obsolete`；inbox 输入快照哈希绑定；Producer 提交携带 `submission_id`；Driver 私有状态移入 `.gateflow/driver/`。
+- **可靠性**：所有 GitHub 写入走 Operation ID + 远端调和（adopt / conflict fail-closed），不依赖本地 receipt 恰好成功；Action 运行时升级 **Node24**（Node20 已于 2026-09-23 从 runner 移除）。
 
 （目录结构以 [docs/architecture-v1.md](docs/architecture-v1.md) §5 为准。）
 
@@ -131,7 +140,9 @@ node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHU
 gateflow driver start        # 常驻轮询（或 node dist/cli.js driver start）
 ```
 
-之后的标准闭环：Issue 上 `/ai-plan` → Driver 自动派发 Consumer → Agent 产出 Plan → Driver 发布 Plan 评论（Gate 迁 `ai:review`）→ 你 `/approve <plan-comment-id>` → Driver 校验批准后派发 Executor → Tracker / Completion Report（Gate 迁 `ai:working` → `ai:done`）→ 你检查后 Close Issue。
+之后的标准闭环：Issue 上 `/ai-plan`（Gate 固化 epoch 记录）→ Driver 自动派发 Consumer → Agent 产出 Plan → Driver 发布 Plan 评论（Gate 迁 `ai:review`）→ 你 `/approve <plan-comment-id>`（**Gate 固化 approval 记录**后迁 `ai:ready`）→ Driver 独立重验批准记录后派发 Executor → Tracker / Completion Report（Gate 迁 `ai:working` → `ai:done`）→ 你检查后 Close Issue。
+
+> 运行环境要求：**Node.js ≥ 24**（Action 运行时与本地 Driver 均为 node24 目标；GitHub runner 已于 2026-09-23 移除 Node20）。
 
 本仓库自身开发：
 

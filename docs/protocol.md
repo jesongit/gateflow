@@ -1,10 +1,10 @@
-# 协议（Protocol）—— V0 冻结版 · V1 修订
+# 协议（Protocol）—— V0 冻结版 · V1 修订 · Schema 2 Hardening
 
-> **文档版本：V1（2026-09）。** V1 修订仅改变 `/approve` 命令形态与审批校验（见 §3.4 "V1 审批证明（Plan-ID 绑定）"，破坏性变更：裸 `/approve` 不再是命令）；issue body schema 块、Labels、状态机、Markers 均保持不变，`SCHEMA_VERSION` 仍为 `1`。机器可读的 GitHub 侧协议面见 [`protocol/github-schema-v2.json`](../protocol/github-schema-v2.json)。
+> **文档版本：Schema 2（2026-09 Hardening）。** 本轮为破坏性协议升级：`SCHEMA_VERSION` 1 → **2**。核心变化是**持久授权事实从"Human 的命令评论"改为"Gate 签发的记录（Record）"**，并引入 **workflow epoch**（工作流轮次身份）——详见文末 [§9 Schema 2 Hardening](#9-schema-2-hardening-冻结) 与决策文档 [docs/plans/v1_hardening_decisions.md](plans/v1_hardening_decisions.md)。Labels / 状态机 / Commands / Markers / Maturity 保持既有形态。机器可读的 GitHub 侧协议面见 [`protocol/github-schema-v2.json`](../protocol/github-schema-v2.json)；记录解析的单一实现在 [`src/protocol/records.ts`](../src/protocol/records.ts)。
 >
-> **Schema 版本：1（冻结）**
-> 冻结范围：Labels / 状态机 / Commands / Markers / Maturity / Permissions / 并发与一致性规则。
-> 本文档是协议的唯一权威来源；协议常量同步实现在 [`src/protocol.ts`](../src/protocol.ts)。任何修改必须同时更新两处并视为协议升级（提升 schema / marker 版本号）。
+> **Schema 版本：2（冻结）**
+> 冻结范围：Labels / 状态机 / Commands / Markers / Maturity / Permissions / 并发与一致性规则 / Gate 记录格式与签发规则。
+> 本文档是协议的唯一权威来源；协议常量同步实现在 `src/gate/protocol.ts` 与 `src/protocol/`。任何修改必须同时更新并视为协议升级（提升 schema / marker 版本号）。
 > 设计原则：GitHub 是唯一正式状态存储；权限、审批与状态迁移只由确定性 Gate 执行；AI 永远不参与授权判断；所有命令解析都是严格匹配，不做任何"智能"猜测。
 
 ---
@@ -289,3 +289,35 @@ AI **不能**：
   - Gate 校验顺序：Trusted Human（否则 👎）→ Issue open → 重读 labels 后 REVIEW → 目标评论存在且属于本 Issue → 携带有效 plan marker → 是最后一条（当前）Plan 评论；任一失败 = 记 log 的 no-op，**无迁移、无 reaction**；全部通过 = T2（先加 `ai:ready` 后删 `ai:review`）+ ✅。日志含绑定的 Plan 评论 id（形如 `T2 on #42: ai:review -> ai:ready (REVIEW -> READY approving plan comment 123).`）。
   - Approval Record = 人类自己的 `/approve <id>` 评论；Executor 派发前由 Driver 二次校验（当前 Plan 匹配 + Plan 批准后未被编辑），见 architecture-v1 §3.3。
   - Gate 实现版本号 `GATE_VERSION` 升至 `1.0.0`；冻结的 `schema: 1` 与 marker `:v1` 后缀不变，非协议升级。机器可读协议面新增 `protocol/github-schema-v2.json`（仅文档性质，不参与运行时校验）。
+
+---
+
+## 9. Schema 2 Hardening（冻结）
+
+> 本节为 Schema 2 新增的规范面；与前文冲突时以本节为准。单一实现：`src/protocol/records.ts`（Gate 与 Driver 共享，禁止第二套解析）。
+
+### 9.1 Gate-issued Record（持久授权事实）
+
+三类记录 Comment，格式冻结：marker 行独占一行 + 空行 + ` ```json ` 代码块（字段严格校验：缺失/未知键、Operation id 与字段不匹配、坏 JSON、非法枚举/哈希/时间戳 → 记录无效，fail closed）。记录 marker **不是** workflow marker，永远不会触发 T0–T6。
+
+| 记录 | marker | 签发者 | 触发 | 关键绑定 |
+| --- | --- | --- | --- | --- |
+| `workflow_epoch` | `<!-- gateflow:workflow:v2 -->` | Gate 或 Driver（引导） | T0 / Producer 引导 | `epoch = wf_ + 12 位 base36（CSPRNG）` |
+| `approval` | `<!-- gateflow:approval:v2 -->` | **仅 Gate** | `/approve <plan-id>` 全部校验通过后 | epoch + plan id + plan_sha256 + 审批人 + 命令评论 id |
+| `feedback_accepted` | `<!-- gateflow:feedback:v2 -->` | **仅 Gate** | `/choose` / `/change` 被接受后 | event_id = fe\<命令评论 id\> |
+
+Operation ID（冻结语法）：`epoch:<repo>:<issue>:<epoch>`、`approval:<repo>:<issue>:<epoch>:p<plan-id>`、`feedback:<repo>:<issue>:<epoch>:<命令id>`、`submit:<submission_id>`。重试永不换新 id；**同 Operation 不同内容 = 冲突，fail closed**（被批准过的 Plan 编辑后即灼烧，需重新规划）。
+
+### 9.2 签发时序（先固化，后迁移）
+
+- `/approve`：状态前置（REVIEW 等）→ Plan 评论校验（存在 / 有效 marker / 当前 Plan）→ 计算 plan_sha256（冻结规范化见 `src/protocol/plan.ts`）→ 读当前 epoch → 复用或冲突检查 → **发布记录并回读校验** → 才执行 T2 标签迁移 + ✅。记录写失败 = 无迁移、无 ✅ 的 no-op；记录成功而标签失败 → 重跑命令按 Operation 复用记录恢复。
+- `/choose` / `/change`：校验通过后发布 feedback 记录（幂等），然后 ✅。**被拒绝的命令永不产生记录**——Consumer Revision（= 1 + 本 epoch 内已接受事件数）只认记录。
+- `/ai-plan`（T0）：标签迁移后发布新 epoch 记录（全新轮次，绝不复用旧轮次记录；写失败由 Driver 引导兜底）。
+
+### 9.3 Driver 侧独立重验（派发与同步前）
+
+记录作者 ∈ Driver 配置 `gate_logins`（默认 `github-actions[bot]`，禁止包含 Driver 自身）；仓库/Issue/epoch 匹配；plan_sha256 与当前 Plan 正文重算一致；锚定的 `/approve` 命令评论仍存在、由 Trusted Human 发出且作者一致；同 Operation 记录内容一致。任一失败 → 不派发、不同步；Issue 上出现任何 suspect 记录 → 整个 Issue fail closed。
+
+### 9.4 Organization 身份规则（GF-H10）
+
+owner type 必须经 API 核实（`repos.get → owner.type`，绝不信事件 payload）：非 User 类型仓库且 `trusted-humans` 为空 → **Gate 拒绝运行**（任何迁移前即失败）；`trusted-humans ∩ trusted-agents ≠ ∅` → 拒绝运行。Driver 侧对称：org 仓库且 `trusted_humans` 为空 → 拒绝启动。

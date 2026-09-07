@@ -46,6 +46,20 @@ export interface DriverConfig {
   };
   /** Trusted humans besides the repo owner (approval/feedback authors). */
   trustedHumans: string[];
+  /**
+   * GitHub logins allowed to have authored Gate records (approval /
+   * feedback_accepted). The Driver independently re-validates Gate-issued
+   * records against this allowlist (schema 2 hardening; default
+   * `['github-actions[bot]']`). NEVER include the Driver's own identity
+   * here: the Gate and the Driver must be separate protected identities.
+   */
+  gateLogins: string[];
+  /**
+   * Fail-closed Organization rule (hardening §8): when the repository owner
+   * is not a personal User and trustedHumans is empty, the Driver refuses to
+   * run. Default true.
+   */
+  requireExplicitHumans: boolean;
   /** Role → agent name; an absent role gets no activation agent. */
   routing: { consumer?: string; executor?: string };
   /** Agent name → activation config. */
@@ -73,6 +87,8 @@ export function defaultConfig(): DriverConfig {
       maxAttempts: 3,
     },
     trustedHumans: [],
+    gateLogins: ['github-actions[bot]'],
+    requireExplicitHumans: true,
     routing: {},
     agents: {},
     activation: { fallback: 'manual' },
@@ -159,6 +175,17 @@ function parseAgents(raw: Obj, errors: string[]): Record<string, ActivationAgent
     }
     const command = optionalString(value, 'command', errors, `agents.${name}.command`);
     if (command !== undefined) agent.command = command;
+    const envPassthrough = value['env_passthrough'];
+    if (envPassthrough !== undefined) {
+      if (
+        !Array.isArray(envPassthrough) ||
+        envPassthrough.some((k) => typeof k !== 'string' || k.length === 0)
+      ) {
+        errors.push(`agents.${name}.env_passthrough: must be a list of non-empty strings`);
+      } else {
+        agent.envPassthrough = envPassthrough as string[];
+      }
+    }
     agents[name] = agent;
   }
   return agents;
@@ -208,6 +235,24 @@ export function parseConfig(raw: unknown): DriverConfig {
       errors.push('trusted_humans: must be a list of non-empty strings');
     } else {
       config.trustedHumans = trusted as string[];
+    }
+  }
+
+  const gateLogins = raw['gate_logins'];
+  if (gateLogins !== undefined) {
+    if (!Array.isArray(gateLogins) || gateLogins.some((h) => typeof h !== 'string' || h.length === 0)) {
+      errors.push('gate_logins: must be a list of non-empty strings');
+    } else {
+      config.gateLogins = gateLogins as string[];
+    }
+  }
+
+  const requireExplicitHumans = raw['require_explicit_humans'];
+  if (requireExplicitHumans !== undefined) {
+    if (typeof requireExplicitHumans !== 'boolean') {
+      errors.push('require_explicit_humans: must be a boolean');
+    } else {
+      config.requireExplicitHumans = requireExplicitHumans;
     }
   }
 

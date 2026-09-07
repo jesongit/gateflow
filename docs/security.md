@@ -128,27 +128,41 @@ Driver 同步任何 outbox 输出之前必须通过全部机器校验（[workspa
 
 因此 Agent 无法通过 outbox 表达任何授权语义："AI 批准 / AI 宣布就绪 / AI 取消任务"在协议层就没有对应的合法表达形式，而不是"靠 AI 自觉"。
 
-### 8.4 审批证明链（Approval Proof）
+### 8.4 审批证明链（Schema 2：Gate-issued Approval Record）
 
-V1 修复了"标签即授权"的残留风险：`ai:ready` 只是 UI 状态，**不是授权凭证**。Executor 派发前，Driver 在 Gate 迁移（T2）之外**再次独立校验**完整的证明链：
+Schema 2 修复了"仅凭历史 `/approve` 评论反推授权"的残余风险：`ai:ready` 只是 UI 状态，Human 的 `/approve` 评论本身只是**审批请求**；持久的授权事实是 **Gate 签发的 approval 记录**（一条由 Gate 身份发布的协议评论，见 [protocol.md](protocol.md) 与 [docs/plans/v1_hardening_decisions.md](plans/v1_hardening_decisions.md) §4）。Gate 在 `/approve` 全部校验通过后：先固化记录（绑定 repository/issue/epoch/plan 评论 id/**plan 内容 SHA-256**/审批人/命令评论 id）并回读校验，**然后**才执行 T2 标签迁移。
+
+Executor 派发与同步前，Driver 在 Gate 之外**再次独立校验**完整证明链：
 
 ```text
-ai:ready
-+ 有效 /approve <plan-comment-id> 评论（作者 ∈ Trusted Humans）
-+ id 指向本 Issue 的 Current Plan（最后一条含有效 plan marker 的评论）
-+ Plan 未在批准后被编辑（plan_sha256 比对）
-→ 全部成立才派发 Executor
+有效 workflow_epoch 记录（当前轮次 = id 最大的 epoch 记录）
++ approval 记录存在，作者 ∈ gate_logins（Gate 身份白名单）
++ 记录绑定：本 issue / 本 epoch / 当前 Plan 评论 id
++ 记录中的 plan_sha256 == 当前 Plan 评论正文重算的 SHA-256（批准后编辑即失效）
++ 记录锚定的 /approve 命令评论仍存在、由 Trusted Human 发出、
+  且作者与记录中的 approved_by 一致
++ 同 Operation 的多条记录内容一致（冲突即 fail closed）
+→ 全部成立才派发 / 同步 Executor 输出
 ```
 
-推论：**手工把标签从 `ai:review` 改成 `ai:ready`（Fake Label）无法触发合法的 Executor 派发**——没有对应的 `/approve <id>` 评论、或 id 不指向当前 Plan、或 Plan 批准后被改过，校验都会确定性失败。同理，AI 伪造的"已批准"内容不参与任何判定。
+推论：
+
+- **手工改标签（Fake Label）无法触发派发**——没有 approval 记录，一切免谈；
+- **历史被拒绝的 `/approve` 无法授权**——被拒的命令从未产生记录；
+- **批准后编辑 Plan 立即失效**——哈希对不上，且旧 Operation 灼烧（同 id 不同内容 → 冲突 fail closed）；
+- **新 epoch 开始后旧记录作废**——记录绑定 epoch，取消重开后旧 Approval 不能复活；
+- **伪造记录**：作者不在 `gate_logins`、字段缺失/多余、JSON 损坏、Operation id 与字段不匹配——全部 fail closed。
+
+诚实声明：记录由受保护身份发布 + 最小权限 + fail-closed 校验保证**可审计、可吊销、可检测篡改**，但 Comment 载体**不是强不可篡改存储**——同仓库 admin 权限的篡改只能被检测（内容/引用不一致即拒绝），不能被阻止。需要更强保证时升级为 GitHub App / 独立保护主体 / 签名记录。
 
 ### 8.5 路径与体积防护（`.gateflow/` 内）
 
-- **路径解析**：拒绝 `..` 与绝对路径；`inbox/outbox/<id>` 目录名必须匹配冻结正则 `^gf_r\d+_i\d+_(consumer|executor)_[0-9p][A-Za-z0-9_-]*$`；解析出的真实路径必须仍在 `.gateflow/` 内（symlink escape 防护）；
+- **路径解析**：拒绝 `..` 与绝对路径；`inbox/outbox/<id>` 目录名必须匹配 schema 2 冻结语法 `^gf_r\d+_i\d+_w[0-9a-z]{12}_(consumer|executor)_(\d+|p\d+)$`（epoch 段绑定工作流轮次）；解析出的真实路径必须仍在 `.gateflow/` 内；
+- **symlink / junction 防护**：使用 dispatch 目录前 `lstat` 校验其为真实目录，符号链接/junction 直接拒绝，不跟随；
 - **未知 dispatch 拒绝**：inbox 无对应目录的 outbox 输出一律拒绝——Agent 不能凭空创造一个 dispatch 让 Driver 同步；
-- **体积上限**：单文件 ≤ 512 KB（防 oversized 文件打爆评论 / 内存）；
-- **防重放**：result.json 一旦被接受并同步（receipts `status=synced`），同 dispatch 的后续覆盖写不再被接受；
-- **防重复提交**：Producer 的 `submit/` 在 Driver 创建 Issue 后整目录改名为 `processed-<timestamp>/`。
+- **体积与数量上限**：单文件 ≤ 512 KB；outbox dispatch 目录数 ≤ 200（防目录洪水）；
+- **防重放**：result.json 一旦 `published`/`accepted`（Schema 2 取代单一 `synced`），同 dispatch 的后续覆盖写不再被接受；
+- **防重复提交**：Producer 的 `submit/` 携带稳定 `submission_id`，创建的 Issue 内嵌 `gateflow:source-id` 锚——API 未知结果先按锚调和 adopt，绝不盲发第二次 POST。
 
 ### 8.6 Driver 不能绕过 Gate
 
@@ -170,4 +184,49 @@ Agent Output → Driver（校验）→ GitHub Protocol Object（marker 评论 / 
 | Agent 被注入 | 无 GitHub 凭证 + inbox 只读 + outbox 白名单 | 最坏产出错误内容（错误 Plan / 报告），由人审阅拦截 |
 | 本地 Driver 被攻破 | Driver 无迁移权；Bot 身份无命令权 | 攻击者可发垃圾 marker 评论（Gate 按 Trusted Agent 语义处理），不能批准、不能直接迁移 |
 | 本地 `.gateflow/` 被篡改 | 整目录重建 + `plan_sha256` + 未知 dispatch 拒绝 | 本地缓存损坏（可由 GitHub 重建，非正式状态） |
-| 手工改 `ai:*` 标签 | Gate 迁移前 API 重读 + Executor 派发前 Approval Proof 校验 | 假标签不能触发派发；UI 状态可能与真实状态短暂不一致 |
+| 手工改 `ai:*` 标签 | Gate 迁移前 API 重读 + Executor 派发前 Approval Record 校验 | 假标签不能触发派发；UI 状态可能与真实状态短暂不一致 |
+
+## 9. Schema 2 Hardening 安全模型（Personal / Secure Mode）
+
+在 §8 的基础上，Hardening（schema 2）把安全边界补充完整。核心原则：**Workspace 协议提供的是通信隔离；权限隔离必须由运行环境保证**。文档必须如实区分两种模式：
+
+### 9.1 Personal Mode（默认，代码当前提供的技术措施）
+
+适合个人开发与 dogfood。提供：
+
+- **凭证不下传**：所有 spawn 路径使用 `buildAgentEnv()` 白名单（PATH/HOME/TEMP 等系统键 + 配置 `env_passthrough` 显式列表）；`GITHUB_TOKEN`、`GH_TOKEN`、`GATEFLOW_*` 等 secret 键强制剥除，passthrough 里请求 secret 键直接报错（fail closed）；
+- **Driver 私有状态**：receipts / locks / logs 移入 `.gateflow/driver/`（Agent 通信面之外），POSIX 上目录 0o700；
+- **Gate/Driver 身份分离**：Driver 配置 `gate_logins`（默认 `github-actions[bot]`）——只有 Gate 身份签发的 approval/feedback 记录可信；Driver 自己的身份只用于 epoch 引导，且禁止混用；
+- **Organization fail-closed**：owner type 经 API 核实（不信 payload）；org 仓库且 trusted-humans 为空 → Gate 拒绝运行 / Driver 拒绝启动；`trusted-humans ∩ trusted-agents ≠ ∅` → 拒绝；
+- **工作区并发控制**：`.gateflow/driver/locks/executor.lock`（同 Worktree 单 Executor，冲突排队）+ `driver.lock`（同机 Driver 单实例，第二个进程启动即失败）；
+- **同机边界声明**：同一 OS 用户下的 Agent 理论上仍可读取 Driver 的凭证文件与进程环境——env 清理只防**意外**泄露，不防恶意读取。
+
+### 9.2 Secure Mode（宣称前提，需部署侧实现）
+
+只有在以下全部满足时才可宣称：
+
+- Human / Driver / Gate 使用**独立受控身份**（独立账号 / fine-grained PAT / GitHub App）；
+- Agent 运行在受限容器 / 独立 OS 用户中，无法读取 Driver 凭证；
+- 关键 GitHub 写入受最小权限与受控执行路径保护。
+
+**V1 代码只提供 Personal Mode 的技术措施**；Secure Mode 的 remaining 部分是部署责任，任何文档不得宣称"仅靠文件协议即可隔离权限"。
+
+### 9.3 四层状态与 `published ≠ accepted`
+
+```text
+Workflow State      GitHub labels（Gate 独占）
+Dispatch State      Driver receipt：dispatched → publishing → published → accepted / failed / obsolete
+Agent Claim         outbox 的 status.json / result.json（声明，非授权）
+Publication State   published = 远端对象已确认；accepted = Gate 消费完成（Driver 观察 canonical 状态后写入）
+```
+
+Agent 的 `result=completed` 永远不是 DONE——只有 Driver 观察 到 Gate 的 T6 迁移（label done）后，receipt 才进入 `accepted`。
+
+### 9.4 残余风险（如实声明）
+
+| 风险 | 缓解 | 残余 |
+| --- | --- | --- |
+| Comment 记录被 admin 篡改 | 字段/引用/哈希一致性校验，不一致即拒绝 | 同权限攻击者可写入**自洽**的伪造记录（受 gate_logins + epoch + 哈希 + 命令锚定多重约束，但非密码学不可伪造） |
+| 同机用户读取凭证 | env 白名单 + 私有目录 | 需 Secure Mode（容器/独立用户）才能根治 |
+| 本地锁被绕过 | O_EXCL + pid 活性 + 年龄上限 | 仅同机有效；跨机需外部协调（文档声明，不虚称全局互斥） |
+| Cancel 后 Agent 仍在本地改代码 | Skill 约定停止 + Driver 拒绝旧 outbox + obsolete 标记 | 无法远程杀死已启动的会话——这是 Manual Activation 的固有边界 |

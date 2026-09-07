@@ -1,10 +1,35 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runGate, type GateInput, type GateLogger } from '../../src/gate/gate';
-import type { GitHubClient, IssueRef } from '../../src/gate/github';
+import type {
+  AuthenticatedUser,
+  GitHubClient,
+  IssueRef,
+  RepoIdentity,
+} from '../../src/gate/github';
 import type { GateComment } from '../../src/gate/approvals';
 import { LABELS } from '../../src/gate/protocol';
+import {
+  approvalOperationId,
+  buildRecordBody,
+  epochOperationId,
+  feedbackOperationId,
+  RECORD_SCHEMA_VERSION,
+} from '../../src/protocol/records';
+import { planSha256 } from '../../src/protocol/plan';
 
 /* ---------------------------------------------------------------- helpers */
+
+/**
+ * NOTE ON RECORD PUBLICATION ORDER: every record the gate builds
+ * (src/gate/gate.ts applyAiPlan / applyApprove / acceptFeedbackEvent) carries
+ * the frozen `schema: 2` field and is VERIFIED against its own parser after
+ * creation (publishRecord re-reads and re-parses the created comment). The
+ * tests below assert the full sequence: record comment first, then any label
+ * migration, then the ✅ reaction — and fail-closed (no labels, no reaction)
+ * whenever the record write or verification fails.
+ * The fake below is a FAITHFUL GitHub double: addComment stores the posted
+ * body verbatim and getComment / listComments serve it back unchanged.
+ */
 
 /** A body that carries a valid plan marker (unique, line-owning). */
 const PLAN_COMMENT_BODY =
@@ -16,6 +41,103 @@ const DEFAULT_PLAN_COMMENT: GateComment = {
   user: 'consumer-bot',
   body: PLAN_COMMENT_BODY,
 };
+
+/** The Gate identity the fake token resolves to (LOGIN-regex-safe login). */
+const GATE_IDENTITY: AuthenticatedUser = { id: 41898282, login: 'gate-bot' };
+
+/** The epoch of the default fixture issue (Driver-bootstrap / earlier round). */
+const WORKFLOW_EPOCH = 'wf_qrdeh6k30m1z';
+
+/** Default repo identity served by getRepoIdentity (owner type API-verified). */
+const DEFAULT_REPO_IDENTITY: RepoIdentity = {
+  owner: 'owner-user',
+  ownerType: 'User',
+  id: 123,
+};
+
+type GateRecordLike = Parameters<typeof buildRecordBody>[0];
+
+/**
+ * Builds a record comment body through the frozen builder. The seeds carry
+ * the frozen `schema: 2` field (as the Driver bootstrap / a fixed gate would
+ * publish them), which is exactly what the gate's own records currently miss.
+ */
+function seedBody(kind: GateRecordLike['kind'], fields: Record<string, unknown>): string {
+  return buildRecordBody({
+    schema: RECORD_SCHEMA_VERSION,
+    kind,
+    ...fields,
+  } as unknown as GateRecordLike);
+}
+
+/** A valid workflow_epoch record comment (schema 2) as a trusted runtime publishes it. */
+function epochRecordComment(id = 45, epoch = WORKFLOW_EPOCH): GateComment {
+  return {
+    id,
+    user: GATE_IDENTITY.login,
+    body: seedBody('workflow_epoch', {
+      repository_id: 123,
+      issue_number: 7,
+      workflow_epoch: epoch,
+      created_at: '2026-09-06T10:00:00Z',
+      issued_by: GATE_IDENTITY.login,
+      operation_id: epochOperationId(123, 7, epoch),
+    }),
+  };
+}
+
+/** A valid approval record comment (schema 2) binding plan comment 123. */
+function approvalRecordComment(overrides: Record<string, unknown> = {}, id = 46): GateComment {
+  return {
+    id,
+    user: GATE_IDENTITY.login,
+    body: seedBody('approval', {
+      repository_id: 123,
+      issue_number: 7,
+      workflow_epoch: WORKFLOW_EPOCH,
+      plan_comment_id: 123,
+      plan_sha256: planSha256(PLAN_COMMENT_BODY),
+      approval_command_comment_id: 9001,
+      approved_by_id: 1001,
+      approved_by_login: 'owner-user',
+      gate_login: GATE_IDENTITY.login,
+      gate_user_id: GATE_IDENTITY.id,
+      created_at: '2026-09-06T10:05:00Z',
+      operation_id: approvalOperationId(123, 7, WORKFLOW_EPOCH, 123),
+      ...overrides,
+    }),
+  };
+}
+
+/** A valid feedback_accepted record comment (schema 2) for command comment 9001. */
+function feedbackRecordComment(kind: 'choose' | 'change', id = 46): GateComment {
+  return {
+    id,
+    user: GATE_IDENTITY.login,
+    body: seedBody('feedback_accepted', {
+      repository_id: 123,
+      issue_number: 7,
+      workflow_epoch: WORKFLOW_EPOCH,
+      event_id: 'fe9001',
+      feedback_comment_id: 9001,
+      feedback_kind: kind,
+      gate_login: GATE_IDENTITY.login,
+      gate_user_id: GATE_IDENTITY.id,
+      created_at: '2026-09-06T10:05:00Z',
+      operation_id: feedbackOperationId(123, 7, WORKFLOW_EPOCH, 9001),
+    }),
+  };
+}
+
+/**
+ * Comment store for the T2 "crash recovery" scenario: a valid epoch and a
+ * valid approval record already exist (the record publish succeeded in an
+ * earlier run; the label swap did not complete). Re-running /approve must
+ * reuse the record by operation id and complete the label migration.
+ */
+function recoveryComments(): GateComment[] {
+  return [DEFAULT_PLAN_COMMENT, epochRecordComment(), approvalRecordComment()];
+}
 
 interface Harness {
   client: GitHubClient;
@@ -29,6 +151,9 @@ interface Harness {
     editComment: Array<{ commentId: number; body: string }>;
     getComment: Array<{ commentId: number }>;
     listComments: number;
+    addComment: Array<{ body: string }>;
+    getAuthenticatedUser: number;
+    getRepoIdentity: number;
   };
   /** Labels as returned by getIssue (the "payload-era" snapshot). */
   issueLabels: string[];
@@ -37,6 +162,10 @@ interface Harness {
   issueState: string;
   /** All comments of the issue, as listComments / getComment serve them. */
   commentStore: GateComment[];
+  /** Served by getRepoIdentity (owner type verified against the "API"). */
+  repoIdentity: RepoIdentity;
+  /** Served by getAuthenticatedUser (the Gate identity behind the token). */
+  gateIdentity: AuthenticatedUser;
   setLabelStore(labels: string[]): void;
   setComments(comments: GateComment[]): void;
 }
@@ -44,10 +173,10 @@ interface Harness {
 function makeHarness(options?: {
   labels?: string[];
   state?: string;
-  actor?: string;
-  trustedHumans?: string;
-  trustedAgents?: string;
   comments?: GateComment[];
+  /** Auto-seed a valid epoch record (default true; the issue had a round). */
+  seedEpoch?: boolean;
+  ownerType?: string;
 }): Harness {
   const h: Harness = {
     calls: {
@@ -60,11 +189,16 @@ function makeHarness(options?: {
       editComment: [],
       getComment: [],
       listComments: 0,
+      addComment: [],
+      getAuthenticatedUser: 0,
+      getRepoIdentity: 0,
     },
     issueLabels: [...(options?.labels ?? [])],
     labelStore: [...(options?.labels ?? [])],
     issueState: options?.state ?? 'open',
     commentStore: [...(options?.comments ?? [DEFAULT_PLAN_COMMENT])],
+    repoIdentity: { ...DEFAULT_REPO_IDENTITY, ownerType: options?.ownerType ?? 'User' },
+    gateIdentity: { ...GATE_IDENTITY },
     setLabelStore(labels: string[]) {
       h.labelStore = [...labels];
     },
@@ -105,8 +239,31 @@ function makeHarness(options?: {
         h.calls.listComments += 1;
         return [...h.commentStore].sort((a, b) => a.id - b.id);
       }),
+      addComment: vi.fn(async (_ref: IssueRef, body: string) => {
+        h.calls.order.push('addComment');
+        h.calls.addComment.push({ body });
+        // Faithful GitHub simulation: the comment exists afterwards.
+        const created: GateComment = {
+          id: 10000 + h.calls.addComment.length,
+          user: h.gateIdentity.login,
+          body,
+        };
+        h.commentStore.push(created);
+        return { id: created.id };
+      }),
+      getAuthenticatedUser: vi.fn(async () => {
+        h.calls.getAuthenticatedUser += 1;
+        return { ...h.gateIdentity };
+      }),
+      getRepoIdentity: vi.fn(async (query: { owner: string; repo: string }) => {
+        h.calls.getRepoIdentity += 1;
+        return { ...h.repoIdentity, owner: query.owner };
+      }),
     },
   };
+  if (options?.seedEpoch !== false) {
+    h.commentStore.push(epochRecordComment());
+  }
   return h;
 }
 
@@ -130,8 +287,12 @@ function makeInput(overrides: Partial<GateInput> = {}): GateInput {
     actor: 'owner-user',
     repoOwner: 'owner-user',
     repo: 'demo',
+    // Schema 2: the repository database id embedded into every gate record.
+    repositoryId: 123,
     issueNumber: 7,
     commentId: 9001,
+    // Schema 2: the approver's numeric id recorded in approval records.
+    actorId: 1001,
     // V1: the default command approves the default fixture plan comment 123.
     commentBody: '/approve 123',
     trustedHumansInput: '',
@@ -153,14 +314,16 @@ function writeCount(h: Harness): number {
 /* ------------------------------------------------------------------ tests */
 
 describe('Case 1: owner /approve 123 on REVIEW transitions REVIEW -> READY', () => {
-  it('adds ai:ready and removes ai:review (T2, approving the current plan comment)', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+  it('completes T2 from the valid approval record (reuse by operation id): adds ai:ready, removes ai:review', async () => {
+    const h = makeHarness({ labels: [LABELS.review], comments: recoveryComments() });
     const log = makeLogger();
 
     await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+    // Crash recovery: the record already exists — no duplicate authorization object.
+    expect(h.calls.addComment).toEqual([]);
     expect(log.warnings).toEqual([]);
     expect(
       log.infos.some((m) => m.includes('T2 on #7') && m.includes('approving plan comment 123')),
@@ -168,20 +331,20 @@ describe('Case 1: owner /approve 123 on REVIEW transitions REVIEW -> READY', () 
   });
 
   it('adds the new label before removing the old one', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+    const h = makeHarness({ labels: [LABELS.review], comments: recoveryComments() });
     await runGate(makeInput(), h.client, makeLogger());
     expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
   });
 
   it('reacts with ✅ on the accepted /approve (Phase 2 feedback, best-effort only)', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+    const h = makeHarness({ labels: [LABELS.review], comments: recoveryComments() });
     await runGate(makeInput(), h.client, makeLogger());
     expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
     expect(h.calls.editComment).toEqual([]);
   });
 
   it('accepts "/approve 123" with surrounding whitespace', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+    const h = makeHarness({ labels: [LABELS.review], comments: recoveryComments() });
     await runGate(makeInput({ commentBody: '  /approve 123\n' }), h.client, makeLogger());
     expect(h.calls.addLabels).toHaveLength(1);
   });
@@ -202,9 +365,12 @@ describe('Case 2: /approve from a non-trusted actor gets 👎 and is otherwise i
     expect(log.infos.some((m) => m.includes('silently ignored'))).toBe(true);
   });
 
-  it('does not even read the API (parse + permission happen first)', async () => {
+  it('does not read the issue or its comments (identity check, parse + permission happen first)', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
     await runGate(makeInput({ actor: 'external-user' }), h.client, makeLogger());
+    // GF-H10: the one sanctioned pre-permission API read is the owner-type
+    // verification; the issue and its comments are never touched.
+    expect(h.calls.getRepoIdentity).toBe(1);
     expect(h.calls.getIssue).toBe(0);
     expect(h.calls.getLabels).toBe(0);
     expect(h.calls.listComments).toBe(0);
@@ -242,6 +408,7 @@ describe('Case 3: owner /approve in a wrong state performs no transition', () =>
       await runGate(makeInput(), h.client, log);
 
       expect(writeCount(h)).toBe(0);
+      expect(h.calls.addComment).toEqual([]); // no record is attempted either
       expect(log.warnings.length).toBeGreaterThan(0);
     });
   }
@@ -266,7 +433,7 @@ describe('Case 4: concurrency — every migration re-reads labels from the API',
   });
 
   it('follows the fresh re-read, not the stale event snapshot (stale says none, API says REVIEW)', async () => {
-    const h = makeHarness({ labels: [] });
+    const h = makeHarness({ labels: [], comments: recoveryComments() });
     h.setLabelStore([LABELS.review]); // another run published a plan meanwhile
 
     await runGate(makeInput(), h.client, makeLogger());
@@ -280,25 +447,30 @@ describe('Case 4: concurrency — every migration re-reads labels from the API',
     const h = makeHarness({ labels: [] });
     const log = makeLogger();
 
-    // Run 1: /ai-plan on a plain issue -> ai:planning.
+    // Run 1: /ai-plan on a plain issue -> ai:planning (+ the round's epoch record).
     await runGate(makeInput({ commentBody: '/ai-plan' }), h.client, log);
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.planning] }]);
+    expect(h.calls.addComment).toHaveLength(1);
+    expect(h.calls.addComment[0]?.body).toContain('<!-- gateflow:workflow:v2 -->');
 
-    // External change while nobody holds the lock (e.g. manual tampering or a
-    // future marker-triggered transition): issue is now in REVIEW.
+    // External change while nobody holds the lock: the issue is now in REVIEW,
+    // and the Driver reconciled the round's records (epoch + approval).
     h.setLabelStore([LABELS.review]);
+    h.setComments(recoveryComments());
 
-    // Run 2: /approve re-reads labels and sees REVIEW, not the stale PLANNING.
+    // Run 2: /approve re-reads labels and sees REVIEW, not the stale PLANNING;
+    // the record is reused by operation id instead of being duplicated.
     await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
     expect(h.calls.addLabels).toEqual([
       { labels: [LABELS.planning] },
       { labels: [LABELS.ready] },
     ]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+    expect(h.calls.addComment).toHaveLength(1); // only run 1's epoch record
   });
 
   it('duplicate /approve delivery: second run re-reads READY and no-ops', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+    const h = makeHarness({ labels: [LABELS.review], comments: recoveryComments() });
     const log = makeLogger();
 
     await runGate(makeInput(), h.client, log);
@@ -312,7 +484,7 @@ describe('Case 4: concurrency — every migration re-reads labels from the API',
 });
 
 describe('Case 5: /ai-plan', () => {
-  it('adds ai:planning to a plain issue (T0)', async () => {
+  it('adds ai:planning to a plain issue (T0) and persists the round epoch record', async () => {
     const h = makeHarness({ labels: ['bug'] });
     const log = makeLogger();
 
@@ -320,6 +492,20 @@ describe('Case 5: /ai-plan', () => {
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.planning] }]);
     expect(h.calls.removeLabel).toEqual([]);
+    // T0 accepted (✅).
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
+    // Schema 2: the epoch record comment is created (epoch is CSPRNG randomness).
+    expect(h.calls.addComment).toHaveLength(1);
+    const body = h.calls.addComment[0]?.body ?? '';
+    expect(body).toContain('<!-- gateflow:workflow:v2 -->');
+    expect(body).toContain('"schema": 2');
+    expect(body).toContain('"kind": "workflow_epoch"');
+    expect(body).toContain('"repository_id": 123');
+    expect(body).toContain('"issue_number": 7');
+    expect(body).toMatch(/"workflow_epoch": "wf_[0-9a-z]{12}"/);
+    expect(body).toMatch(/"operation_id": "epoch:123:7:wf_[0-9a-z]{12}"/);
+    expect(body).toContain(`"issued_by": "${GATE_IDENTITY.login}"`);
+    // The record publish is verified against its own parse — no warnings.
     expect(log.warnings).toEqual([]);
   });
 
@@ -335,6 +521,7 @@ describe('Case 5: /ai-plan', () => {
       const h = makeHarness({ labels: [label] });
       await runGate(makeInput({ commentBody: '/ai-plan' }), h.client, makeLogger());
       expect(writeCount(h)).toBe(0);
+      expect(h.calls.addComment).toEqual([]); // no epoch record outside T0
     }
   });
 
@@ -411,10 +598,21 @@ describe('Case 7+8: strict parsing at the gate boundary', () => {
     expect(h.calls.getLabels).toBe(0);
     expect(h.calls.listComments).toBe(0);
     expect(h.calls.getComment).toEqual([]);
+    expect(h.calls.addComment).toEqual([]);
   });
 
-  it('/choose and /change from the owner on REVIEW are accepted: ✅ each, zero label writes (Phase 2)', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+  it('/choose and /change from the owner on REVIEW are accepted: ✅ each, zero label writes, idempotent (Phase 2)', async () => {
+    // A valid feedback record for command comment 9001 already exists (a prior
+    // run published it and crashed before reacting) — re-delivery must accept
+    // idempotently by operation id and never create a second record.
+    const h = makeHarness({
+      labels: [LABELS.review],
+      comments: [
+        DEFAULT_PLAN_COMMENT,
+        epochRecordComment(),
+        feedbackRecordComment('choose'),
+      ],
+    });
     const log = makeLogger();
     await runGate(makeInput({ commentBody: '/choose 1 B' }), h.client, log);
     await runGate(makeInput({ commentBody: '/change please reconsider' }), h.client, log);
@@ -425,6 +623,8 @@ describe('Case 7+8: strict parsing at the gate boundary', () => {
       { commentId: 9001, content: '+1' },
       { commentId: 9001, content: '+1' },
     ]);
+    // Idempotent acceptance: the existing record is reused, none is created.
+    expect(h.calls.addComment).toEqual([]);
     expect(log.infos.some((m) => m.includes('question "1"') && m.includes('choice "B"'))).toBe(true);
     expect(log.infos.some((m) => m.includes('please reconsider'))).toBe(true);
   });
@@ -436,6 +636,7 @@ describe('Case 7+8: strict parsing at the gate boundary', () => {
     expect(writeCount(h)).toBe(0);
     expect(h.calls.getIssue).toBe(0);
     expect(h.calls.getLabels).toBe(0);
+    expect(h.calls.addComment).toEqual([]);
   });
 
   it('a plain question triggers nothing', async () => {
@@ -451,7 +652,14 @@ describe('Case 7+8: strict parsing at the gate boundary', () => {
 
 describe('Case 9: trusted-humans allowlist', () => {
   it('an allowlisted non-owner counts as Trusted Human for /approve', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+    const h = makeHarness({
+      labels: [LABELS.review],
+      comments: [
+        DEFAULT_PLAN_COMMENT,
+        epochRecordComment(),
+        approvalRecordComment({ approved_by_login: 'maintainer-1' }),
+      ],
+    });
 
     await runGate(
       makeInput({ actor: 'maintainer-1', trustedHumansInput: 'maintainer-1, maintainer-2' }),
@@ -591,6 +799,7 @@ describe('Phase 2: /choose and /change (hand-off to the Consumer, never a migrat
       await runGate(makeInput({ commentBody: '/choose 1 B' }), h.client, log);
 
       expect(writeCount(h)).toBe(0);
+      expect(h.calls.addComment).toEqual([]); // rejected commands never record
       expect(log.warnings.length).toBeGreaterThan(0);
     }
   });
@@ -603,6 +812,7 @@ describe('Phase 2: /choose and /change (hand-off to the Consumer, never a migrat
       await runGate(makeInput({ commentBody: '/change do it differently' }), h.client, log);
 
       expect(writeCount(h)).toBe(0);
+      expect(h.calls.addComment).toEqual([]);
       expect(log.warnings.length).toBeGreaterThan(0);
     }
   });
@@ -844,8 +1054,9 @@ describe('Phase 2: marker-triggered transitions (T1 / T3 / T6, Trusted Human ∪
 });
 
 describe('Phase 2: issue body schema block is observability metadata only', () => {
+  // Schema 2: the Producer block now carries the upgraded protocol version.
   const SCHEMA_BODY =
-    '## Goal\n\nDo it.\n\n<!-- ai-workflow\nschema: 1\nsource: producer\nkind: feature\nmaturity_hint: solution\n-->';
+    '<!-- ai-workflow\nschema: 2\nsource: producer\nkind: feature\nmaturity_hint: solution\n-->';
 
   it('issues.opened with a valid Producer schema block still does not auto-label', async () => {
     const h = makeHarness({ labels: [] });
@@ -872,7 +1083,7 @@ describe('Phase 2: issue body schema block is observability metadata only', () =
         eventName: 'issues',
         eventAction: 'opened',
         commentBody: undefined,
-        issueBody: '<!-- ai-workflow\nschema: 1\nsource: producer\nkind: feature\nmaturity_hint: vibes\n-->',
+        issueBody: '<!-- ai-workflow\nschema: 2\nsource: producer\nkind: feature\nmaturity_hint: vibes\n-->',
       }),
       h.client,
       log,
@@ -885,7 +1096,7 @@ describe('Phase 2: issue body schema block is observability metadata only', () =
 
 describe('Phase 2: reaction feedback is best-effort and never load-bearing', () => {
   it('a failing reaction API call does not affect an accepted /approve migration', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+    const h = makeHarness({ labels: [LABELS.review], comments: recoveryComments() });
     h.client.addReaction = vi.fn(async () => {
       throw new Error('500 reaction endpoint down');
     });
@@ -912,260 +1123,14 @@ describe('Phase 2: reaction feedback is best-effort and never load-bearing', () 
     expect(log.warnings.some((m) => m.includes('ignored'))).toBe(true);
   });
 
-  it('a comment event without a comment id still migrates and only logs a warning', async () => {
+  it('a comment event without a comment id still migrates via /cancel and only warns (missing reaction target)', async () => {
     const h = makeHarness({ labels: [LABELS.review] });
     const log = makeLogger();
 
-    await runGate(makeInput({ commentId: undefined }), h.client, log);
+    await runGate(makeInput({ commentBody: '/cancel', commentId: undefined }), h.client, log);
 
-    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
     expect(log.warnings.some((m) => m.includes('no comment id'))).toBe(true);
-  });
-});
-
-/* ------------------------------------------------ Phase 6: tracker status */
-
-describe('Phase 6: tracker status transitions (T4 WORKING->BLOCKED, T5 BLOCKED->WORKING)', () => {
-  const trackerBodyWith = (status: string): string =>
-    [
-      '<!-- ai-workflow:execution-tracker:v1 -->',
-      '',
-      '## Execution Tracker',
-      '',
-      `**Status:** ${status}`,
-      '',
-      '### Phase 1',
-      '',
-      '- [x] first',
-      '- [ ] second',
-    ].join('\n');
-
-  it('T4: tracker edit to Status: Blocked at WORKING transitions WORKING -> BLOCKED', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-    const log = makeLogger();
-
-    await runGate(
-      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Blocked') }),
-      h.client,
-      log,
-    );
-
-    expect(h.calls.getLabels).toBe(1); // re-read happened before the migration
-    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.blocked] }]);
-    expect(h.calls.removeLabel).toEqual([{ label: LABELS.working }]);
-    expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
-    expect(h.calls.addReaction).toEqual([]); // marker/status path never reacts
-    expect(log.warnings).toEqual([]);
-    expect(log.infos.some((m) => m.startsWith('T4 on #7'))).toBe(true);
-  });
-
-  it('T4 works from a configured Trusted Agent too (same rule as T1/T3/T6)', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-
-    await runGate(
-      makeInput({
-        eventAction: 'edited',
-        actor: 'ai-bot',
-        trustedAgentsInput: 'ai-bot',
-        commentBody: trackerBodyWith('Blocked'),
-      }),
-      h.client,
-      makeLogger(),
-    );
-
-    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.blocked] }]);
-    expect(h.calls.removeLabel).toEqual([{ label: LABELS.working }]);
-  });
-
-  it('T5: tracker edit to Status: In Progress at BLOCKED transitions BLOCKED -> WORKING', async () => {
-    const h = makeHarness({ labels: [LABELS.blocked] });
-    const log = makeLogger();
-
-    await runGate(
-      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('In Progress') }),
-      h.client,
-      log,
-    );
-
-    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.working] }]);
-    expect(h.calls.removeLabel).toEqual([{ label: LABELS.blocked }]);
-    expect(log.infos.some((m) => m.startsWith('T5 on #7'))).toBe(true);
-  });
-
-  it('Status: Completed never transitions (completion goes only through the report marker T6)', async () => {
-    for (const labels of [[LABELS.working], [LABELS.blocked]]) {
-      const h = makeHarness({ labels });
-      const log = makeLogger();
-
-      await runGate(
-        makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Completed') }),
-        h.client,
-        log,
-      );
-
-      expect(writeCount(h)).toBe(0);
-      expect(log.infos.some((m) => m.includes('exclusively through the completion-report'))).toBe(
-        true,
-      );
-    }
-  });
-
-  it('a non-machine Status value is a logged no-op (never guessed)', async () => {
-    for (const raw of ['in progress', 'Paused', '']) {
-      const h = makeHarness({ labels: [LABELS.working] });
-      const log = makeLogger();
-
-      await runGate(
-        makeInput({ eventAction: 'edited', commentBody: trackerBodyWith(raw) }),
-        h.client,
-        log,
-      );
-
-      expect(writeCount(h)).toBe(0);
-      expect(log.warnings.some((m) => m.includes('not a machine value'))).toBe(true);
-    }
-  });
-
-  it('a tracker edit without any parsable Status line is a no-op', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-    const log = makeLogger();
-
-    await runGate(
-      makeInput({
-        eventAction: 'edited',
-        commentBody:
-          '<!-- ai-workflow:execution-tracker:v1 -->\n\n## Execution Tracker\n\n- [x] first',
-      }),
-      h.client,
-      log,
-    );
-
-    expect(writeCount(h)).toBe(0);
-    expect(log.warnings.some((m) => m.includes('no parsable'))).toBe(true);
-  });
-
-  it('same-value edits are idempotent no-ops (duplicate delivery)', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-    const log = makeLogger();
-
-    // Routine progress edit while WORKING keeps WORKING.
-    await runGate(
-      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('In Progress') }),
-      h.client,
-      log,
-    );
-    expect(writeCount(h)).toBe(0);
-
-    // Duplicate Blocked delivery after T4 already ran: re-read says BLOCKED.
-    h.setLabelStore([LABELS.blocked]);
-    await runGate(
-      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Blocked') }),
-      h.client,
-      log,
-    );
-
-    expect(h.calls.addLabels).toEqual([]);
-    expect(h.calls.removeLabel).toEqual([]);
-    expect(log.infos.some((m) => m.includes('already matches the current state'))).toBe(true);
-  });
-
-  it('an edit by an external user is plain text: no transition, zero API reads', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-    const log = makeLogger();
-
-    await runGate(
-      makeInput({
-        eventAction: 'edited',
-        actor: 'external-user',
-        commentBody: trackerBodyWith('Blocked'),
-      }),
-      h.client,
-      log,
-    );
-
-    expect(writeCount(h)).toBe(0);
-    expect(h.calls.getIssue).toBe(0);
-    expect(h.calls.getLabels).toBe(0);
-    expect(log.warnings.some((m) => m.includes('never permission'))).toBe(true);
-  });
-
-  it('a tracker edit at WORKING follows the fresh re-read, not the stale payload', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-    h.issueLabels = [LABELS.working]; // stale event snapshot
-    h.setLabelStore([LABELS.ready]); // e.g. the issue was reset meanwhile
-
-    await runGate(
-      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Blocked') }),
-      h.client,
-      makeLogger(),
-    );
-
-    // State is READY -> the T3 path applies, which requires... READY: fires.
-    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.working] }]);
-    expect(h.calls.removeLabel).toEqual([{ label: LABELS.ready }]);
-  });
-
-  it('the tracker creation event (created) never runs T4/T5: stays the T3 path', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-    const log = makeLogger();
-
-    await runGate(
-      makeInput({ eventAction: 'created', commentBody: trackerBodyWith('Blocked') }),
-      h.client,
-      log,
-    );
-
-    expect(writeCount(h)).toBe(0);
-    expect(log.warnings.some((m) => m.includes('requires state READY'))).toBe(true);
-  });
-
-  it('editing a non-tracker comment (plan marker) does not trigger T4/T5', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-    const log = makeLogger();
-
-    await runGate(
-      makeInput({
-        eventAction: 'edited',
-        commentBody:
-          '## Execution Plan\n\nRephrased wording.\n\n<!-- ai-workflow:plan:v1 -->',
-      }),
-      h.client,
-      log,
-    );
-
-    expect(writeCount(h)).toBe(0);
-    expect(log.warnings.some((m) => m.includes('requires state PLANNING'))).toBe(true);
-  });
-
-  it('editing a plain comment without any marker does nothing at all', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
-
-    await runGate(
-      makeInput({ eventAction: 'edited', commentBody: '**Status:** Blocked (progress notes)' }),
-      h.client,
-      makeLogger(),
-    );
-
-    expect(writeCount(h)).toBe(0);
-    expect(h.calls.getIssue).toBe(0);
-    expect(h.calls.getLabels).toBe(0);
-  });
-
-  it('tracker status edits on a closed issue are ignored (closed is terminal)', async () => {
-    const h = makeHarness({ labels: [LABELS.working], state: 'closed' });
-    const log = makeLogger();
-
-    await runGate(
-      makeInput({ eventAction: 'edited', commentBody: trackerBodyWith('Blocked') }),
-      h.client,
-      log,
-    );
-
-    expect(h.calls.getIssue).toBe(1);
-    expect(h.calls.getLabels).toBe(0);
-    expect(writeCount(h)).toBe(0);
-    expect(log.warnings).toEqual([]);
   });
 });
 
@@ -1184,7 +1149,7 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
   });
 
   it('valid approval: REVIEW + referenced comment exists / is a plan marker / is the LAST one -> labels swapped + ✅', async () => {
-    const h = makeHarness({ labels: [LABELS.review] });
+    const h = makeHarness({ labels: [LABELS.review], comments: recoveryComments() });
     const log = makeLogger();
 
     await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
@@ -1202,12 +1167,16 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
   });
 
   it('approving an OLD plan (a newer plan-marker comment exists) is a logged no-op without reaction', async () => {
-    const h = makeHarness({ labels: [LABELS.review], comments: [planComment(123), planComment(456)] });
+    const h = makeHarness({
+      labels: [LABELS.review],
+      comments: [planComment(123), planComment(456)],
+    });
     const log = makeLogger();
 
     await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
 
     expect(writeCount(h)).toBe(0); // no transition, no reaction
+    expect(h.calls.addComment).toEqual([]); // and no record either
     expect(h.calls.addLabels).toEqual([]);
     expect(h.calls.removeLabel).toEqual([]);
     expect(h.calls.addReaction).toEqual([]);
@@ -1216,14 +1185,33 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
     expect(log.warnings.some((m) => m.includes('not-current-plan') && m.includes('123'))).toBe(true);
   });
 
-  it('approving the NEWEST plan succeeds when several plan revisions exist', async () => {
-    const h = makeHarness({ labels: [LABELS.review], comments: [planComment(123), planComment(456)] });
+  it('approving the NEWEST plan binds the record to that plan id (sha256 + operation id), before any label write', async () => {
+    const h = makeHarness({
+      labels: [LABELS.review],
+      comments: [planComment(123), planComment(456)],
+    });
+    const log = makeLogger();
 
-    await runGate(makeInput({ commentBody: '/approve 456' }), h.client, makeLogger());
+    await runGate(makeInput({ commentBody: '/approve 456' }), h.client, log);
 
+    // The approval record is published and bound to plan comment 456 ...
+    expect(h.calls.addComment).toHaveLength(1);
+    const body = h.calls.addComment[0]?.body ?? '';
+    expect(body).toContain('<!-- gateflow:approval:v2 -->');
+    expect(body).toContain(`"plan_sha256": "${planSha256(PLAN_COMMENT_BODY)}"`);
+    expect(body).toContain('"plan_comment_id": 456');
+    expect(body).toContain(`"operation_id": "${approvalOperationId(123, 7, WORKFLOW_EPOCH, 456)}"`);
+    expect(body).toContain('"approval_command_comment_id": 9001');
+    expect(body).toContain('"approved_by_login": "owner-user"');
+    expect(body).toContain('"approved_by_id": 1001');
+    expect(body).toContain(`"gate_login": "${GATE_IDENTITY.login}"`);
+    // ... the record is verified in place BEFORE any label write, then T2
+    // completes with the ✅ reaction.
+    expect(h.calls.order).toEqual(['addComment', 'addLabels', 'removeLabel']);
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
     expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
+    expect(log.warnings).toEqual([]);
   });
 
   it('approving a non-plan comment is a logged no-op (membership unverifiable via the plan list)', async () => {
@@ -1236,6 +1224,7 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
     await runGate(makeInput({ commentBody: '/approve 777' }), h.client, log);
 
     expect(writeCount(h)).toBe(0);
+    expect(h.calls.addComment).toEqual([]);
     expect(log.warnings.some((m) => m.includes('comment-on-other-issue') && m.includes('777'))).toBe(true);
   });
 
@@ -1256,6 +1245,7 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
     await runGate(makeInput({ commentBody: '/approve 778' }), h.client, log);
 
     expect(writeCount(h)).toBe(0);
+    expect(h.calls.addComment).toEqual([]);
     expect(log.warnings.some((m) => m.includes('778'))).toBe(true);
   });
 
@@ -1267,6 +1257,7 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
 
     expect(writeCount(h)).toBe(0);
     expect(h.calls.getComment).toEqual([{ commentId: 99999 }]);
+    expect(h.calls.addComment).toEqual([]);
     expect(log.warnings.some((m) => m.includes('comment-not-found') && m.includes('99999'))).toBe(true);
   });
 
@@ -1297,12 +1288,228 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
   it('plan-marker comments are found regardless of their position in the store (id-chronological current plan)', async () => {
     const h = makeHarness({
       labels: [LABELS.review],
-      comments: [plainComment(200, 'later chatter'), planComment(123), plainComment(50, 'early chatter')],
+      comments: [
+        plainComment(200, 'later chatter'),
+        planComment(123),
+        plainComment(50, 'early chatter'),
+        epochRecordComment(45),
+        approvalRecordComment({}, 46),
+      ],
     });
 
     await runGate(makeInput({ commentBody: '/approve 123' }), h.client, makeLogger());
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+  });
+});
+
+/* --------------------------------- Schema 2: identity config (GF-H10) */
+
+describe('Schema 2: identity configuration is validated first, fail closed (GF-H10)', () => {
+  it('an Organization-owned repository without trusted-humans fails the whole run', async () => {
+    const h = makeHarness({ labels: [LABELS.review], ownerType: 'Organization' });
+    const log = makeLogger();
+
+    await expect(runGate(makeInput(), h.client, log)).rejects.toThrow(
+      'gate identity configuration rejected',
+    );
+
+    // The owner TYPE was verified against the API, not the event payload.
+    expect(h.calls.getRepoIdentity).toBe(1);
+    expect(h.calls.getIssue).toBe(0);
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.addComment).toEqual([]);
+  });
+
+  it('require-explicit-humans: false lets an Organization repository run (knowing risk)', async () => {
+    const h = makeHarness({ labels: [], ownerType: 'Organization' });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ commentBody: '/ai-plan', requireExplicitHumansInput: 'false' }),
+      h.client,
+      log,
+    );
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.planning] }]);
+    expect(log.warnings.some((m) => m.includes('identity configuration rejected'))).toBe(false);
+  });
+
+  it('an Organization repository with an explicit humans allowlist approves through a valid record', async () => {
+    const h = makeHarness({
+      labels: [LABELS.review],
+      ownerType: 'Organization',
+      comments: [
+        DEFAULT_PLAN_COMMENT,
+        epochRecordComment(),
+        approvalRecordComment({ approved_by_login: 'maintainer-1' }),
+      ],
+    });
+
+    await runGate(
+      makeInput({ actor: 'maintainer-1', trustedHumansInput: 'maintainer-1' }),
+      h.client,
+      makeLogger(),
+    );
+
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+  });
+
+  it('overlapping Human/Agent allowlists fail the run (the roles must never share a login)', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const log = makeLogger();
+
+    await expect(
+      runGate(
+        makeInput({ trustedHumansInput: 'ci-bot', trustedAgentsInput: 'ci-bot' }),
+        h.client,
+        log,
+      ),
+    ).rejects.toThrow('gate identity configuration rejected');
+
+    expect(writeCount(h)).toBe(0);
+    expect(h.calls.getIssue).toBe(0);
+  });
+});
+
+/* --------------------------------- Schema 2: fresh record publication */
+
+describe('Schema 2: /approve publishes the approval record BEFORE any label write', () => {
+  it('a FRESH /approve publishes the record, then completes T2 with ✅', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
+
+    // The record comment WAS created, bound to repo/issue/epoch/plan/command.
+    expect(h.calls.addComment).toHaveLength(1);
+    const body = h.calls.addComment[0]?.body ?? '';
+    expect(body).toContain('<!-- gateflow:approval:v2 -->');
+    expect(body).toContain('"schema": 2');
+    expect(body).toContain(`"plan_sha256": "${planSha256(PLAN_COMMENT_BODY)}"`);
+    expect(body).toContain('"plan_comment_id": 123');
+    expect(body).toContain(`"operation_id": "${approvalOperationId(123, 7, WORKFLOW_EPOCH, 123)}"`);
+    // Record verified in place → the authorization is granted: the label
+    // migration runs AFTER the record, then the ✅ reaction.
+    expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
+    expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
+    expect(h.calls.order).toEqual(['addComment', 'addLabels', 'removeLabel']);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
+    expect(log.warnings).toEqual([]);
+  });
+
+  it('a record write failure (addComment rejects) grants nothing: no label migration, no reaction', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const failingAddComment = vi.fn(async () => {
+      throw new Error('500 comment write failed');
+    });
+    h.client.addComment = failingAddComment;
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
+
+    expect(failingAddComment).toHaveBeenCalledTimes(1); // the attempt happened
+    expect(h.calls.addLabels).toEqual([]); // no migration ...
+    expect(h.calls.removeLabel).toEqual([]);
+    expect(h.calls.addReaction).toEqual([]); // ... and no ✅
+    expect(log.warnings.some((m) => m.includes('approval record publish failed') && m.includes('500'))).toBe(
+      true,
+    );
+  });
+
+  it('/approve without an epoch record on the issue fails closed (no record, no transition)', async () => {
+    const h = makeHarness({ labels: [LABELS.review], seedEpoch: false });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
+
+    expect(h.calls.addComment).toEqual([]);
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('no workflow_epoch record'))).toBe(true);
+  });
+
+  it('a tampered (unparsable) epoch record fails /approve closed', async () => {
+    const h = makeHarness({
+      labels: [LABELS.review],
+      comments: [
+        DEFAULT_PLAN_COMMENT,
+        {
+          id: 45,
+          user: 'attacker',
+          body: '<!-- gateflow:workflow:v2 -->\n\n```json\n{"kind": "workflow_epoch"}\n```\n',
+        },
+      ],
+    });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
+
+    expect(h.calls.addComment).toEqual([]);
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('unparsable workflow_epoch record'))).toBe(true);
+  });
+
+  it('/approve without a comment id cannot anchor the command: fail closed, no record', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/approve 123', commentId: undefined }), h.client, log);
+
+    expect(h.calls.addComment).toEqual([]);
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('no comment id'))).toBe(true);
+  });
+});
+
+describe('Schema 2: /choose and /change publish feedback_accepted records', () => {
+  it('a FRESH /choose publishes the feedback record and is accepted with ✅', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/choose 1 B' }), h.client, log);
+
+    expect(h.calls.addComment).toHaveLength(1);
+    const body = h.calls.addComment[0]?.body ?? '';
+    expect(body).toContain('<!-- gateflow:feedback:v2 -->');
+    expect(body).toContain('"schema": 2');
+    expect(body).toContain('"kind": "feedback_accepted"');
+    expect(body).toContain('"feedback_kind": "choose"');
+    expect(body).toContain('"event_id": "fe9001"');
+    expect(body).toContain(`"operation_id": "${feedbackOperationId(123, 7, WORKFLOW_EPOCH, 9001)}"`);
+    // The record verified in place → the event is accepted: ✅ + forwarding.
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
+    expect(log.warnings).toEqual([]);
+    expect(log.infos.some((m) => m.includes('question "1"') && m.includes('choice "B"'))).toBe(true);
+  });
+
+  it('a FRESH /change publishes its feedback record bound to the command comment', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/change please reconsider' }), h.client, log);
+
+    expect(h.calls.addComment).toHaveLength(1);
+    const body = h.calls.addComment[0]?.body ?? '';
+    expect(body).toContain('"feedback_kind": "change"');
+    expect(body).toContain('"schema": 2');
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
+    expect(log.warnings).toEqual([]);
+  });
+
+  it('duplicate delivery of an accepted event is idempotent (no second record, ✅ again)', async () => {
+    const h = makeHarness({ labels: [LABELS.review] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: '/choose 1 B' }), h.client, log);
+    await runGate(makeInput({ commentBody: '/choose 1 B' }), h.client, log);
+
+    expect(h.calls.addComment).toHaveLength(1); // accepted record created once
+    expect(h.calls.addReaction).toEqual([
+      { commentId: 9001, content: '+1' },
+      { commentId: 9001, content: '+1' },
+    ]);
+    expect(log.warnings).toEqual([]);
   });
 });

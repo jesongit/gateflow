@@ -1,11 +1,13 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ManualActivationAdapter } from './manual';
+import { buildAgentEnv } from './env';
 import type {
   ActivationAdapter,
   ActivationCapabilities,
   ActivationDispatch,
   ActivationResult,
+  CancelResult,
 } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -22,10 +24,18 @@ export interface ChatGPTActivationAdapterOptions {
   /** Opt-in auto launch. Defaults to false — spawning only on explicit config. */
   autoStart?: boolean;
   /**
-   * Injectable launch primitive (default wraps `execFile`, detached + unref +
+   * Additional env var names passed to the spawned client (hardening §8).
+   * The Driver environment is NEVER inherited wholesale: the child gets the
+   * buildAgentEnv allowlist plus these names, with secret keys always stripped.
+   */
+  envPassthrough?: readonly string[];
+  /** Driver environment source (defaults to process.env; injectable). */
+  envSource?: Readonly<Record<string, string | undefined>>;
+  /**
+   * Injectable launch primitive (default wraps `spawn`, detached + unref +
    * stdio 'ignore') so tests never spawn anything real.
    */
-  runner?: (cmd: string, args: string[]) => Promise<void>;
+  runner?: (cmd: string, args: string[], env: Record<string, string>) => Promise<void>;
   /** Injected manual delegate used for every fallback notice. */
   manual?: ManualActivationAdapter;
 }
@@ -45,30 +55,32 @@ async function commandExists(command: string): Promise<boolean> {
   }
 }
 
-/** One-line prompt handed to the client CLI (also shown to humans). */
-function buildLaunchPrompt(dispatch: ActivationDispatch, workspaceRoot: string): string {
+/**
+ * The EXACT dispatch path the agent must process (hardening §9): prompts
+ * never point at `.gateflow/current.json` — that file is a manual UI pointer
+ * only and may name a different dispatch by the time the agent reads it.
+ */
+export function buildLaunchPrompt(dispatch: ActivationDispatch, workspaceRoot: string): string {
   return (
     `GateFlow dispatch ${dispatch.dispatchId} is ready ` +
     `(issue #${dispatch.issueNumber}, role ${dispatch.role}, repo ${dispatch.repository}). ` +
-    `Load the gateflow-agent skill, then read .gateflow/current.json under ` +
-    `${workspaceRoot} and process the dispatch.`
+    `Load the gateflow-agent skill, then read exactly ` +
+    `${workspaceRoot}/.gateflow/inbox/${dispatch.dispatchId}/dispatch.json ` +
+    `and process ONLY that dispatch; write all output to the matching outbox directory.`
   );
 }
 
 /**
- * Default detached launcher: resolve failure of the `runner` contract is
- * reported via rejection so `notify()` can fall back to manual. Resolves as
- * soon as the OS accepted the spawn — the client lifecycle is not our concern.
- *
- * Implementation note: `spawn` (never a shell — `shell` defaults to false)
- * is used because `stdio: 'ignore'` is required for a true fire-and-forget
- * launch (no pipe can fill up and block the client); `detached: true` +
+ * Default detached launcher with an EXPLICIT child environment (hardening
+ * §8): `env` is the buildAgentEnv allowlist product, never the Driver's
+ * process.env. `spawn` (never a shell — `shell` defaults to false) with
+ * `stdio: 'ignore'` gives a true fire-and-forget launch; `detached: true` +
  * `unref()` let the client outlive the Driver process.
  */
-function defaultRunner(cmd: string, args: string[]): Promise<void> {
+function defaultRunner(cmd: string, args: string[], env: Record<string, string>): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
-    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true, env });
     child.unref();
     child.once('error', (err: Error) => {
       if (!settled) {
@@ -90,12 +102,16 @@ export class ChatGPTActivationAdapter implements ActivationAdapter {
 
   private readonly command: string;
   private readonly autoStart: boolean;
-  private readonly runner: (cmd: string, args: string[]) => Promise<void>;
+  private readonly envPassthrough: readonly string[];
+  private readonly envSource: Readonly<Record<string, string | undefined>>;
+  private readonly runner: (cmd: string, args: string[], env: Record<string, string>) => Promise<void>;
   private readonly manual: ManualActivationAdapter;
 
   constructor(options: ChatGPTActivationAdapterOptions = {}) {
     this.command = options.command ?? 'chatgpt';
     this.autoStart = options.autoStart === true;
+    this.envPassthrough = options.envPassthrough ?? [];
+    this.envSource = options.envSource ?? process.env;
     this.runner = options.runner ?? defaultRunner;
     this.manual = options.manual ?? new ManualActivationAdapter();
   }
@@ -119,24 +135,39 @@ export class ChatGPTActivationAdapter implements ActivationAdapter {
 
   /**
    * Auto-start only when explicitly configured (`autoStart === true`) AND the
-   * capability probe passes. Every other path — and any failure at all —
-   * delegates to the injected ManualActivationAdapter. NEVER throws.
+   * capability probe passes. The child environment is the explicit allowlist
+   * build (secret-shaped passthrough keys fail closed via
+   * CredentialInPassthroughError). Every other path — and any failure at
+   * all — delegates to the injected ManualActivationAdapter. NEVER throws.
    */
   async notify(dispatch: ActivationDispatch, workspaceRoot: string): Promise<ActivationResult> {
-    try {
-      if (this.autoStart === true && (await this.probe()).available) {
-        await this.runner(this.command, [buildLaunchPrompt(dispatch, workspaceRoot)]);
-        return { notified: true, detail: `auto-started via '${this.command}'` };
+    if (this.autoStart === true && (await this.probe()).available) {
+      try {
+        const env = buildAgentEnv(this.envPassthrough, this.envSource);
+        await this.runner(this.command, [buildLaunchPrompt(dispatch, workspaceRoot)], env);
+        // A process started — that is all we may claim. No ack channel
+        // exists, so this is `started`, never "the agent accepted the task".
+        return { state: 'started', detail: `auto-started via '${this.command}'` };
+      } catch (err) {
+        if (err instanceof Error && err.name === 'CredentialInPassthroughError') {
+          // Fail closed loudly: do not silently fall back with a leaked env.
+          return { state: 'failed', detail: err.message };
+        }
+        // Swallowed on purpose: activation failure must never break the
+        // Driver. Fall through to the manual notice below.
       }
-    } catch {
-      // Swallowed on purpose: activation failure must never break the Driver.
-      // Fall through to the manual notice below.
     }
-    return this.manual.notify(dispatch, workspaceRoot);
+    const manual = await this.manual.notify(dispatch, workspaceRoot);
+    return manual;
   }
 
-  /** Trivial no-op: a detached one-shot launch cannot be cancelled remotely. */
-  async cancel(_dispatchId: string): Promise<void> {
-    /* intentional no-op */
+  /** A detached one-shot launch cannot be cancelled: explicit, not silent. */
+  async cancel(_dispatchId: string): Promise<CancelResult> {
+    return {
+      state: 'unsupported',
+      detail:
+        'detached one-shot launch has no cancellation handle; instruct the running ' +
+        'agent session to stop and revoke the dispatch instead',
+    };
   }
 }

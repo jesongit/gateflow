@@ -21,11 +21,13 @@ import { runOnce } from '../../src/driver/driver';
 import { buildPlanCommentBody } from '../../src/github/comments';
 import { detectCommentMarker } from '../../src/gate/markers';
 import { MARKERS } from '../../src/gate/protocol';
+import { planSha256 } from '../../src/protocol/plan';
+import { epochCode } from '../../src/protocol/epoch';
 import { atomicWriteText, readInboxDispatch } from '../../src/workspace/inbox';
 import { readReceipt, writeReceipt } from '../../src/workspace/outbox';
 import { resolveWorkspace } from '../../src/workspace/paths';
 import type { WorkspacePaths } from '../../src/workspace/paths';
-import { FakeDriverClient, makeDeps, makeWorkspace } from '../driver/helpers';
+import { FakeDriverClient, makeDeps, makeWorkspace, testEpoch } from '../driver/helpers';
 import {
   GateSimulator,
   captureStdout,
@@ -65,22 +67,38 @@ describe('activation failure tolerance', () => {
     const gate = new GateSimulator(client);
     const paths: WorkspacePaths = resolveWorkspace(fixture.projectRoot);
     const ISSUE = 202;
+    const EPOCH = testEpoch(ISSUE);
 
     try {
-      // Canonical state: ai:ready with a valid Approval Record (trusted owner).
+      // Canonical state: ai:ready with the full schema-2 authorization chain —
+      // epoch record + plan + human /approve + Gate-issued approval record.
       client.addIssue(ISSUE, { title: 'Executor-ready issue', labels: ['ai:ready'] });
-      const plan = client.addComment(
-        ISSUE,
-        'gateflow-driver[bot]',
-        buildPlanCommentBody('# Approved Plan\n\n- implement it', 'gf_r123_i202_consumer_01'),
-      );
-      client.addComment(ISSUE, 'octo', `/approve ${plan.id}`);
-      gate.syncAll(); // seeded history: plan while READY, /approve needs REVIEW
+      client.ensureEpoch(ISSUE, EPOCH);
+      const planBody = buildPlanCommentBody('# Approved Plan\n\n- implement it', 'gf_r123_i202_consumer_01');
+      const plan = client.addComment(ISSUE, 'gateflow-driver[bot]', planBody);
+      const command = client.addComment(ISSUE, 'octo', `/approve ${plan.id}`);
+      client.addGateRecord(ISSUE, {
+        schema: 2,
+        kind: 'approval',
+        repository_id: 123,
+        issue_number: ISSUE,
+        workflow_epoch: EPOCH,
+        plan_comment_id: plan.id,
+        plan_sha256: planSha256(planBody),
+        approval_command_comment_id: command.id,
+        approved_by_id: 9001,
+        approved_by_login: 'octo',
+        gate_login: 'github-actions[bot]',
+        gate_user_id: 41898282,
+        created_at: '2026-09-06T12:00:00Z',
+        operation_id: `approval:123:${ISSUE}:${EPOCH}:p${plan.id}`,
+      });
+      gate.syncAll(); // records are protocol plumbing: replaying them is a no-op
       expect(gate.labels(ISSUE)).toEqual(['ai:ready']);
 
       const stdout = throwingStdout();
       try {
-        const executorId = `gf_r123_i202_executor_p${plan.id}`;
+        const executorId = `gf_r123_i${ISSUE}_w${epochCode(EPOCH)!}_executor_p${plan.id}`;
 
         // Cycle 1: the dispatch survives the failing activation.
         const first = await runOnce(deps);
@@ -92,14 +110,14 @@ describe('activation failure tolerance', () => {
         expect((await readReceipt(paths, executorId))?.status).toBe('dispatched');
         gate.syncAll();
         expect(gate.labels(ISSUE)).toEqual(['ai:ready']); // stays READY: no tracker, no T3
-        expect(client.commentCount(ISSUE)).toBe(2); // plan + approval only
+        expect(client.commentCount(ISSUE)).toBe(4); // epoch + approval records, plan + /approve
 
         // Cycle 2: no duplicate dispatch, still no tracker, still ai:ready.
         const second = await runOnce(deps);
         expect(freshDispatches(second)).toEqual([]);
         gate.syncAll();
         expect(gate.labels(ISSUE)).toEqual(['ai:ready']);
-        expect(client.commentCount(ISSUE)).toBe(2);
+        expect(client.commentCount(ISSUE)).toBe(4);
 
         // Automatic retry below max_attempts: failed receipt re-dispatches.
         await writeReceipt(paths, {
@@ -122,7 +140,7 @@ describe('activation failure tolerance', () => {
         expect((await readReceipt(paths, executorId))?.attempts).toBe(1);
         gate.syncAll();
         expect(gate.labels(ISSUE)).toEqual(['ai:ready']);
-        expect(client.commentCount(ISSUE)).toBe(2);
+        expect(client.commentCount(ISSUE)).toBe(4);
       } finally {
         stdout.restore();
       }
@@ -225,19 +243,35 @@ describe('multi-issue isolation in one cycle', () => {
     const paths: WorkspacePaths = resolveWorkspace(fixture.projectRoot);
     const A = 60;
     const B = 61;
+    const epochA = testEpoch(A);
+    const epochB = testEpoch(B);
     const stdout = captureStdout(); // mute activation notices
 
     try {
       // Issue A reaches ai:ready through the real flow, then is dispatched.
       client.addIssue(A, { title: 'Issue A', labels: ['ai:ready'] });
-      const planA = client.addComment(
-        A,
-        'gateflow-driver[bot]',
-        buildPlanCommentBody('# Plan A\n\n- do A', 'gf_r123_i60_consumer_01'),
-      );
-      client.addComment(A, 'octo', `/approve ${planA.id}`);
+      client.ensureEpoch(A, epochA);
+      const planBodyA = buildPlanCommentBody('# Plan A\n\n- do A', 'gf_r123_i60_consumer_01');
+      const planA = client.addComment(A, 'gateflow-driver[bot]', planBodyA);
+      const commandA = client.addComment(A, 'octo', `/approve ${planA.id}`);
+      client.addGateRecord(A, {
+        schema: 2,
+        kind: 'approval',
+        repository_id: 123,
+        issue_number: A,
+        workflow_epoch: epochA,
+        plan_comment_id: planA.id,
+        plan_sha256: planSha256(planBodyA),
+        approval_command_comment_id: commandA.id,
+        approved_by_id: 9001,
+        approved_by_login: 'octo',
+        gate_login: 'github-actions[bot]',
+        gate_user_id: 41898282,
+        created_at: '2026-09-06T12:00:00Z',
+        operation_id: `approval:123:${A}:${epochA}:p${planA.id}`,
+      });
       const first = await runOnce(deps);
-      const executorA = `gf_r123_i${A}_executor_p${planA.id}`;
+      const executorA = `gf_r123_i${A}_w${epochCode(epochA)!}_executor_p${planA.id}`;
       expect(freshDispatches(first)).toEqual([{ dispatchId: executorA, reason: 'new' }]);
       // T3 already happened between cycles (canonical state moves on).
       client.issues.get(A)!.labels = ['ai:working'];
@@ -245,10 +279,13 @@ describe('multi-issue isolation in one cycle', () => {
       // Issue A's agent writes a MALFORMED status; issue B enters planning.
       await atomicWriteText(nodePath.join(paths.outbox, executorA, 'status.json'), '{not json');
       client.addIssue(B, { title: 'Issue B', labels: ['ai:planning'] });
+      client.ensureEpoch(B, epochB);
 
       // One cycle serves both: B dispatches while A is rejected — no cross-talk.
       const second = await runOnce(deps);
-      expect(freshDispatches(second)).toEqual([{ dispatchId: `gf_r123_i${B}_consumer_01`, reason: 'new' }]);
+      expect(freshDispatches(second)).toEqual([
+        { dispatchId: `gf_r123_i${B}_w${epochCode(epochB)!}_consumer_01`, reason: 'new' },
+      ]);
       expect(second.synced.map((o) => [o.dispatchId, o.action])).toEqual([[executorA, 'rejected']]);
       expect(second.synced[0]?.detail).toContain('unparseable status.json');
       expect(
@@ -259,7 +296,9 @@ describe('multi-issue isolation in one cycle', () => {
       gate.syncAll();
       expect(gate.labels(A)).toEqual(['ai:working']); // untouched by the rejection
       expect(gate.labels(B)).toEqual(['ai:planning']); // dispatch only, no transition
-      expect(await readInboxDispatch(paths, `gf_r123_i${B}_consumer_01`)).not.toBeNull();
+      expect(
+        await readInboxDispatch(paths, `gf_r123_i${B}_w${epochCode(epochB)!}_consumer_01`),
+      ).not.toBeNull();
       // The zcode executor adapter handled A's dispatch (provider fingerprint).
       expect(stdout.text()).toContain(zcodeSuggestion(executorA));
 
@@ -275,7 +314,7 @@ describe('multi-issue isolation in one cycle', () => {
       const trackerA = client.issues.get(A)!.comments.find((c) => detectCommentMarker(c.body) === MARKERS.executionTracker);
       expect(trackerA?.body).toContain('**Status:** In Progress');
       expect((await readReceipt(paths, executorA))?.tracker_comment_id).toBe(trackerA?.id);
-      expect(client.commentCount(B)).toBe(0);
+      expect(client.commentCount(B)).toBe(1); // only B's epoch record, no content
     } finally {
       stdout.restore();
       await fixture.cleanup();

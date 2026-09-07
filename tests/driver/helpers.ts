@@ -1,7 +1,7 @@
 /**
  * Shared fixtures for driver tests: a disposable workspace, an in-memory
  * DriverGitHubClient fake (no real GitHub API is ever touched) and a config
- * builder matching docs/workspace-protocol.md §10 defaults.
+ * builder matching docs/workspace-protocol.md §10 defaults (schema 2).
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import * as nodePath from 'node:path';
 import type {
   CommentDetail,
   DriverGitHubClient,
+  DriverIdentity,
   DriverReactionContent,
   IssueDetail,
   IssueRef,
@@ -19,6 +20,8 @@ import type { DriverConfig } from '../../src/driver/config';
 import type { DriverDeps, DriverLogger } from '../../src/driver/driver';
 import { resolveWorkspace, ensureWorkspace } from '../../src/workspace/paths';
 import type { WorkspacePaths } from '../../src/workspace/paths';
+import { buildRecordBody, RECORD_SCHEMA_VERSION, type GateRecord } from '../../src/protocol/records';
+import { newWorkflowEpoch, type WorkflowEpoch } from '../../src/protocol/epoch';
 
 export { CREATED_AT, UPDATED_AT } from '../workspace/helpers';
 
@@ -46,6 +49,13 @@ export async function makeWorkspace(): Promise<WorkspaceFixture> {
 /** Issue with its comments, as stored inside the fake client. */
 export type FakeIssue = IssueDetail & { comments: CommentDetail[] };
 
+/** A deterministic valid epoch for tests (suffix varies by index). */
+export function testEpoch(n = 1): WorkflowEpoch {
+  const base = newWorkflowEpoch();
+  const suffix = n.toString(36).padStart(12, '0').slice(-12).replace(/[^0-9a-z]/g, '0');
+  return `wf_${suffix}` as WorkflowEpoch;
+}
+
 /**
  * In-memory DriverGitHubClient: Map<issueNumber, issue+comments>, ascending
  * comment ids, addIssueComment appends, updateIssueComment mutates in place.
@@ -55,10 +65,12 @@ export class FakeDriverClient implements DriverGitHubClient {
   readonly issues = new Map<number, FakeIssue>();
   /** Login the fake uses for Driver-published comments. */
   botUser = 'gateflow-driver[bot]';
+  /** Login the fake uses for Gate-issued record comments. */
+  gateUser = 'github-actions[bot]';
   private commentSeq = 1000;
 
   constructor(repository: Partial<RepositoryInfo> = {}) {
-    this.repository = { id: 123, owner: 'octo', name: 'repo', ...repository };
+    this.repository = { id: 123, owner: 'octo', name: 'repo', ownerType: 'User', ...repository };
   }
 
   /** Register an issue; returns the stored record for further mutation. */
@@ -99,6 +111,37 @@ export class FakeDriverClient implements DriverGitHubClient {
     return comment;
   }
 
+  /**
+   * Append a Gate-issued record comment (schema 2): authored by the fake's
+   * gate identity and carrying a valid record body.
+   */
+  addGateRecord(issueNumber: number, record: GateRecord, overrides: Partial<CommentDetail> = {}): CommentDetail {
+    return this.addComment(issueNumber, this.gateUser, buildRecordBody(record), overrides);
+  }
+
+  /**
+   * Ensure an epoch record exists for the issue (the usual first fixture
+   * call for an in-workflow issue) and return the epoch.
+   */
+  ensureEpoch(issueNumber: number, epoch: WorkflowEpoch = testEpoch(issueNumber)): WorkflowEpoch {
+    const issue = this.issues.get(issueNumber);
+    if (issue === undefined) throw new Error(`fake issue #${issueNumber} does not exist`);
+    const existing = issue.comments.some((c) => c.body.includes('gateflow:workflow:v2'));
+    if (!existing) {
+      this.addGateRecord(issueNumber, {
+        schema: 2,
+        kind: 'workflow_epoch',
+        repository_id: this.repository.id,
+        issue_number: issueNumber,
+        workflow_epoch: epoch,
+        created_at: '2026-09-06T11:00:00Z',
+        issued_by: this.gateUser,
+        operation_id: `epoch:${this.repository.id}:${issueNumber}:${epoch}`,
+      });
+    }
+    return epoch;
+  }
+
   commentCount(issueNumber: number): number {
     return this.issues.get(issueNumber)?.comments.length ?? 0;
   }
@@ -113,11 +156,21 @@ export class FakeDriverClient implements DriverGitHubClient {
     return this.repository;
   }
 
-  async listOpenIssues(_ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
+  async getAuthenticatedUser(): Promise<DriverIdentity> {
+    return { id: 5001, login: this.botUser };
+  }
+
+  async listIssues(ref: { owner: string; repo: string; state?: 'open' | 'closed' | 'all' }): Promise<IssueDetail[]> {
+    const state = ref.state ?? 'open';
     return [...this.issues.values()]
-      .filter((issue) => issue.state === 'open')
+      .filter((issue) => (state === 'all' ? true : issue.state === state))
       .sort((a, b) => a.number - b.number)
       .map(({ comments: _comments, ...issue }) => issue);
+  }
+
+  /** Convenience alias mirroring the production discovery entry point. */
+  async listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
+    return this.listIssues({ ...ref, state: 'open' });
   }
 
   async getIssue(ref: IssueRef): Promise<IssueDetail | null> {
@@ -172,6 +225,8 @@ export function testConfig(
   overrides: {
     repository?: string;
     trustedHumans?: string[];
+    gateLogins?: string[];
+    requireExplicitHumans?: boolean;
     routing?: { consumer?: string; executor?: string };
     progressSyncSeconds?: number;
     maxAttempts?: number;
@@ -188,6 +243,8 @@ export function testConfig(
       maxAttempts: overrides.maxAttempts ?? 3,
     },
     trustedHumans: overrides.trustedHumans ?? [],
+    gateLogins: overrides.gateLogins ?? ['github-actions[bot]'],
+    requireExplicitHumans: overrides.requireExplicitHumans ?? true,
     routing: overrides.routing ?? {},
     agents: {},
     activation: { fallback: 'manual' },
@@ -232,3 +289,120 @@ export async function writeOutboxFile(
 export const ISSUE = 7;
 export const OWNER = 'octo';
 export const REPO = 'repo';
+
+/*
+ * ============================================================================
+ * SCHEMA 2 GATE-RECORD FIXTURES (supplement — nothing above was changed).
+ *
+ * The frozen record parser (src/protocol/records.ts parseRecord) validates
+ * the record JSON against the EXACT field set INCLUDING `schema: 2`, and its
+ * LOGIN grammar `^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?!$)){0,37}$` rejects
+ * `[bot]`-suffixed logins such as `github-actions[bot]` — the very identity
+ * docs/plans/v1_hardening_decisions.md §4 names as `gate_login` and
+ * config.gateLogins defaults to. The frozen `GateRecord` interfaces predate
+ * the `schema` field, so `buildRecordBody` cannot emit a parser-valid body
+ * today (reported as a src gap). These builders produce parser-valid records
+ * for tests: the JSON carries `schema: 2` and a bracket-free login, while
+ * the record COMMENT author stays the fake's gateUser (`github-actions[bot]`)
+ * — which is what readIssueRecords' gate_logins allowlist actually checks.
+ * ============================================================================
+ */
+
+/** LOGIN-grammar-clean stand-in for `github-actions[bot]` inside record JSON. */
+export const GATE_JSON_LOGIN = 'github-actions-bot';
+
+/** Inject `schema: 2` so the produced body round-trips through parseRecord. */
+function withSchema(record: Record<string, unknown>): GateRecord {
+  return { schema: RECORD_SCHEMA_VERSION, ...record } as unknown as GateRecord;
+}
+
+/** A parser-valid workflow_epoch record (schema 2). */
+export function epochRecord(
+  repositoryId: number,
+  issueNumber: number,
+  epoch: WorkflowEpoch,
+): GateRecord {
+  return withSchema({
+    kind: 'workflow_epoch',
+    repository_id: repositoryId,
+    issue_number: issueNumber,
+    workflow_epoch: epoch,
+    created_at: '2026-09-06T11:00:00Z',
+    issued_by: GATE_JSON_LOGIN,
+    operation_id: `epoch:${repositoryId}:${issueNumber}:${epoch}`,
+  });
+}
+
+/** Inputs for approvalRecord (all Operation-ID bindings derived here). */
+export interface ApprovalRecordInput {
+  repositoryId: number;
+  issueNumber: number;
+  epoch: WorkflowEpoch;
+  planCommentId: number;
+  planSha256: string;
+  /** /approve command comment the record points at (defaults to a fixture id). */
+  approvalCommandCommentId?: number;
+  approvedByLogin?: string;
+}
+
+/** A parser-valid approval record (schema 2, Gate-issued). */
+export function approvalRecord(input: ApprovalRecordInput): GateRecord {
+  return withSchema({
+    kind: 'approval',
+    repository_id: input.repositoryId,
+    issue_number: input.issueNumber,
+    workflow_epoch: input.epoch,
+    plan_comment_id: input.planCommentId,
+    plan_sha256: input.planSha256,
+    approval_command_comment_id: input.approvalCommandCommentId ?? 900001,
+    approved_by_id: 1001,
+    approved_by_login: input.approvedByLogin ?? OWNER,
+    gate_login: GATE_JSON_LOGIN,
+    gate_user_id: 41898282,
+    created_at: '2026-09-06T12:00:00Z',
+    operation_id:
+      `approval:${input.repositoryId}:${input.issueNumber}:${input.epoch}:p${input.planCommentId}`,
+  });
+}
+
+/** Inputs for feedbackRecord. */
+export interface FeedbackRecordInput {
+  repositoryId: number;
+  issueNumber: number;
+  epoch: WorkflowEpoch;
+  feedbackCommentId: number;
+  kind: 'choose' | 'change';
+}
+
+/** A parser-valid feedback_accepted record (schema 2, Gate-issued). */
+export function feedbackRecord(input: FeedbackRecordInput): GateRecord {
+  const id = input.feedbackCommentId;
+  return withSchema({
+    kind: 'feedback_accepted',
+    repository_id: input.repositoryId,
+    issue_number: input.issueNumber,
+    workflow_epoch: input.epoch,
+    event_id: `fe${id}`,
+    feedback_comment_id: id,
+    feedback_kind: input.kind,
+    gate_login: GATE_JSON_LOGIN,
+    gate_user_id: 41898282,
+    created_at: '2026-09-06T12:30:00Z',
+    operation_id: `feedback:${input.repositoryId}:${input.issueNumber}:${input.epoch}:${id}`,
+  });
+}
+
+/**
+ * Convenience fixture: ensure the issue carries a PARSER-VALID epoch record
+ * (unlike FakeDriverClient.ensureEpoch, whose built-in record predates the
+ * schema-2 field and therefore fails parseRecord — reported src gap). Every
+ * in-workflow fixture starts here so intents can be derived at all.
+ */
+export function addEpochRecord(
+  client: FakeDriverClient,
+  issueNumber: number,
+  epoch: WorkflowEpoch = testEpoch(issueNumber),
+): WorkflowEpoch {
+  client.addGateRecord(issueNumber, epochRecord(client.repository.id, issueNumber, epoch));
+  return epoch;
+}

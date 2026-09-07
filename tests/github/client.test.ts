@@ -93,7 +93,10 @@ function fakeOctokit(opts: FakeOptions = {}) {
   let page = 0;
   const fns = {
     reposGet: vi.fn(async (_params: ReposGetParams) => ({
-      data: { owner: { login: 'owner-user' }, name: 'demo-repo', id: 424242 },
+      data: { owner: { login: 'owner-user', type: 'User' }, name: 'demo-repo', id: 424242 },
+    })),
+    getAuthenticatedUser: vi.fn(async (_params: {}) => ({
+      data: { id: 5001, login: 'gateflow-driver[bot]' },
     })),
     issuesGet: vi.fn(async (_params: IssueGetParams) => {
       if (opts.issue instanceof Error) {
@@ -114,6 +117,9 @@ function fakeOctokit(opts: FakeOptions = {}) {
   const octokit: OctokitRest = {
     rest: {
       repos: { get: fns.reposGet },
+    users: {
+      getAuthenticated: fns.getAuthenticatedUser,
+    },
     issues: {
       get: fns.issuesGet,
       listComments: fns.listComments,
@@ -140,7 +146,7 @@ function fakeOctokit(opts: FakeOptions = {}) {
 const ref: IssueRef = { owner: 'owner-user', repo: 'demo', issueNumber: 7 };
 
 describe('DriverGitHubClient adapter (no real API)', () => {
-  it('getRepository maps owner/name/id when repository context is provided', async () => {
+  it('getRepository maps owner/name/id/ownerType when repository context is provided', async () => {
     const { octokit } = fakeOctokit();
     const client = createDriverGitHubClient(octokit, { owner: 'owner-user', repo: 'demo' });
 
@@ -148,7 +154,34 @@ describe('DriverGitHubClient adapter (no real API)', () => {
       owner: 'owner-user',
       name: 'demo-repo',
       id: 424242,
+      ownerType: 'User',
     });
+  });
+
+  it('getRepository defaults ownerType to "unknown" when the API omits it', async () => {
+    const { octokit, fns } = fakeOctokit();
+    fns.reposGet.mockResolvedValueOnce({
+      data: { owner: { login: 'owner-user', type: undefined as unknown as string }, name: 'demo-repo', id: 424242 },
+    });
+    const client = createDriverGitHubClient(octokit, { owner: 'owner-user', repo: 'demo' });
+
+    await expect(client.getRepository()).resolves.toEqual({
+      owner: 'owner-user',
+      name: 'demo-repo',
+      id: 424242,
+      ownerType: 'unknown',
+    });
+  });
+
+  it('getAuthenticatedUser maps the Driver identity behind the token', async () => {
+    const { octokit, fns } = fakeOctokit();
+    const client = createDriverGitHubClient(octokit, { owner: 'owner-user', repo: 'demo' });
+
+    await expect(client.getAuthenticatedUser()).resolves.toEqual({
+      id: 5001,
+      login: 'gateflow-driver[bot]',
+    });
+    expect(fns.getAuthenticatedUser).toHaveBeenCalledTimes(1);
   });
 
   it('getRepository rejects with a clear error when created without repository context', async () => {
@@ -333,6 +366,7 @@ describe('DriverGitHubClient.listOpenIssues (no real API)', () => {
     const octokit: OctokitRest = {
       rest: {
         repos: { get: vi.fn() },
+        users: { getAuthenticated: vi.fn() },
         issues: {
           get: vi.fn(),
           listComments: vi.fn(),
@@ -359,7 +393,7 @@ describe('DriverGitHubClient.listOpenIssues (no real API)', () => {
     });
     const client = createDriverGitHubClient(octokit);
 
-    const issues = await client.listOpenIssues({ owner: 'owner-user', repo: 'demo' });
+    const issues = await client.listIssues({ owner: 'owner-user', repo: 'demo' });
 
     expect(listIssues.mock.calls[0]?.[0]).toEqual({
       owner: 'owner-user',
@@ -379,7 +413,7 @@ describe('DriverGitHubClient.listOpenIssues (no real API)', () => {
     const { octokit, listIssues } = fakeListOctokit({ pages: [[...fullPage], [{ number: 500, state: 'open' }]] });
     const client = createDriverGitHubClient(octokit);
 
-    const issues = await client.listOpenIssues({ owner: 'o', repo: 'r' });
+    const issues = await client.listIssues({ owner: 'o', repo: 'r' });
 
     expect(listIssues).toHaveBeenCalledTimes(2);
     expect(listIssues.mock.calls[1]?.[0]).toMatchObject({ page: 2, per_page: 100, state: 'open' });
@@ -391,7 +425,7 @@ describe('DriverGitHubClient.listOpenIssues (no real API)', () => {
     const { octokit, listIssues } = fakeListOctokit({ pages: Array.from({ length: 12 }, () => [...fullPage]) });
     const client = createDriverGitHubClient(octokit);
 
-    const issues = await client.listOpenIssues({ owner: 'o', repo: 'r' });
+    const issues = await client.listIssues({ owner: 'o', repo: 'r' });
 
     expect(listIssues).toHaveBeenCalledTimes(10);
     expect(issues).toHaveLength(1000);
@@ -415,6 +449,7 @@ describe('DriverGitHubClient.createIssue (no real API)', () => {
     const octokit: OctokitRest = {
       rest: {
         repos: { get: vi.fn() },
+        users: { getAuthenticated: vi.fn() },
         issues: {
           get: vi.fn(),
           listComments: vi.fn(),

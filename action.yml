@@ -3,8 +3,10 @@ description: >-
   Deterministic gate for the GitHub-native AI workflow. Validates actor
   identity, strictly parses comment commands (/ai-plan, /approve, /choose,
   /change, /cancel), validates comment markers, re-reads issue labels from
-  the API and performs the frozen label-based state transitions. The protocol
-  is frozen in docs/protocol.md (schema 1). AI never participates in
+  the API and performs the frozen label-based state transitions. Since
+  protocol schema 2 the durable authorization facts are Gate-issued record
+  comments (workflow epoch / approval / feedback accepted — see
+  docs/plans/v1_hardening_decisions.md). AI never participates in
   authorization decisions.
 author: 'jesongit'
 
@@ -16,25 +18,36 @@ inputs:
   github-token:
     description: >-
       GitHub token used by the gate to read issue labels and write workflow
-      labels. Defaults to the workflow's own token; the calling workflow must
-      grant `permissions: issues: write`.
+      labels and Gate records. Defaults to the workflow's own token; the
+      calling workflow must grant `permissions: issues: write`. This identity
+      is the GATE IDENTITY recorded in every authorization record.
     required: false
     default: ${{ github.token }}
   trusted-humans:
     description: >-
       Comma-separated GitHub logins treated as Trusted Humans in addition to
-      the repository owner (V0 default). Trusted Humans are the only actors
-      allowed to run commands: /ai-plan, /approve, /choose, /change, /cancel.
+      a personal (User-type) repository owner. Trusted Humans are the only
+      actors allowed to run commands: /ai-plan, /approve, /choose, /change,
+      /cancel. REQUIRED (fail-closed) for Organization-owned repositories
+      unless require-explicit-humans is false.
     required: false
     default: ''
   trusted-agents:
     description: >-
       Comma-separated GitHub logins treated as Trusted Agents (independent bot
       or GitHub App identities). Trusted Agent is a separate concept from
-      Trusted Human and is never allowed to run commands. V0 default: empty.
+      Trusted Human, must never overlap it, and is never allowed to run
+      commands. Default: empty.
     required: false
     default: ''
+  require-explicit-humans:
+    description: >-
+      Fail the run (fail closed) when the repository owner is an Organization
+      and `trusted-humans` is empty. Default: true. Set to false only to
+      accept that risk knowingly.
+    required: false
+    default: 'true'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'

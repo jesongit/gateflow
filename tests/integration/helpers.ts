@@ -38,6 +38,13 @@ import { detectCommentMarker } from '../../src/gate/markers';
 import { COMMANDS, LABELS, MARKERS } from '../../src/gate/protocol';
 import type { Label } from '../../src/gate/protocol';
 import { parseTrackerStatus } from '../../src/gate/tracker';
+import { planSha256 } from '../../src/protocol/plan';
+import {
+  approvalOperationId,
+  feedbackOperationId,
+  parseRecord,
+  type GateRecord,
+} from '../../src/protocol/records';
 import type { CommentDetail } from '../../src/github/client';
 import { atomicWriteJson, atomicWriteText } from '../../src/workspace/inbox';
 import type { WorkspacePaths } from '../../src/workspace/paths';
@@ -66,6 +73,12 @@ type CommentAction = 'created' | 'edited';
  * never seen before is a `created` event, a comment whose body changed since
  * the last replay is an `edited` event (the T4/T5 channel). Rules are applied
  * in order with the same preconditions as src/gate/gate.ts.
+ *
+ * SCHEMA 2: accepting /choose, /change or /approve also PUBLISHES the
+ * corresponding Gate-issued record comment (feedback_accepted / approval),
+ * authored by the Gate identity — the durable facts the Driver's discovery
+ * and preflight independently re-validate. Record comments themselves are
+ * protocol plumbing: replaying them is a no-op (no marker, no command).
  */
 export class GateSimulator {
   private readonly seen = new Map<number, string>();
@@ -83,6 +96,32 @@ export class GateSimulator {
   /** Current ai:* labels of an issue (copy, for assertions). */
   labels(issueNumber: number): string[] {
     return [...(this.client.issues.get(issueNumber)?.labels ?? [])];
+  }
+
+  /** The Gate identity that authors every record comment. */
+  private get gateLogin(): string {
+    return this.client.gateUser;
+  }
+
+  /** The current workflow epoch of an issue (latest epoch record); null if none. */
+  private currentEpoch(issueNumber: number): string | null {
+    const issue = this.client.issues.get(issueNumber);
+    if (issue === undefined) return null;
+    for (const comment of [...issue.comments].sort((a, b) => b.id - a.id)) {
+      if (/<!-- gateflow:workflow:v2/.test(comment.body)) {
+        const parsed = parseRecord(comment.id, comment.body);
+        if (parsed.ok && parsed.record.kind === 'workflow_epoch') {
+          return parsed.record.workflow_epoch;
+        }
+      }
+    }
+    return null;
+  }
+
+  private publishRecord(issueNumber: number, record: GateRecord): void {
+    // Uses the client's own monotonic id sequence so comment ids stay in
+    // true publication order across Driver comments and Gate records.
+    this.client.addGateRecord(issueNumber, record);
   }
 
   /** Replay every unseen comment / unseen edit across all issues, in order. */
@@ -140,16 +179,62 @@ export class GateSimulator {
         if (this.currentAiLabel(issueNumber) !== LABELS.review) return;
         const issue = this.client.issues.get(issueNumber);
         if (issue === undefined) return;
+        const epoch = this.currentEpoch(issueNumber);
+        if (epoch === null) return; // no epoch record → fail closed
         const planComments = issue.comments.filter((c) => detectCommentMarker(c.body) === MARKERS.plan);
         const currentPlan = planComments.at(-1);
         if (currentPlan === undefined || currentPlan.id !== parsed.args.planCommentId) return;
+        // SCHEMA 2: persist the approval RECORD (epoch + plan + hash binding)
+        // BEFORE the label swap — the durable authorization fact.
+        this.publishRecord(issueNumber, {
+          schema: 2,
+          kind: 'approval',
+          repository_id: this.client.repository.id,
+          issue_number: issueNumber,
+          workflow_epoch: epoch,
+          plan_comment_id: currentPlan.id,
+          plan_sha256: planSha256(currentPlan.body),
+          approval_command_comment_id: comment.id,
+          approved_by_id: 0,
+          approved_by_login: comment.user,
+          gate_login: this.gateLogin,
+          gate_user_id: 41898282,
+          created_at: '2026-09-06T12:00:00Z',
+          operation_id: approvalOperationId(this.client.repository.id, issueNumber, epoch, currentPlan.id),
+        });
         this.swapLabel(issueNumber, LABELS.review, LABELS.ready);
         return;
       }
       case COMMANDS.change:
-      case COMMANDS.choose:
-        // Forwarded to the Consumer as untrusted data; NEVER a migration.
+      case COMMANDS.choose: {
+        // SCHEMA 2: acceptance = publishing the feedback_accepted record
+        // (idempotent by operation id). Rejected commands never get one.
+        if (!this.isTrustedHuman(comment.user)) return;
+        if (this.currentAiLabel(issueNumber) !== LABELS.review) return;
+        const epoch = this.currentEpoch(issueNumber);
+        if (epoch === null) return;
+        const issue = this.client.issues.get(issueNumber);
+        if (issue === undefined) return;
+        const feedbackKind = parsed.command === COMMANDS.choose ? 'choose' : 'change';
+        const operationId = feedbackOperationId(this.client.repository.id, issueNumber, epoch, comment.id);
+        const alreadyAccepted = issue.comments.some((c) => c.body.includes(`"operation_id": "${operationId}"`));
+        if (alreadyAccepted) return;
+        this.publishRecord(issueNumber, {
+          schema: 2,
+          kind: 'feedback_accepted',
+          repository_id: this.client.repository.id,
+          issue_number: issueNumber,
+          workflow_epoch: epoch,
+          event_id: `fe${comment.id}`,
+          feedback_comment_id: comment.id,
+          feedback_kind: feedbackKind,
+          gate_login: this.gateLogin,
+          gate_user_id: 41898282,
+          created_at: '2026-09-06T12:00:00Z',
+          operation_id: operationId,
+        });
         return;
+      }
       case COMMANDS.aiPlan:
       case COMMANDS.cancel:
         // T0 is out of scope (issues are seeded with their labels directly)
@@ -221,7 +306,7 @@ export function statusFileFor(
   summary?: string,
 ): StatusFile {
   return {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
     role,
     state,
@@ -231,12 +316,12 @@ export function statusFileFor(
 }
 
 export function planReadyResult(dispatchId: string): ResultFile {
-  return { schema: 1, dispatch_id: dispatchId, role: 'consumer', result: 'plan_ready', plan_file: 'PLAN.md' };
+  return { schema: 2, dispatch_id: dispatchId, role: 'consumer', result: 'plan_ready', plan_file: 'PLAN.md' };
 }
 
 export function completedResult(dispatchId: string): ResultFile {
   return {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
     role: 'executor',
     result: 'completed',

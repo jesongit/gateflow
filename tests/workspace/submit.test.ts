@@ -41,6 +41,23 @@ describe('inspectSubmit', () => {
     expect(inspection).toEqual({ status: 'ready', request: submitRequest(), task: '# Task\n\nDo the thing' });
   });
 
+  it('injects and persists a submission_id when the agent omitted one (schema 2)', async () => {
+    const { paths } = await fresh();
+    const { submission_id: _sid, ...rawWithoutId } = submitRequest();
+    void _sid;
+    await seedSubmit(paths, JSON.stringify(rawWithoutId), '# Task\n\nBody');
+    const inspection = await inspectSubmit(paths);
+    expect(inspection.status).toBe('ready');
+    if (inspection.status === 'ready') {
+      expect(inspection.request.submission_id).toMatch(/^sub_[0-9a-z]{16}$/);
+    }
+    // The injected id is persisted so the Operation-ID anchor survives restarts.
+    const persisted = JSON.parse(await readFile(nodePath.join(paths.submit, 'submit.json'), 'utf8')) as {
+      submission_id?: string;
+    };
+    expect(persisted.submission_id).toMatch(/^sub_[0-9a-z]{16}$/);
+  });
+
   it('reports invalid on any mismatch', async () => {
     const { paths } = await fresh();
 
@@ -81,6 +98,17 @@ describe('inspectSubmit', () => {
     inspection = await inspectSubmit(paths);
     expect(inspection.status).toBe('invalid');
     if (inspection.status === 'invalid') expect(inspection.error).toContain('empty');
+
+    // Malformed submission_id (schema 2: sub_ + 16 base36 chars when present)
+    await writeFile(nodePath.join(paths.submit, 'TASK.md'), 'body', 'utf8');
+    await writeFile(
+      nodePath.join(paths.submit, 'submit.json'),
+      JSON.stringify(submitRequest({ submission_id: 'not-an-id' })),
+      'utf8',
+    );
+    inspection = await inspectSubmit(paths);
+    expect(inspection.status).toBe('invalid');
+    if (inspection.status === 'invalid') expect(inspection.error).toContain('submission_id');
   });
 });
 

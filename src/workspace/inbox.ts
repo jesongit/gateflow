@@ -162,7 +162,47 @@ export async function readCurrent(paths: WorkspacePaths): Promise<CurrentPointer
   return parsed.ok ? parsed.value : null;
 }
 
+/**
+ * Read and validate inbox/<dispatchId>/context.json.
+ * Returns null when the id is invalid, the file is missing, unparseable or
+ * fails schema validation.
+ */
+export async function readInboxContext(paths: WorkspacePaths, dispatchId: string): Promise<WorkspaceContext | null> {
+  let file: string;
+  try {
+    file = nodePath.join(inboxDispatchDir(paths, dispatchId), 'context.json');
+  } catch {
+    return null;
+  }
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch {
+    return null;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = validateContext(raw);
+  return parsed.ok ? parsed.value : null;
+}
+
 /** Hex sha256 digest of a UTF-8 string (used for plan_sha256 anchors). */
 export function sha256Hex(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+/**
+ * Frozen inbox snapshot hash (schema 2, hardening §9): sha256 over the
+ * canonical JSON of the projected inbox content. A re-dispatch of the SAME
+ * dispatch id with a DIFFERENT snapshot is refused instead of silently
+ * overwriting a task an agent may already be working on.
+ */
+export function inputSnapshotSha256(content: { task: string; plan: string | null; feedback: string | null }): string {
+  return sha256Hex(
+    JSON.stringify({ task: content.task, plan: content.plan, feedback: content.feedback }),
+  );
 }

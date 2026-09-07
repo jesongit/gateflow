@@ -74,20 +74,21 @@ describe('comment marker inspection with reasons (Phase 2, protocol 4.3)', () =>
   it('treats an issue-body style schema block inside a comment as no marker', () => {
     expect(
       detectCommentMarker(
-        '<!-- ai-workflow\nschema: 1\nsource: producer\nkind: feature\nmaturity_hint: solution\n-->',
+        '<!-- ai-workflow\nschema: 2\nsource: producer\nkind: feature\nmaturity_hint: solution\n-->',
       ),
     ).toBeNull();
   });
 });
 
 describe('issue body schema block parsing (Phase 2, protocol 4.1)', () => {
+  // Hardening: the Producer schema block carries protocol schema 2.
   const validBlock =
-    '<!-- ai-workflow\nschema: 1\nsource: producer\nkind: feature\nmaturity_hint: solution\n-->';
+    '<!-- ai-workflow\nschema: 2\nsource: producer\nkind: feature\nmaturity_hint: solution\n-->';
 
   it('parses a valid block into its frozen metadata', () => {
     expect(parseIssueSchemaBlock(`## Goal\n\nwork\n\n${validBlock}`)).toEqual({
       status: 'valid',
-      metadata: { schema: 1, source: 'producer', kind: 'feature', maturityHint: 'solution' },
+      metadata: { schema: 2, source: 'producer', kind: 'feature', maturityHint: 'solution' },
     });
   });
 
@@ -107,14 +108,14 @@ describe('issue body schema block parsing (Phase 2, protocol 4.1)', () => {
   it('invalidates the whole block on duplicate keys', () => {
     expect(
       parseIssueSchemaBlock(
-        '<!-- ai-workflow\nschema: 1\nschema: 1\nsource: producer\nkind: bug\nmaturity_hint: direction\n-->',
+        '<!-- ai-workflow\nschema: 2\nschema: 2\nsource: producer\nkind: bug\nmaturity_hint: direction\n-->',
       ),
     ).toEqual({ status: 'invalid', reason: 'duplicate schema key "schema"' });
   });
 
   it('invalidates the whole block on missing keys', () => {
     expect(
-      parseIssueSchemaBlock('<!-- ai-workflow\nschema: 1\nsource: producer\nkind: bug\n-->'),
+      parseIssueSchemaBlock('<!-- ai-workflow\nschema: 2\nsource: producer\nkind: bug\n-->'),
     ).toEqual({ status: 'invalid', reason: 'missing required schema key(s)' });
   });
 
@@ -126,9 +127,9 @@ describe('issue body schema block parsing (Phase 2, protocol 4.1)', () => {
     expect(
       parseIssueSchemaBlock(validBlock.replace('maturity_hint: solution', 'maturity_hint: vibes')),
     ).toEqual({ status: 'invalid', reason: 'unknown maturity_hint "vibes"' });
-    expect(parseIssueSchemaBlock(validBlock.replace('schema: 1', 'schema: 2'))).toEqual({
+    expect(parseIssueSchemaBlock(validBlock.replace('schema: 2', 'schema: 3'))).toEqual({
       status: 'invalid',
-      reason: 'unsupported schema version "2"',
+      reason: 'unsupported schema version "3"',
     });
     expect(parseIssueSchemaBlock(validBlock.replace('source: producer', 'source: ai'))).toEqual({
       status: 'invalid',
@@ -137,7 +138,7 @@ describe('issue body schema block parsing (Phase 2, protocol 4.1)', () => {
   });
 
   it('invalidates an unterminated block', () => {
-    expect(parseIssueSchemaBlock('<!-- ai-workflow\nschema: 1\n')).toEqual({
+    expect(parseIssueSchemaBlock('<!-- ai-workflow\nschema: 2\n')).toEqual({
       status: 'invalid',
       reason: 'schema block is not terminated by "-->"',
     });

@@ -1,20 +1,19 @@
 /**
- * Frozen V0 protocol constants (schema 1).
+ * Frozen protocol constants.
  *
  * Single source of truth: docs/protocol.md. Any change here must be mirrored
  * in docs/protocol.md and treated as a protocol upgrade (bump schema version).
  * Markers are structural hints only and are NEVER proof of permission.
  *
- * V1 amendment (protocol v2 document, github-schema-v2.json): the /approve
- * command now carries the plan comment id it approves — "/approve
- * <plan-comment-id>" (docs/protocol.md section 3.4 "V1 审批证明
- * （Plan-ID 绑定）"). The issue-body schema block, all label strings, all
- * marker strings and SCHEMA_VERSION are unchanged (still 1); see
- * docs/protocol.md for the normative V1 wording.
+ * SCHEMA 2 (hardening, docs/plans/v1_hardening_decisions.md): the durable
+ * authorization facts are Gate-issued record comments (workflow_epoch /
+ * approval / feedback_accepted — src/protocol/records.ts). The /approve
+ * command still carries the plan comment id; the issue-body schema block, all
+ * label strings, all workflow marker strings keep their V1 shape.
  */
 
-/** Protocol / marker schema version, frozen for V0. */
-export const SCHEMA_VERSION = 1 as const;
+/** Protocol / workflow-marker schema version (schema 2 since the hardening). */
+export const SCHEMA_VERSION = 2 as const;
 
 /**
  * Workflow labels. An issue holds at most one ai:* label at any time;

@@ -1,5 +1,6 @@
-# CI — verify the GateFlow baseline: types, tests, and that the committed
-# dist/ bundles (required by GitHub JavaScript Actions) match the src/ tree.
+# CI — verify the GateFlow hardening baseline: types, tests (unit /
+# integration / security), and that the committed dist/ bundles (required by
+# GitHub JavaScript Actions) match the src/ tree.
 name: CI
 
 on:
@@ -21,6 +22,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Guard against silent runtime drift: the action runtime and the build
+      # target must stay node24 (the runner removed node20 on 2026-09-23).
+      - name: Action runtime is node24
+        run: |
+          node -e "const fs=require('fs'); const y=fs.readFileSync('action.yml','utf8'); const p=fs.readFileSync('package.json','utf8'); if(!/using:\s*['\"]node24['\"]/.test(y)) { console.error('action.yml runs.using must be node24'); process.exit(1); } if(!p.includes('\"target=node24\"') && !/target=node24/.test(p)) { console.error('package.json build target must be node24'); process.exit(1); } if(!/\">=24\"/.test(p)) { console.error('package.json engines must be >=24'); process.exit(1); } console.log('runtime node24 OK');"
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -38,3 +45,72 @@ jobs:
       # diff means dist/ was not committed (or check:dist was bypassed).
       - name: Ensure dist/ has no uncommitted changes
         run: git diff --exit-code dist
+
+  # Contract tests: the committed protocol JSON mirrors must stay parseable
+  # and in sync with the frozen shapes (docs/plans/v1_hardening_decisions.md).
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Protocol schema mirrors are valid JSON
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('protocol/github-schema-v2.json','utf8')); JSON.parse(require('fs').readFileSync('protocol/workspace-schema-v2.json','utf8')); console.log('protocol mirrors OK')"
+
+  # Real GitHub-hosted runner smoke test of the Action itself (Node24 runtime,
+  # input parsing, illegal-event no-op). Uses only the workflow's own token —
+  # never a production PAT.
+  action-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install and build (dist must be committed, rebuilt for safety)
+        run: |
+          npm ci
+          npm run build
+          npm run check:dist
+
+      # (a) Illegal event: this workflow_dispatch/push context carries no
+      # issue; the gate must log a warning and exit 0 (no-op, no crash).
+      - name: Smoke — no-issue event is a safe no-op
+        uses: ./
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # (b) Real event: create a scratch issue, run the gate on a command
+      # comment from an action that must be REJECTED (the token's identity is
+      # not a Trusted Human on this personal repo? — github-actions[bot] is
+      # not the owner, and commands are a Trusted Human monopoly), assert the
+      # gate stays a no-op, then close and delete the scratch issue.
+      - name: Smoke — rejected command no-op on a scratch issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          number=$(gh issue create --title "gateflow smoke (auto-deleted)" --body "scratch issue for action smoke test" --label "ai:planning" --json number --jq .number)
+          gh issue comment "$number" --body "/cancel"
+          echo "scratch issue #$number created; the gate run below must IGNORE /cancel from a non-human actor."
+          echo "SMOKE_ISSUE=$number" >> "$GITHUB_ENV"
+
+      - name: Gate on the scratch comment (must no-op, not fail)
+        uses: ./
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          trusted-humans: ''
+
+      - name: Cleanup scratch issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue close "${{ env.SMOKE_ISSUE }}" || true

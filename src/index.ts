@@ -1,13 +1,13 @@
 /**
- * Entry point of the GateFlow action (Phase 2: full command
- * set, reactions, marker validation).
+ * Entry point of the GateFlow action.
  *
  * Responsibilities kept deliberately thin:
  *  - bail out safely when not running inside GitHub Actions;
  *  - translate the github-context payload into a GateInput;
- *  - run the deterministic gate (src/gate.ts) against one shared GitHubClient;
+ *  - run the deterministic gate (src/gate/gate.ts) against one shared GitHubClient;
  *  - surface only infrastructure failures via setFailed (protocol/business
- *    no-ops are logged, never failed).
+ *    no-ops are logged, never failed). Identity-CONFIG rejections (GF-H10)
+ *    are deliberate exceptions: a misconfigured identity model fails the run.
  */
 import * as core from '@actions/core';
 import { context, getOctokit } from '@actions/github';
@@ -17,10 +17,16 @@ import { createGitHubClient, type GitHubClient } from './gate/github';
 export const GATE_VERSION = '1.0.0';
 
 /** Action inputs, read once per call. */
-function readInputs(): { trustedHumans: string; trustedAgents: string; token: string } {
+function readInputs(): {
+  trustedHumans: string;
+  trustedAgents: string;
+  requireExplicitHumans: string;
+  token: string;
+} {
   return {
     trustedHumans: core.getInput('trusted-humans'),
     trustedAgents: core.getInput('trusted-agents'),
+    requireExplicitHumans: core.getInput('require-explicit-humans') || 'true',
     token: core.getInput('github-token', { required: true }),
   };
 }
@@ -33,9 +39,10 @@ function readInputs(): { trustedHumans: string; trustedAgents: string; token: st
 export function readGateInput(): GateInput | null {
   const payload = context.payload as {
     action?: string;
-    issue?: { number?: number; body?: string; user?: { login?: string } };
-    comment?: { id?: number; user?: { login?: string }; body?: string };
-    sender?: { login?: string };
+    repository?: { id?: number };
+    issue?: { number?: number; body?: string; user?: { login?: string; id?: number } };
+    comment?: { id?: number; user?: { login?: string; id?: number }; body?: string };
+    sender?: { login?: string; id?: number };
   };
 
   const issueNumber = payload.issue?.number;
@@ -47,14 +54,18 @@ export function readGateInput(): GateInput | null {
     return null;
   }
 
+  const commentUser = payload.comment?.user;
   const actor =
-    payload.comment?.user?.login ?? payload.sender?.login ?? payload.issue?.user?.login ?? '';
+    commentUser?.login ?? payload.sender?.login ?? payload.issue?.user?.login ?? '';
+  const actorId = commentUser?.id ?? payload.sender?.id ?? payload.issue?.user?.id;
   const inputs = readInputs();
 
   return {
     eventName: context.eventName,
     eventAction: payload.action,
     actor,
+    actorId,
+    repositoryId: payload.repository?.id ?? 0,
     repoOwner: context.repo.owner,
     repo: context.repo.repo,
     issueNumber,
@@ -65,6 +76,7 @@ export function readGateInput(): GateInput | null {
     issueBody: payload.issue?.body,
     trustedHumansInput: inputs.trustedHumans,
     trustedAgentsInput: inputs.trustedAgents,
+    requireExplicitHumansInput: inputs.requireExplicitHumans,
   };
 }
 
@@ -88,7 +100,8 @@ export async function run(client?: GitHubClient): Promise<void> {
 
 if (process.env.GITHUB_ACTIONS === 'true') {
   run().catch((err: unknown) => {
-    // Infrastructure error (API unreachable, auth, missing token): fail loudly.
+    // Infrastructure error (API unreachable, auth, missing token) or a
+    // fail-closed identity-configuration rejection: fail loudly.
     // Everything else is handled and logged inside the gate.
     core.setFailed(err instanceof Error ? err.message : String(err));
   });

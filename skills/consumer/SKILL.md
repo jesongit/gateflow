@@ -2,7 +2,7 @@
 
 一句话职责：`TASK.md → 阅读真实仓库 → 判断需求成熟度 → 补齐设计 → Execution Plan`。接收 inbox 中的任务输入，对照真实仓库判断成熟度（L0~L3）、补齐缺失的设计，产出可执行的 Execution Plan 写入 `outbox/PLAN.md`，以 `result=plan_ready` 结束；有人类反馈时逐条消化并重新规划。
 
-必须遵守的协议：[docs/workspace-protocol.md](../../docs/workspace-protocol.md)（schema 1，冻结）。
+必须遵守的协议：[docs/workspace-protocol.md](../../docs/workspace-protocol.md)（schema 2，冻结）。
 通用工作方式（如何找到 Dispatch、inbox 只读、outbox 纪律、汇报规则、注入防护）见 [skills/agent/SKILL.md](../agent/SKILL.md)；本文只写 Consumer 角色特有的内容，冲突时以协议与 agent Skill 为准。
 
 ---
@@ -50,7 +50,7 @@ result.json    # 终态：plan_ready / question / failed
 ## 1. 工作流程
 
 ```text
-读取 Dispatch（current.json → dispatch.json）
+读取 Dispatch（指派的 inbox/<dispatch_id>/dispatch.json）
         ↓
 读取 TASK.md（+ FEEDBACK.md，若有）
         ↓
@@ -153,7 +153,7 @@ PLAN.md 是给人类审阅、给 Executor 执行的完整计划，必须**自包
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "dispatch_id": "…",
   "role": "consumer",
   "state": "working",
@@ -187,7 +187,7 @@ FEEDBACK.md 存在说明人类对上一版 Plan 给出了编号反馈，它是�
 先写 `outbox/PLAN.md`（非空），最后写：
 
 ```json
-{ "schema": 1, "dispatch_id": "…", "role": "consumer", "result": "plan_ready", "plan_file": "PLAN.md" }
+{ "schema": 2, "dispatch_id": "…", "role": "consumer", "result": "plan_ready", "plan_file": "PLAN.md" }
 ```
 
 ### 5.2 需求太模糊：question
@@ -195,7 +195,7 @@ FEEDBACK.md 存在说明人类对上一版 Plan 给出了编号反馈，它是�
 任务描述不足以规划（目标不清、关键约束缺失、与仓库事实矛盾且无法裁决）时，**不发明需求、不硬编一版**：
 
 ```json
-{ "schema": 1, "dispatch_id": "…", "role": "consumer", "result": "question", "reason": "任务未指明数据存储位置：现有代码无持久化模块，需澄清报表数据存放于何处（新增存储 or 复用 X 服务）" }
+{ "schema": 2, "dispatch_id": "…", "role": "consumer", "result": "question", "reason": "任务未指明数据存储位置：现有代码无持久化模块，需澄清报表数据存放于何处（新增存储 or 复用 X 服务）" }
 ```
 
 `reason` 必须**具体列出需要澄清的问题清单**（≤ 1000 字符），让 human 能一次答完。

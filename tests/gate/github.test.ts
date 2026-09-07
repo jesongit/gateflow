@@ -40,10 +40,26 @@ function fakeOctokit() {
           calls.push('issues.listComments');
           return { data: [] };
         }),
+        createComment: vi.fn(async () => {
+          calls.push('issues.createComment');
+          return { data: { id: 9001 } };
+        }),
       },
       reactions: {
         createForIssueComment: vi.fn(async () => {
           calls.push('reactions.createForIssueComment');
+        }),
+      },
+      users: {
+        getAuthenticated: vi.fn(async () => {
+          calls.push('users.getAuthenticated');
+          return { data: { id: 41898282, login: 'gate-bot' } };
+        }),
+      },
+      repos: {
+        get: vi.fn(async () => {
+          calls.push('repos.get');
+          return { data: { id: 123, owner: { login: 'owner-user', type: 'User' } } };
         }),
       },
     },
@@ -254,6 +270,75 @@ describe('OctokitGitHubClient.listComments (V1 approval validation)', () => {
       issue_number: 7,
       per_page: 100,
       page: 1,
+    });
+  });
+});
+
+describe('OctokitGitHubClient schema-2 methods (records + identity)', () => {
+  it('addComment posts the body via issues.createComment and returns the created id', async () => {
+    const { octokit, calls } = fakeOctokit();
+    const client = createGitHubClient(octokit);
+
+    const created = await client.addComment(ref, '<!-- gateflow:approval:v2 -->');
+
+    expect(created).toEqual({ id: 9001 });
+    expect(calls).toEqual(['issues.createComment']);
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith({
+      owner: 'owner-user',
+      repo: 'demo',
+      issue_number: 7,
+      body: '<!-- gateflow:approval:v2 -->',
+    });
+  });
+
+  it('addComment falls back to id 0 when the API omits the id', async () => {
+    const { octokit } = fakeOctokit();
+    octokit.rest.issues.createComment = vi.fn(async () => ({ data: {} }));
+    const client = createGitHubClient(octokit);
+
+    await expect(client.addComment(ref, 'body')).resolves.toEqual({ id: 0 });
+  });
+
+  it('getAuthenticatedUser maps the Gate identity (id + login)', async () => {
+    const { octokit, calls } = fakeOctokit();
+    const client = createGitHubClient(octokit);
+
+    const user = await client.getAuthenticatedUser();
+
+    expect(user).toEqual({ id: 41898282, login: 'gate-bot' });
+    expect(calls).toEqual(['users.getAuthenticated']);
+  });
+
+  it('getAuthenticatedUser maps a missing id/login to 0/"unknown"', async () => {
+    const { octokit } = fakeOctokit();
+    octokit.rest.users.getAuthenticated = vi.fn(async () => ({ data: {} }));
+    const client = createGitHubClient(octokit);
+
+    await expect(client.getAuthenticatedUser()).resolves.toEqual({ id: 0, login: 'unknown' });
+  });
+
+  it('getRepoIdentity maps owner login/type and the repository id (the GF-H10 check)', async () => {
+    const { octokit, calls } = fakeOctokit();
+    octokit.rest.repos.get = vi.fn(async () => ({
+      data: { id: 123, owner: { login: 'octo-org', type: 'Organization' } },
+    }));
+    const client = createGitHubClient(octokit);
+
+    const identity = await client.getRepoIdentity({ owner: 'octo-org', repo: 'demo' });
+
+    expect(identity).toEqual({ owner: 'octo-org', ownerType: 'Organization', id: 123 });
+    expect(octokit.rest.repos.get).toHaveBeenCalledWith({ owner: 'octo-org', repo: 'demo' });
+  });
+
+  it('getRepoIdentity falls back to the queried owner and "unknown" type when the API omits them', async () => {
+    const { octokit } = fakeOctokit();
+    octokit.rest.repos.get = vi.fn(async () => ({ data: {} }));
+    const client = createGitHubClient(octokit);
+
+    await expect(client.getRepoIdentity({ owner: 'someone', repo: 'demo' })).resolves.toEqual({
+      owner: 'someone',
+      ownerType: 'unknown',
+      id: 0,
     });
   });
 });

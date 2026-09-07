@@ -46,10 +46,10 @@ var require_light = __commonJS({
         return n && n["default"] || n;
       }
       var load = function(received, defaults, onto = {}) {
-        var k, ref, v;
+        var k, ref2, v;
         for (k in defaults) {
           v = defaults[k];
-          onto[k] = (ref = received[k]) != null ? ref : v;
+          onto[k] = (ref2 = received[k]) != null ? ref2 : v;
         }
         return onto;
       };
@@ -119,11 +119,11 @@ var require_light = __commonJS({
           }
         }
         getArray() {
-          var node, ref, results;
+          var node, ref2, results;
           node = this._first;
           results = [];
           while (node != null) {
-            results.push((ref = node, node = node.next, ref.value));
+            results.push((ref2 = node, node = node.next, ref2.value));
           }
           return results;
         }
@@ -136,14 +136,14 @@ var require_light = __commonJS({
           return void 0;
         }
         debug() {
-          var node, ref, ref1, ref2, results;
+          var node, ref2, ref1, ref22, results;
           node = this._first;
           results = [];
           while (node != null) {
-            results.push((ref = node, node = node.next, {
-              value: ref.value,
-              prev: (ref1 = ref.prev) != null ? ref1.value : void 0,
-              next: (ref2 = ref.next) != null ? ref2.value : void 0
+            results.push((ref2 = node, node = node.next, {
+              value: ref2.value,
+              prev: (ref1 = ref2.prev) != null ? ref1.value : void 0,
+              next: (ref22 = ref2.next) != null ? ref22.value : void 0
             }));
           }
           return results;
@@ -244,9 +244,9 @@ var require_light = __commonJS({
           this.Events = new Events$1(this);
           this._length = 0;
           this._lists = (function() {
-            var j, ref, results;
+            var j, ref2, results;
             results = [];
-            for (i = j = 1, ref = num_priorities; 1 <= ref ? j <= ref : j >= ref; i = 1 <= ref ? ++j : --j) {
+            for (i = j = 1, ref2 = num_priorities; 1 <= ref2 ? j <= ref2 : j >= ref2; i = 1 <= ref2 ? ++j : --j) {
               results.push(new DLList$1((() => {
                 return this.incr();
               }), (() => {
@@ -492,8 +492,8 @@ var require_light = __commonJS({
           });
         }
         computePenalty() {
-          var ref;
-          return (ref = this.storeOptions.penalty) != null ? ref : 15 * this.storeOptions.minTime || 5e3;
+          var ref2;
+          return (ref2 = this.storeOptions.penalty) != null ? ref2 : 15 * this.storeOptions.minTime || 5e3;
         }
         async __updateSettings__(options) {
           await this.yieldLoop();
@@ -654,20 +654,20 @@ var require_light = __commonJS({
           return current != null;
         }
         jobStatus(id) {
-          var ref;
-          return (ref = this.status[this._jobs[id]]) != null ? ref : null;
+          var ref2;
+          return (ref2 = this.status[this._jobs[id]]) != null ? ref2 : null;
         }
         statusJobs(status) {
-          var k, pos, ref, results, v;
+          var k, pos, ref2, results, v;
           if (status != null) {
             pos = this.status.indexOf(status);
             if (pos < 0) {
               throw new BottleneckError$3(`status must be one of ${this.status.join(", ")}`);
             }
-            ref = this._jobs;
+            ref2 = this._jobs;
             results = [];
-            for (k in ref) {
-              v = ref[k];
+            for (k in ref2) {
+              v = ref2[k];
               if (v === pos) {
                 results.push(k);
               }
@@ -771,8 +771,8 @@ var require_light = __commonJS({
             }
           }
           key(key = "") {
-            var ref;
-            return (ref = this.instances[key]) != null ? ref : (() => {
+            var ref2;
+            return (ref2 = this.instances[key]) != null ? ref2 : (() => {
               var limiter;
               limiter = this.instances[key] = new this.Bottleneck(Object.assign(this.limiterOptions, {
                 id: `${this.id}-${key}`,
@@ -796,11 +796,11 @@ var require_light = __commonJS({
             return instance != null || deleted > 0;
           }
           limiters() {
-            var k, ref, results, v;
-            ref = this.instances;
+            var k, ref2, results, v;
+            ref2 = this.instances;
             results = [];
-            for (k in ref) {
-              v = ref[k];
+            for (k in ref2) {
+              v = ref2[k];
               results.push({
                 key: k,
                 limiter: v
@@ -834,12 +834,12 @@ var require_light = __commonJS({
             var base;
             clearInterval(this.interval);
             return typeof (base = this.interval = setInterval(async () => {
-              var e, k, ref, results, time, v;
+              var e, k, ref2, results, time, v;
               time = Date.now();
-              ref = this.instances;
+              ref2 = this.instances;
               results = [];
-              for (k in ref) {
-                v = ref[k];
+              for (k in ref2) {
+                v = ref2[k];
                 try {
                   if (await v._store.__groupCheck__(time)) {
                     results.push(this.deleteKey(k));
@@ -862,9 +862,9 @@ var require_light = __commonJS({
             }
           }
           disconnect(flush = true) {
-            var ref;
+            var ref2;
             if (!this.sharedConnection) {
-              return (ref = this.connection) != null ? ref.disconnect(flush) : void 0;
+              return (ref2 = this.connection) != null ? ref2.disconnect(flush) : void 0;
             }
           }
         }
@@ -965,12 +965,12 @@ var require_light = __commonJS({
               }
             }).call(this);
             this._queues.on("leftzero", () => {
-              var ref;
-              return (ref = this._store.heartbeat) != null ? typeof ref.ref === "function" ? ref.ref() : void 0 : void 0;
+              var ref2;
+              return (ref2 = this._store.heartbeat) != null ? typeof ref2.ref === "function" ? ref2.ref() : void 0 : void 0;
             });
             this._queues.on("zero", () => {
-              var ref;
-              return (ref = this._store.heartbeat) != null ? typeof ref.unref === "function" ? ref.unref() : void 0 : void 0;
+              var ref2;
+              return (ref2 = this._store.heartbeat) != null ? typeof ref2.unref === "function" ? ref2.unref() : void 0 : void 0;
             });
           }
           _validateOptions(options, invalid) {
@@ -1150,10 +1150,10 @@ var require_light = __commonJS({
               return this.Promise.resolve(null);
             }, this._registerLock.schedule(() => {
               return this._submitLock.schedule(() => {
-                var k, ref, v;
-                ref = this._scheduled;
-                for (k in ref) {
-                  v = ref[k];
+                var k, ref2, v;
+                ref2 = this._scheduled;
+                for (k in ref2) {
+                  v = ref2[k];
                   if (this.jobStatus(v.job.options.id) === "RUNNING") {
                     clearTimeout(v.timeout);
                     clearTimeout(v.expiration);
@@ -1220,9 +1220,9 @@ var require_light = __commonJS({
             }
           }
           submit(...args) {
-            var cb, fn, job, options, ref, ref1, task;
+            var cb, fn, job, options, ref2, ref1, task;
             if (typeof args[0] === "function") {
-              ref = args, [fn, ...args] = ref, [cb] = splice.call(args, -1);
+              ref2 = args, [fn, ...args] = ref2, [cb] = splice.call(args, -1);
               options = parser$5.load({}, this.jobDefaults);
             } else {
               ref1 = args, [options, fn, ...args] = ref1, [cb] = splice.call(args, -1);
@@ -1789,9 +1789,9 @@ var require_anchors = __commonJS({
          */
         setAnchors: () => {
           for (const source of aliasObjects) {
-            const ref = sourceObjects.get(source);
-            if (typeof ref === "object" && ref.anchor && (identity.isScalar(ref.node) || identity.isCollection(ref.node))) {
-              ref.node.anchor = ref.anchor;
+            const ref2 = sourceObjects.get(source);
+            if (typeof ref2 === "object" && ref2.anchor && (identity.isScalar(ref2.node) || identity.isCollection(ref2.node))) {
+              ref2.node.anchor = ref2.anchor;
             } else {
               const error = new Error("Failed to resolve repeated object (this should not happen)");
               error.source = source;
@@ -2108,15 +2108,15 @@ var require_createNode = __commonJS({
         value = value.valueOf();
       }
       const { aliasDuplicateObjects, onAnchor, onTagObj, schema, sourceObjects } = ctx;
-      let ref = void 0;
+      let ref2 = void 0;
       if (aliasDuplicateObjects && value && typeof value === "object") {
-        ref = sourceObjects.get(value);
-        if (ref) {
-          ref.anchor ?? (ref.anchor = onAnchor(value));
-          return new Alias.Alias(ref.anchor);
+        ref2 = sourceObjects.get(value);
+        if (ref2) {
+          ref2.anchor ?? (ref2.anchor = onAnchor(value));
+          return new Alias.Alias(ref2.anchor);
         } else {
-          ref = { anchor: null, node: null };
-          sourceObjects.set(value, ref);
+          ref2 = { anchor: null, node: null };
+          sourceObjects.set(value, ref2);
         }
       }
       if (tagName?.startsWith("!!"))
@@ -2128,8 +2128,8 @@ var require_createNode = __commonJS({
         }
         if (!value || typeof value !== "object") {
           const node2 = new Scalar.Scalar(value);
-          if (ref)
-            ref.node = node2;
+          if (ref2)
+            ref2.node = node2;
           return node2;
         }
         tagObj = value instanceof Map ? schema[identity.MAP] : Symbol.iterator in Object(value) ? schema[identity.SEQ] : schema[identity.MAP];
@@ -2143,8 +2143,8 @@ var require_createNode = __commonJS({
         node.tag = tagName;
       else if (!tagObj.default)
         node.tag = tagObj.tag;
-      if (ref)
-        ref.node = node;
+      if (ref2)
+        ref2.node = node;
       return node;
     }
     exports2.createNode = createNode;
@@ -2298,13 +2298,13 @@ var require_Collection = __commonJS({
 var require_stringifyComment = __commonJS({
   "node_modules/yaml/dist/stringify/stringifyComment.js"(exports2) {
     "use strict";
-    var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
+    var stringifyComment = (str2) => str2.replace(/^(?!$)(?: $)?/gm, "#");
     function indentComment(comment, indent) {
       if (/^\n+$/.test(comment))
         return comment.substring(1);
       return indent ? comment.replace(/^(?! *$)/gm, indent) : comment;
     }
-    var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
+    var lineComment = (str2, indent, comment) => str2.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str2.endsWith(" ") ? "" : " ") + comment;
     exports2.indentComment = indentComment;
     exports2.lineComment = lineComment;
     exports2.stringifyComment = stringifyComment;
@@ -2458,16 +2458,16 @@ var require_stringifyString = __commonJS({
       lineWidth: ctx.options.lineWidth,
       minContentWidth: ctx.options.minContentWidth
     });
-    var containsDocumentMarker = (str) => /^(%|---|\.\.\.)/m.test(str);
-    function lineLengthOverLimit(str, lineWidth, indentLength) {
+    var containsDocumentMarker = (str2) => /^(%|---|\.\.\.)/m.test(str2);
+    function lineLengthOverLimit(str2, lineWidth, indentLength) {
       if (!lineWidth || lineWidth < 0)
         return false;
       const limit = lineWidth - indentLength;
-      const strLen = str.length;
+      const strLen = str2.length;
       if (strLen <= limit)
         return false;
       for (let i = 0, start = 0; i < strLen; ++i) {
-        if (str[i] === "\n") {
+        if (str2[i] === "\n") {
           if (i - start > limit)
             return true;
           start = i + 1;
@@ -2484,11 +2484,11 @@ var require_stringifyString = __commonJS({
       const { implicitKey } = ctx;
       const minMultiLineLength = ctx.options.doubleQuotedMinMultiLineLength;
       const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
-      let str = "";
+      let str2 = "";
       let start = 0;
       for (let i = 0, ch = json[i]; ch; ch = json[++i]) {
         if (ch === " " && json[i + 1] === "\\" && json[i + 2] === "n") {
-          str += json.slice(start, i) + "\\ ";
+          str2 += json.slice(start, i) + "\\ ";
           i += 1;
           start = i;
           ch = "\\";
@@ -2497,38 +2497,38 @@ var require_stringifyString = __commonJS({
           switch (json[i + 1]) {
             case "u":
               {
-                str += json.slice(start, i);
+                str2 += json.slice(start, i);
                 const code = json.substr(i + 2, 4);
                 switch (code) {
                   case "0000":
-                    str += "\\0";
+                    str2 += "\\0";
                     break;
                   case "0007":
-                    str += "\\a";
+                    str2 += "\\a";
                     break;
                   case "000b":
-                    str += "\\v";
+                    str2 += "\\v";
                     break;
                   case "001b":
-                    str += "\\e";
+                    str2 += "\\e";
                     break;
                   case "0085":
-                    str += "\\N";
+                    str2 += "\\N";
                     break;
                   case "00a0":
-                    str += "\\_";
+                    str2 += "\\_";
                     break;
                   case "2028":
-                    str += "\\L";
+                    str2 += "\\L";
                     break;
                   case "2029":
-                    str += "\\P";
+                    str2 += "\\P";
                     break;
                   default:
                     if (code.substr(0, 2) === "00")
-                      str += "\\x" + code.substr(2);
+                      str2 += "\\x" + code.substr(2);
                     else
-                      str += json.substr(i, 6);
+                      str2 += json.substr(i, 6);
                 }
                 i += 5;
                 start = i + 1;
@@ -2538,14 +2538,14 @@ var require_stringifyString = __commonJS({
               if (implicitKey || json[i + 2] === '"' || json.length < minMultiLineLength) {
                 i += 1;
               } else {
-                str += json.slice(start, i) + "\n\n";
+                str2 += json.slice(start, i) + "\n\n";
                 while (json[i + 2] === "\\" && json[i + 3] === "n" && json[i + 4] !== '"') {
-                  str += "\n";
+                  str2 += "\n";
                   i += 2;
                 }
-                str += indent;
+                str2 += indent;
                 if (json[i + 2] === " ")
-                  str += "\\";
+                  str2 += "\\";
                 i += 1;
                 start = i + 1;
               }
@@ -2554,8 +2554,8 @@ var require_stringifyString = __commonJS({
               i += 1;
           }
       }
-      str = start ? str + json.slice(start) : json;
-      return implicitKey ? str : foldFlowLines.foldFlowLines(str, indent, foldFlowLines.FOLD_QUOTED, getFoldOptions(ctx, false));
+      str2 = start ? str2 + json.slice(start) : json;
+      return implicitKey ? str2 : foldFlowLines.foldFlowLines(str2, indent, foldFlowLines.FOLD_QUOTED, getFoldOptions(ctx, false));
     }
     function singleQuotedString(value, ctx) {
       if (ctx.options.singleQuote === false || ctx.implicitKey && value.includes("\n") || /[ \t]\n|\n[ \t]/.test(value))
@@ -2683,15 +2683,15 @@ ${indent}${start}${value}${end}`;
           return quotedString(value, ctx);
         }
       }
-      const str = value.replace(/\n+/g, `$&
+      const str2 = value.replace(/\n+/g, `$&
 ${indent}`);
       if (actualString) {
-        const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str);
+        const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str2);
         const { compat, tags } = ctx.doc.schema;
         if (tags.some(test) || compat?.some(test))
           return quotedString(value, ctx);
       }
-      return implicitKey ? str : foldFlowLines.foldFlowLines(str, indent, foldFlowLines.FOLD_FLOW, getFoldOptions(ctx, false));
+      return implicitKey ? str2 : foldFlowLines.foldFlowLines(str2, indent, foldFlowLines.FOLD_FLOW, getFoldOptions(ctx, false));
     }
     function stringifyString(item, ctx, onComment, onChompKeep) {
       const { implicitKey, inFlow } = ctx;
@@ -2843,11 +2843,11 @@ var require_stringify = __commonJS({
       const props = stringifyProps(node, tagObj, ctx);
       if (props.length > 0)
         ctx.indentAtStart = (ctx.indentAtStart ?? 0) + props.length + 1;
-      const str = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : identity.isScalar(node) ? stringifyString.stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
+      const str2 = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : identity.isScalar(node) ? stringifyString.stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
       if (!props)
-        return str;
-      return identity.isScalar(node) || str[0] === "{" || str[0] === "[" ? `${props} ${str}` : `${props}
-${ctx.indent}${str}`;
+        return str2;
+      return identity.isScalar(node) || str2[0] === "{" || str2[0] === "[" ? `${props} ${str2}` : `${props}
+${ctx.indent}${str2}`;
     }
     exports2.createStringifyContext = createStringifyContext;
     exports2.stringify = stringify;
@@ -2882,8 +2882,8 @@ var require_stringifyPair = __commonJS({
       });
       let keyCommentDone = false;
       let chompKeep = false;
-      let str = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
-      if (!explicitKey && !ctx.inFlow && str.length > 1024) {
+      let str2 = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
+      if (!explicitKey && !ctx.inFlow && str2.length > 1024) {
         if (simpleKeys)
           throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
         explicitKey = true;
@@ -2892,27 +2892,27 @@ var require_stringifyPair = __commonJS({
         if (allNullValues || value == null) {
           if (keyCommentDone && onComment)
             onComment();
-          return str === "" ? "?" : explicitKey ? `? ${str}` : str;
+          return str2 === "" ? "?" : explicitKey ? `? ${str2}` : str2;
         }
       } else if (allNullValues && !simpleKeys || value == null && explicitKey) {
-        str = `? ${str}`;
+        str2 = `? ${str2}`;
         if (keyComment && !keyCommentDone) {
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
         } else if (chompKeep && onChompKeep)
           onChompKeep();
-        return str;
+        return str2;
       }
       if (keyCommentDone)
         keyComment = null;
       if (explicitKey) {
         if (keyComment)
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
-        str = `? ${str}
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
+        str2 = `? ${str2}
 ${indent}:`;
       } else {
-        str = `${str}:`;
+        str2 = `${str2}:`;
         if (keyComment)
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
       }
       let vsb, vcb, valueComment;
       if (identity.isNode(value)) {
@@ -2928,7 +2928,7 @@ ${indent}:`;
       }
       ctx.implicitKey = false;
       if (!explicitKey && !keyComment && identity.isScalar(value))
-        ctx.indentAtStart = str.length + 1;
+        ctx.indentAtStart = str2.length + 1;
       chompKeep = false;
       if (!indentSeq && indentStep.length >= 2 && !ctx.inFlow && !explicitKey && identity.isSeq(value) && !value.flow && !value.tag && !value.anchor) {
         ctx.indent = ctx.indent.substring(2);
@@ -2972,16 +2972,16 @@ ${ctx.indent}`;
       } else if (valueStr === "" || valueStr[0] === "\n") {
         ws = "";
       }
-      str += ws + valueStr;
+      str2 += ws + valueStr;
       if (ctx.inFlow) {
         if (valueCommentDone && onComment)
           onComment();
       } else if (valueComment && !valueCommentDone) {
-        str += stringifyComment.lineComment(str, ctx.indent, commentString(valueComment));
+        str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(valueComment));
       } else if (chompKeep && onChompKeep) {
         onChompKeep();
       }
-      return str;
+      return str2;
     }
     exports2.stringifyPair = stringifyPair;
   }
@@ -3208,31 +3208,31 @@ var require_stringifyCollection = __commonJS({
           }
         }
         chompKeep = false;
-        let str2 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+        let str3 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
         if (comment2)
-          str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment2));
+          str3 += stringifyComment.lineComment(str3, itemIndent, commentString(comment2));
         if (chompKeep && comment2)
           chompKeep = false;
-        lines.push(blockItemPrefix + str2);
+        lines.push(blockItemPrefix + str3);
       }
-      let str;
+      let str2;
       if (lines.length === 0) {
-        str = flowChars.start + flowChars.end;
+        str2 = flowChars.start + flowChars.end;
       } else {
-        str = lines[0];
+        str2 = lines[0];
         for (let i = 1; i < lines.length; ++i) {
           const line = lines[i];
-          str += line ? `
+          str2 += line ? `
 ${indent}${line}` : "\n";
         }
       }
       if (comment) {
-        str += "\n" + stringifyComment.indentComment(commentString(comment), indent);
+        str2 += "\n" + stringifyComment.indentComment(commentString(comment), indent);
         if (onComment)
           onComment();
       } else if (chompKeep && onChompKeep)
         onChompKeep();
-      return str;
+      return str2;
     }
     function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
       const { indent, indentStep, flowCollectionPadding: fcPadding, options: { commentString } } = ctx;
@@ -3275,21 +3275,21 @@ ${indent}${line}` : "\n";
         }
         if (comment)
           reqNewline = true;
-        let str = stringify.stringify(item, itemCtx, () => comment = null);
-        reqNewline || (reqNewline = lines.length > linesAtValue || str.includes("\n"));
+        let str2 = stringify.stringify(item, itemCtx, () => comment = null);
+        reqNewline || (reqNewline = lines.length > linesAtValue || str2.includes("\n"));
         if (i < items.length - 1) {
-          str += ",";
+          str2 += ",";
         } else if (ctx.options.trailingComma) {
           if (ctx.options.lineWidth > 0) {
-            reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+            reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str2.length + 2) > ctx.options.lineWidth);
           }
           if (reqNewline) {
-            str += ",";
+            str2 += ",";
           }
         }
         if (comment)
-          str += stringifyComment.lineComment(str, itemIndent, commentString(comment));
-        lines.push(str);
+          str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment));
+        lines.push(str2);
         linesAtValue = lines.length;
       }
       const { start, end } = flowChars;
@@ -3301,11 +3301,11 @@ ${indent}${line}` : "\n";
           reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
         }
         if (reqNewline) {
-          let str = start;
+          let str2 = start;
           for (const line of lines)
-            str += line ? `
+            str2 += line ? `
 ${indentStep}${indent}${line}` : "\n";
-          return `${str}
+          return `${str2}
 ${indent}${end}`;
         } else {
           return `${start}${fcPadding}${lines.join(" ")}${fcPadding}${end}`;
@@ -3637,7 +3637,7 @@ var require_string = __commonJS({
       identify: (value) => typeof value === "string",
       default: true,
       tag: "tag:yaml.org,2002:str",
-      resolve: (str) => str,
+      resolve: (str2) => str2,
       stringify(item, ctx, onComment, onChompKeep) {
         ctx = Object.assign({ actualString: true }, ctx);
         return stringifyString.stringifyString(item, ctx, onComment, onChompKeep);
@@ -3675,7 +3675,7 @@ var require_bool = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:bool",
       test: /^(?:[Tt]rue|TRUE|[Ff]alse|FALSE)$/,
-      resolve: (str) => new Scalar.Scalar(str[0] === "t" || str[0] === "T"),
+      resolve: (str2) => new Scalar.Scalar(str2[0] === "t" || str2[0] === "T"),
       stringify({ source, value }, ctx) {
         if (source && boolTag.test.test(source)) {
           const sv = source[0] === "t" || source[0] === "T";
@@ -3696,9 +3696,9 @@ var require_stringifyNumber = __commonJS({
     function stringifyNumber({ format, minFractionDigits, tag, value }) {
       if (typeof value === "bigint")
         return String(value);
-      const num = typeof value === "number" ? value : Number(value);
-      if (!isFinite(num))
-        return isNaN(num) ? ".nan" : num < 0 ? "-.inf" : ".inf";
+      const num2 = typeof value === "number" ? value : Number(value);
+      if (!isFinite(num2))
+        return isNaN(num2) ? ".nan" : num2 < 0 ? "-.inf" : ".inf";
       let n = Object.is(value, -0) ? "-0" : JSON.stringify(value);
       if (!format && minFractionDigits && (!tag || tag === "tag:yaml.org,2002:float") && /^-?\d/.test(n) && !n.includes("e")) {
         let i = n.indexOf(".");
@@ -3727,7 +3727,7 @@ var require_float = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-      resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+      resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
       stringify: stringifyNumber.stringifyNumber
     };
     var floatExp = {
@@ -3736,10 +3736,10 @@ var require_float = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "EXP",
       test: /^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$/,
-      resolve: (str) => parseFloat(str),
+      resolve: (str2) => parseFloat(str2),
       stringify(node) {
-        const num = Number(node.value);
-        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+        const num2 = Number(node.value);
+        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node);
       }
     };
     var float = {
@@ -3747,11 +3747,11 @@ var require_float = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)$/,
-      resolve(str) {
-        const node = new Scalar.Scalar(parseFloat(str));
-        const dot = str.indexOf(".");
-        if (dot !== -1 && str[str.length - 1] === "0")
-          node.minFractionDigits = str.length - dot - 1;
+      resolve(str2) {
+        const node = new Scalar.Scalar(parseFloat(str2));
+        const dot = str2.indexOf(".");
+        if (dot !== -1 && str2[str2.length - 1] === "0")
+          node.minFractionDigits = str2.length - dot - 1;
         return node;
       },
       stringify: stringifyNumber.stringifyNumber
@@ -3768,7 +3768,7 @@ var require_int = __commonJS({
     "use strict";
     var stringifyNumber = require_stringifyNumber();
     var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
-    var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
+    var intResolve = (str2, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2.substring(offset), radix);
     function intStringify(node, radix, prefix) {
       const { value } = node;
       if (intIdentify(value) && value >= 0)
@@ -3781,7 +3781,7 @@ var require_int = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "OCT",
       test: /^0o[0-7]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 8, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 8, opt),
       stringify: (node) => intStringify(node, 8, "0o")
     };
     var int = {
@@ -3789,7 +3789,7 @@ var require_int = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:int",
       test: /^[-+]?[0-9]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 0, 10, opt),
       stringify: stringifyNumber.stringifyNumber
     };
     var intHex = {
@@ -3798,7 +3798,7 @@ var require_int = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "HEX",
       test: /^0x[0-9a-fA-F]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 16, opt),
       stringify: (node) => intStringify(node, 16, "0x")
     };
     exports2.int = int;
@@ -3851,7 +3851,7 @@ var require_schema2 = __commonJS({
         identify: (value) => typeof value === "string",
         default: true,
         tag: "tag:yaml.org,2002:str",
-        resolve: (str) => str,
+        resolve: (str2) => str2,
         stringify: stringifyJSON
       },
       {
@@ -3868,7 +3868,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:bool",
         test: /^true$|^false$/,
-        resolve: (str) => str === "true",
+        resolve: (str2) => str2 === "true",
         stringify: stringifyJSON
       },
       {
@@ -3876,7 +3876,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:int",
         test: /^-?(?:0|[1-9][0-9]*)$/,
-        resolve: (str, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str, 10),
+        resolve: (str2, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2, 10),
         stringify: ({ value }) => intIdentify(value) ? value.toString() : JSON.stringify(value)
       },
       {
@@ -3884,7 +3884,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:float",
         test: /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?$/,
-        resolve: (str) => parseFloat(str),
+        resolve: (str2) => parseFloat(str2),
         stringify: stringifyJSON
       }
     ];
@@ -3892,9 +3892,9 @@ var require_schema2 = __commonJS({
       default: true,
       tag: "",
       test: /^/,
-      resolve(str, onError) {
-        onError(`Unresolved plain scalar ${JSON.stringify(str)}`);
-        return str;
+      resolve(str2, onError) {
+        onError(`Unresolved plain scalar ${JSON.stringify(str2)}`);
+        return str2;
       }
     };
     var schema = [map.map, seq.seq].concat(jsonScalars, jsonError);
@@ -3926,10 +3926,10 @@ var require_binary = __commonJS({
         if (typeof node_buffer.Buffer === "function") {
           return node_buffer.Buffer.from(src, "base64");
         } else if (typeof atob === "function") {
-          const str = atob(src.replace(/[\n\r]/g, ""));
-          const buffer = new Uint8Array(str.length);
-          for (let i = 0; i < str.length; ++i)
-            buffer[i] = str.charCodeAt(i);
+          const str2 = atob(src.replace(/[\n\r]/g, ""));
+          const buffer = new Uint8Array(str2.length);
+          for (let i = 0; i < str2.length; ++i)
+            buffer[i] = str2.charCodeAt(i);
           return buffer;
         } else {
           onError("This environment does not support reading binary tags; either Buffer or atob is required");
@@ -3940,28 +3940,28 @@ var require_binary = __commonJS({
         if (!value)
           return "";
         const buf = value;
-        let str;
+        let str2;
         if (typeof node_buffer.Buffer === "function") {
-          str = buf instanceof node_buffer.Buffer ? buf.toString("base64") : node_buffer.Buffer.from(buf.buffer).toString("base64");
+          str2 = buf instanceof node_buffer.Buffer ? buf.toString("base64") : node_buffer.Buffer.from(buf.buffer).toString("base64");
         } else if (typeof btoa === "function") {
           let s = "";
           for (let i = 0; i < buf.length; ++i)
             s += String.fromCharCode(buf[i]);
-          str = btoa(s);
+          str2 = btoa(s);
         } else {
           throw new Error("This environment does not support writing binary tags; either Buffer or btoa is required");
         }
         type ?? (type = Scalar.Scalar.BLOCK_LITERAL);
         if (type !== Scalar.Scalar.QUOTE_DOUBLE) {
           const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
-          const n = Math.ceil(str.length / lineWidth);
+          const n = Math.ceil(str2.length / lineWidth);
           const lines = new Array(n);
           for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
-            lines[i] = str.substr(o, lineWidth);
+            lines[i] = str2.substr(o, lineWidth);
           }
-          str = lines.join(type === Scalar.Scalar.BLOCK_LITERAL ? "\n" : " ");
+          str2 = lines.join(type === Scalar.Scalar.BLOCK_LITERAL ? "\n" : " ");
         }
-        return stringifyString.stringifyString({ comment, type, value: str }, ctx, onComment, onChompKeep);
+        return stringifyString.stringifyString({ comment, type, value: str2 }, ctx, onComment, onChompKeep);
       }
     };
     exports2.binary = binary;
@@ -4167,7 +4167,7 @@ var require_float2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-      resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+      resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
       stringify: stringifyNumber.stringifyNumber
     };
     var floatExp = {
@@ -4176,10 +4176,10 @@ var require_float2 = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "EXP",
       test: /^[-+]?(?:[0-9][0-9_]*)?(?:\.[0-9_]*)?[eE][-+]?[0-9]+$/,
-      resolve: (str) => parseFloat(str.replace(/_/g, "")),
+      resolve: (str2) => parseFloat(str2.replace(/_/g, "")),
       stringify(node) {
-        const num = Number(node.value);
-        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+        const num2 = Number(node.value);
+        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node);
       }
     };
     var float = {
@@ -4187,11 +4187,11 @@ var require_float2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*$/,
-      resolve(str) {
-        const node = new Scalar.Scalar(parseFloat(str.replace(/_/g, "")));
-        const dot = str.indexOf(".");
+      resolve(str2) {
+        const node = new Scalar.Scalar(parseFloat(str2.replace(/_/g, "")));
+        const dot = str2.indexOf(".");
         if (dot !== -1) {
-          const f = str.substring(dot + 1).replace(/_/g, "");
+          const f = str2.substring(dot + 1).replace(/_/g, "");
           if (f[f.length - 1] === "0")
             node.minFractionDigits = f.length;
         }
@@ -4211,34 +4211,34 @@ var require_int2 = __commonJS({
     "use strict";
     var stringifyNumber = require_stringifyNumber();
     var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
-    function intResolve(str, offset, radix, { intAsBigInt }) {
-      const sign2 = str[0];
+    function intResolve(str2, offset, radix, { intAsBigInt }) {
+      const sign2 = str2[0];
       if (sign2 === "-" || sign2 === "+")
         offset += 1;
-      str = str.substring(offset).replace(/_/g, "");
+      str2 = str2.substring(offset).replace(/_/g, "");
       if (intAsBigInt) {
         switch (radix) {
           case 2:
-            str = `0b${str}`;
+            str2 = `0b${str2}`;
             break;
           case 8:
-            str = `0o${str}`;
+            str2 = `0o${str2}`;
             break;
           case 16:
-            str = `0x${str}`;
+            str2 = `0x${str2}`;
             break;
         }
-        const n2 = BigInt(str);
+        const n2 = BigInt(str2);
         return sign2 === "-" ? BigInt(-1) * n2 : n2;
       }
-      const n = parseInt(str, radix);
+      const n = parseInt(str2, radix);
       return sign2 === "-" ? -1 * n : n;
     }
     function intStringify(node, radix, prefix) {
       const { value } = node;
       if (intIdentify(value)) {
-        const str = value.toString(radix);
-        return value < 0 ? "-" + prefix + str.substr(1) : prefix + str;
+        const str2 = value.toString(radix);
+        return value < 0 ? "-" + prefix + str2.substr(1) : prefix + str2;
       }
       return stringifyNumber.stringifyNumber(node);
     }
@@ -4248,7 +4248,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "BIN",
       test: /^[-+]?0b[0-1_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 2, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 2, opt),
       stringify: (node) => intStringify(node, 2, "0b")
     };
     var intOct = {
@@ -4257,7 +4257,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "OCT",
       test: /^[-+]?0[0-7_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 1, 8, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 1, 8, opt),
       stringify: (node) => intStringify(node, 8, "0")
     };
     var int = {
@@ -4265,7 +4265,7 @@ var require_int2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:int",
       test: /^[-+]?[0-9][0-9_]*$/,
-      resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 0, 10, opt),
       stringify: stringifyNumber.stringifyNumber
     };
     var intHex = {
@@ -4274,7 +4274,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "HEX",
       test: /^[-+]?0x[0-9a-fA-F_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 16, opt),
       stringify: (node) => intStringify(node, 16, "0x")
     };
     exports2.int = int;
@@ -4378,26 +4378,26 @@ var require_timestamp = __commonJS({
   "node_modules/yaml/dist/schema/yaml-1.1/timestamp.js"(exports2) {
     "use strict";
     var stringifyNumber = require_stringifyNumber();
-    function parseSexagesimal(str, asBigInt) {
-      const sign2 = str[0];
-      const parts = sign2 === "-" || sign2 === "+" ? str.substring(1) : str;
-      const num = (n) => asBigInt ? BigInt(n) : Number(n);
-      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num(60) + num(p), num(0));
-      return sign2 === "-" ? num(-1) * res : res;
+    function parseSexagesimal(str2, asBigInt) {
+      const sign2 = str2[0];
+      const parts = sign2 === "-" || sign2 === "+" ? str2.substring(1) : str2;
+      const num2 = (n) => asBigInt ? BigInt(n) : Number(n);
+      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num2(60) + num2(p), num2(0));
+      return sign2 === "-" ? num2(-1) * res : res;
     }
     function stringifySexagesimal(node) {
       let { value } = node;
-      let num = (n) => n;
+      let num2 = (n) => n;
       if (typeof value === "bigint")
-        num = (n) => BigInt(n);
+        num2 = (n) => BigInt(n);
       else if (isNaN(value) || !isFinite(value))
         return stringifyNumber.stringifyNumber(node);
       let sign2 = "";
       if (value < 0) {
         sign2 = "-";
-        value *= num(-1);
+        value *= num2(-1);
       }
-      const _60 = num(60);
+      const _60 = num2(60);
       const parts = [value % _60];
       if (value < 60) {
         parts.unshift(0);
@@ -4417,7 +4417,7 @@ var require_timestamp = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "TIME",
       test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+$/,
-      resolve: (str, _onError, { intAsBigInt }) => parseSexagesimal(str, intAsBigInt),
+      resolve: (str2, _onError, { intAsBigInt }) => parseSexagesimal(str2, intAsBigInt),
       stringify: stringifySexagesimal
     };
     var floatTime = {
@@ -4426,7 +4426,7 @@ var require_timestamp = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "TIME",
       test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$/,
-      resolve: (str) => parseSexagesimal(str, false),
+      resolve: (str2) => parseSexagesimal(str2, false),
       stringify: stringifySexagesimal
     };
     var timestamp = {
@@ -4437,8 +4437,8 @@ var require_timestamp = __commonJS({
       // may be omitted altogether, resulting in a date format. In such a case, the time part is
       // assumed to be 00:00:00Z (start of day, UTC).
       test: RegExp("^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})(?:(?:t|T|[ \\t]+)([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2}(\\.[0-9]+)?)(?:[ \\t]*(Z|[-+][012]?[0-9](?::[0-9]{2})?))?)?$"),
-      resolve(str) {
-        const match = str.match(timestamp.test);
+      resolve(str2) {
+        const match = str2.match(timestamp.test);
         if (!match)
           throw new Error("!!timestamp expects a date, starting with yyyy-mm-dd");
         const [, year, month, day, hour, minute, second] = match.map(Number);
@@ -8688,7 +8688,7 @@ __export(cli_exports, {
 module.exports = __toCommonJS(cli_exports);
 var import_node_child_process3 = require("node:child_process");
 var import_node_fs2 = require("node:fs");
-var nodePath8 = __toESM(require("node:path"));
+var nodePath9 = __toESM(require("node:path"));
 var import_node_url = require("node:url");
 var import_node_process = __toESM(require("node:process"));
 
@@ -8914,16 +8914,16 @@ function omit(object, keysToOmit) {
   }
   return result;
 }
-function encodeReserved(str) {
-  return str.split(/(%[0-9A-Fa-f]{2})/g).map(function(part) {
+function encodeReserved(str2) {
+  return str2.split(/(%[0-9A-Fa-f]{2})/g).map(function(part) {
     if (!/%[0-9A-Fa-f]/.test(part)) {
       part = encodeURI(part).replace(/%5B/g, "[").replace(/%5D/g, "]");
     }
     return part;
   }).join("");
 }
-function encodeUnreserved(str) {
-  return encodeURIComponent(str).replace(/[!'()*]/g, function(c) {
+function encodeUnreserved(str2) {
+  return encodeURIComponent(str2).replace(/[!'()*]/g, function(c) {
     return "%" + c.charCodeAt(0).toString(16).toUpperCase();
   });
 }
@@ -9198,9 +9198,9 @@ function parseParameters(header, type, index, len, stopChar) {
   }
   return { type, index, parameters };
 }
-function skipValue(str, index, len, stopChar) {
+function skipValue(str2, index, len, stopChar) {
   while (index < len) {
-    const code = str.charCodeAt(index);
+    const code = str2.charCodeAt(index);
     if (code === SEMI || code === stopChar)
       break;
     index++;
@@ -13795,11 +13795,11 @@ function isPkcs1(privateKey) {
 function isOpenSsh(privateKey) {
   return privateKey.includes("-----BEGIN OPENSSH PRIVATE KEY-----");
 }
-function string2ArrayBuffer(str) {
-  const buf = new ArrayBuffer(str.length);
+function string2ArrayBuffer(str2) {
+  const buf = new ArrayBuffer(str2.length);
   const bufView = new Uint8Array(buf);
-  for (let i = 0, strLen = str.length; i < strLen; i++) {
-    bufView[i] = str.charCodeAt(i);
+  for (let i = 0, strLen = str2.length; i < strLen; i++) {
+    bufView[i] = str2.charCodeAt(i);
   }
   return buf;
 }
@@ -16024,18 +16024,23 @@ var OctokitDriverClient = class {
     return {
       owner: data.owner?.login ?? target.owner,
       name: data.name ?? target.repo,
-      id: data.id ?? 0
+      id: data.id ?? 0,
+      ownerType: data.owner?.type ?? "unknown"
     };
   }
-  async getIssue(ref) {
+  async getAuthenticatedUser() {
+    const { data } = await this.octokit.rest.users.getAuthenticated({});
+    return { id: data.id ?? 0, login: data.login ?? "unknown" };
+  }
+  async getIssue(ref2) {
     try {
       const { data } = await this.octokit.rest.issues.get({
-        owner: ref.owner,
-        repo: ref.repo,
-        issue_number: ref.issueNumber
+        owner: ref2.owner,
+        repo: ref2.repo,
+        issue_number: ref2.issueNumber
       });
       return {
-        number: data.number ?? ref.issueNumber,
+        number: data.number ?? ref2.issueNumber,
         title: data.title ?? "",
         body: data.body ?? "",
         state: data.state === "closed" ? "closed" : "open",
@@ -16049,13 +16054,13 @@ var OctokitDriverClient = class {
       throw err;
     }
   }
-  async listComments(ref) {
+  async listComments(ref2) {
     const comments = [];
     for (let page = 1; page <= MAX_COMMENT_PAGES; page += 1) {
       const { data } = await this.octokit.rest.issues.listComments({
-        owner: ref.owner,
-        repo: ref.repo,
-        issue_number: ref.issueNumber,
+        owner: ref2.owner,
+        repo: ref2.repo,
+        issue_number: ref2.issueNumber,
         per_page: COMMENTS_PER_PAGE,
         page
       });
@@ -16075,38 +16080,39 @@ var OctokitDriverClient = class {
     comments.sort((a, b) => a.id - b.id);
     return comments;
   }
-  async addIssueComment(ref, body) {
+  async addIssueComment(ref2, body) {
     const { data } = await this.octokit.rest.issues.createComment({
-      owner: ref.owner,
-      repo: ref.repo,
-      issue_number: ref.issueNumber,
+      owner: ref2.owner,
+      repo: ref2.repo,
+      issue_number: ref2.issueNumber,
       body
     });
     return { id: data.id ?? 0 };
   }
-  async updateIssueComment(ref, commentId, body) {
+  async updateIssueComment(ref2, commentId, body) {
     await this.octokit.rest.issues.updateComment({
-      owner: ref.owner,
-      repo: ref.repo,
+      owner: ref2.owner,
+      repo: ref2.repo,
       comment_id: commentId,
       body
     });
   }
-  async addReaction(ref, commentId, content) {
+  async addReaction(ref2, commentId, content) {
     await this.octokit.rest.reactions.createForIssueComment({
-      owner: ref.owner,
-      repo: ref.repo,
+      owner: ref2.owner,
+      repo: ref2.repo,
       comment_id: commentId,
       content
     });
   }
-  async listOpenIssues(ref) {
+  async listIssues(ref2) {
+    const state = ref2.state ?? "open";
     const issues = [];
     for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
       const { data } = await this.octokit.rest.issues.list({
-        owner: ref.owner,
-        repo: ref.repo,
-        state: "open",
+        owner: ref2.owner,
+        repo: ref2.repo,
+        state,
         per_page: ISSUES_PER_PAGE,
         page
       });
@@ -16115,7 +16121,7 @@ var OctokitDriverClient = class {
           number: raw.number ?? 0,
           title: raw.title ?? "",
           body: raw.body ?? "",
-          // We queried state:'open'; normalize defensively anyway.
+          // Defensive normalization for whatever the API reports.
           state: raw.state === "closed" ? "closed" : "open",
           labels: labelNames(raw.labels),
           updatedAt: raw.updated_at ?? ""
@@ -16128,10 +16134,17 @@ var OctokitDriverClient = class {
     issues.sort((a, b) => a.number - b.number);
     return issues;
   }
-  async createIssue(ref, input) {
+  /**
+   * Backward-compatible alias for `listIssues({ state: 'open' })` — kept as
+   * the named discovery entry point used across the Driver.
+   */
+  async listOpenIssues(ref2) {
+    return this.listIssues({ ...ref2, state: "open" });
+  }
+  async createIssue(ref2, input) {
     const { data } = await this.octokit.rest.issues.create({
-      owner: ref.owner,
-      repo: ref.repo,
+      owner: ref2.owner,
+      repo: ref2.repo,
       title: input.title,
       body: input.body,
       labels: [...input.labels]
@@ -16166,6 +16179,8 @@ function defaultConfig() {
       maxAttempts: 3
     },
     trustedHumans: [],
+    gateLogins: ["github-actions[bot]"],
+    requireExplicitHumans: true,
     routing: {},
     agents: {},
     activation: { fallback: "manual" }
@@ -16234,6 +16249,14 @@ function parseAgents(raw, errors) {
     }
     const command = optionalString(value, "command", errors, `agents.${name}.command`);
     if (command !== void 0) agent.command = command;
+    const envPassthrough = value["env_passthrough"];
+    if (envPassthrough !== void 0) {
+      if (!Array.isArray(envPassthrough) || envPassthrough.some((k) => typeof k !== "string" || k.length === 0)) {
+        errors.push(`agents.${name}.env_passthrough: must be a list of non-empty strings`);
+      } else {
+        agent.envPassthrough = envPassthrough;
+      }
+    }
     agents[name] = agent;
   }
   return agents;
@@ -16273,6 +16296,22 @@ function parseConfig(raw) {
       errors.push("trusted_humans: must be a list of non-empty strings");
     } else {
       config.trustedHumans = trusted;
+    }
+  }
+  const gateLogins = raw["gate_logins"];
+  if (gateLogins !== void 0) {
+    if (!Array.isArray(gateLogins) || gateLogins.some((h) => typeof h !== "string" || h.length === 0)) {
+      errors.push("gate_logins: must be a list of non-empty strings");
+    } else {
+      config.gateLogins = gateLogins;
+    }
+  }
+  const requireExplicitHumans = raw["require_explicit_humans"];
+  if (requireExplicitHumans !== void 0) {
+    if (typeof requireExplicitHumans !== "boolean") {
+      errors.push("require_explicit_humans: must be a boolean");
+    } else {
+      config.requireExplicitHumans = requireExplicitHumans;
     }
   }
   const routing = section(raw, "routing", errors);
@@ -16345,8 +16384,15 @@ var import_promises2 = require("node:fs/promises");
 var nodePath2 = __toESM(require("node:path"));
 
 // src/workspace/protocol.ts
-var WORKSPACE_SCHEMA_VERSION = 1;
-var RECEIPT_STATUSES = ["dispatched", "syncing", "synced", "failed"];
+var WORKSPACE_SCHEMA_VERSION = 2;
+var RECEIPT_STATUSES = [
+  "dispatched",
+  "publishing",
+  "published",
+  "accepted",
+  "failed",
+  "obsolete"
+];
 var SUBMIT_KINDS = ["feature", "bug", "refactor", "docs", "chore"];
 var SUBMIT_MATURITY_HINTS = ["requirement", "direction", "solution", "execution_plan"];
 var HUMAN_ONLY_RESULTS = ["approve", "ready", "cancel", "human-close"];
@@ -16358,60 +16404,81 @@ var ROLE_STATE_WHITELIST = {
   consumer: ["working", "blocked", "failed"],
   executor: ["working", "blocked", "failed"]
 };
-var DISPATCH_DIR_PATTERN = /^gf_r(\d+)_i(\d+)_(consumer|executor)_(\d+|p\d+)$/;
+var DISPATCH_DIR_PATTERN = /^gf_r(\d+)_i(\d+)_w([0-9a-z]{12})_(consumer|executor)_(\d+|p\d+)$/;
 function assertPositiveInt(value, name) {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError(`${name} must be a positive integer, got ${String(value)}`);
   }
 }
-function makeConsumerDispatchId(repositoryId, issueNumber, round) {
+function makeConsumerDispatchId(repositoryId, issueNumber, epoch, round) {
   assertPositiveInt(repositoryId, "repositoryId");
   assertPositiveInt(issueNumber, "issueNumber");
   assertPositiveInt(round, "round");
+  if (!/^wf_[0-9a-z]{12}$/.test(epoch)) {
+    throw new RangeError(`epoch must be a workflow epoch string, got ${JSON.stringify(epoch)}`);
+  }
   const revision = String(round).padStart(2, "0");
-  return `gf_r${repositoryId}_i${issueNumber}_consumer_${revision}`;
+  return `gf_r${repositoryId}_i${issueNumber}_w${epoch.slice(3)}_consumer_${revision}`;
 }
-function makeExecutorDispatchId(repositoryId, issueNumber, planCommentId) {
+function makeExecutorDispatchId(repositoryId, issueNumber, epoch, planCommentId) {
   assertPositiveInt(repositoryId, "repositoryId");
   assertPositiveInt(issueNumber, "issueNumber");
   assertPositiveInt(planCommentId, "planCommentId");
-  return `gf_r${repositoryId}_i${issueNumber}_executor_p${planCommentId}`;
+  if (!/^wf_[0-9a-z]{12}$/.test(epoch)) {
+    throw new RangeError(`epoch must be a workflow epoch string, got ${JSON.stringify(epoch)}`);
+  }
+  return `gf_r${repositoryId}_i${issueNumber}_w${epoch.slice(3)}_executor_p${planCommentId}`;
 }
 function parseDispatchId(id) {
   const match = DISPATCH_DIR_PATTERN.exec(id);
   if (match === null) return null;
   const repositoryId = match[1];
   const issueNumber = match[2];
-  const role = match[3];
-  const revision = match[4];
-  if (repositoryId === void 0 || issueNumber === void 0 || role === void 0 || revision === void 0) {
+  const epochCode = match[3];
+  const role = match[4];
+  const revision = match[5];
+  if (repositoryId === void 0 || issueNumber === void 0 || epochCode === void 0 || role === void 0 || revision === void 0) {
     return null;
   }
   if (role !== "consumer" && role !== "executor") return null;
-  return { repositoryId: Number(repositoryId), issueNumber: Number(issueNumber), role, revision };
+  return {
+    repositoryId: Number(repositoryId),
+    issueNumber: Number(issueNumber),
+    epochCode,
+    role,
+    revision
+  };
 }
 
 // src/workspace/paths.ts
 var DEFAULT_WORKSPACE_DIR = ".gateflow";
 function resolveWorkspace(projectRoot, dirName = DEFAULT_WORKSPACE_DIR) {
   const root = nodePath2.resolve(projectRoot, dirName);
+  const driver = nodePath2.join(root, "driver");
   return {
     root,
     current: nodePath2.join(root, "current.json"),
     inbox: nodePath2.join(root, "inbox"),
     outbox: nodePath2.join(root, "outbox"),
-    receipts: nodePath2.join(root, "receipts"),
     submit: nodePath2.join(root, "submit"),
-    logs: nodePath2.join(root, "logs")
+    driver,
+    receipts: nodePath2.join(driver, "receipts"),
+    locks: nodePath2.join(driver, "locks"),
+    logs: nodePath2.join(driver, "logs")
   };
 }
 async function ensureWorkspace(paths) {
-  await (0, import_promises2.mkdir)(paths.root, { recursive: true });
-  await (0, import_promises2.mkdir)(paths.inbox, { recursive: true });
-  await (0, import_promises2.mkdir)(paths.outbox, { recursive: true });
-  await (0, import_promises2.mkdir)(paths.receipts, { recursive: true });
-  await (0, import_promises2.mkdir)(paths.submit, { recursive: true });
-  await (0, import_promises2.mkdir)(paths.logs, { recursive: true });
+  const isPosix = process.platform !== "win32";
+  const agentDirMode = isPosix ? 493 : void 0;
+  const driverDirMode = isPosix ? 448 : void 0;
+  await (0, import_promises2.mkdir)(paths.root, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
+  await (0, import_promises2.mkdir)(paths.inbox, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
+  await (0, import_promises2.mkdir)(paths.outbox, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
+  await (0, import_promises2.mkdir)(paths.submit, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
+  await (0, import_promises2.mkdir)(paths.driver, { recursive: true, ...driverDirMode !== void 0 ? { mode: driverDirMode } : {} });
+  await (0, import_promises2.mkdir)(paths.receipts, { recursive: true, ...driverDirMode !== void 0 ? { mode: driverDirMode } : {} });
+  await (0, import_promises2.mkdir)(paths.locks, { recursive: true, ...driverDirMode !== void 0 ? { mode: driverDirMode } : {} });
+  await (0, import_promises2.mkdir)(paths.logs, { recursive: true, ...driverDirMode !== void 0 ? { mode: driverDirMode } : {} });
 }
 function assertDispatchId(dispatchId) {
   if (typeof dispatchId !== "string" || !DISPATCH_DIR_PATTERN.test(dispatchId)) {
@@ -16437,6 +16504,22 @@ function inboxDispatchDir(paths, dispatchId) {
 function outboxDispatchDir(paths, dispatchId) {
   return safeDispatchDir(paths.outbox, dispatchId, "outbox dispatch dir");
 }
+var MAX_DISPATCH_DIRS = 200;
+async function listDispatchDirs(base) {
+  let entries;
+  try {
+    entries = await (0, import_promises2.readdir)(base, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const ids = [];
+  for (const entry of entries) {
+    if (entry.isDirectory() && DISPATCH_DIR_PATTERN.test(entry.name)) {
+      ids.push(entry.name);
+    }
+  }
+  return ids.sort().slice(0, MAX_DISPATCH_DIRS);
+}
 
 // src/workspace/watcher.ts
 var import_node_fs = require("node:fs");
@@ -16449,6 +16532,7 @@ var REASON_MAX = 1e3;
 var TITLE_MAX = 256;
 var REPOSITORY_MAX = 256;
 var ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+var SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -16492,6 +16576,12 @@ function checkPositiveInt(value, what, errors) {
   if (value === void 0) return;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
     errors.push(`${what}: must be a positive integer, got ${JSON.stringify(value)}`);
+  }
+}
+function checkNonNegativeInt(value, what, errors) {
+  if (value === void 0) return;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    errors.push(`${what}: must be a non-negative integer, got ${JSON.stringify(value)}`);
   }
 }
 function checkNull(value, what, errors) {
@@ -16539,6 +16629,7 @@ var DISPATCH_KEYS = [
   "repository",
   "repository_id",
   "issue_number",
+  "workflow_epoch",
   "role",
   "reason",
   "created_at",
@@ -16546,6 +16637,13 @@ var DISPATCH_KEYS = [
   "approval_comment_id",
   "input"
 ];
+var EPOCH_SHAPE = /^wf_[0-9a-z]{12}$/;
+function checkEpoch(value, what, errors) {
+  if (value === void 0) return;
+  if (typeof value !== "string" || !EPOCH_SHAPE.test(value)) {
+    errors.push(`${what}: must be a workflow epoch ("wf_" + 12 base36 chars), got ${JSON.stringify(value)}`);
+  }
+}
 function validateDispatch(raw) {
   const what = "dispatch";
   if (!isRecord2(raw)) return fail(what, "expected a JSON object");
@@ -16560,10 +16658,19 @@ function validateDispatch(raw) {
     if (parsed !== null && parsed.role !== role) {
       errors.push(`${what}.dispatch_id: role component "${parsed.role}" does not match role "${role}"`);
     }
+    if (parsed !== null && typeof raw["workflow_epoch"] === "string") {
+      const expected = `wf_${parsed.epochCode}`;
+      if (raw["workflow_epoch"] !== expected) {
+        errors.push(
+          `${what}.workflow_epoch "${String(raw["workflow_epoch"])}" does not match the dispatch_id epoch code (expected "${expected}")`
+        );
+      }
+    }
   }
   checkString(raw["repository"], `${what}.repository`, errors, { min: 1, max: REPOSITORY_MAX });
   checkPositiveInt(raw["repository_id"], `${what}.repository_id`, errors);
   checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
+  checkEpoch(raw["workflow_epoch"], `${what}.workflow_epoch`, errors);
   checkIsoDate(raw["created_at"], `${what}.created_at`, errors);
   if (role === "consumer") {
     if (raw["reason"] !== void 0 && raw["reason"] !== "planning" && raw["reason"] !== "feedback_applied") {
@@ -16604,6 +16711,67 @@ function validateDispatch(raw) {
         errors.push(`${inputWhat}.feedback: must be "FEEDBACK.md" or null, got ${JSON.stringify(input["feedback"])}`);
       }
     }
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: raw };
+}
+var CONTEXT_KEYS = [
+  "schema",
+  "dispatch_id",
+  "workflow_epoch",
+  "plan_comment_id",
+  "plan_sha256",
+  "feedback_count",
+  "input_snapshot_sha256"
+];
+var CONTEXT_REQUIRED = [
+  "schema",
+  "dispatch_id",
+  "workflow_epoch",
+  "feedback_count",
+  "input_snapshot_sha256"
+];
+function validateContext(raw) {
+  const what = "context";
+  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
+  const errors = [];
+  checkUnknownKeys(raw, CONTEXT_KEYS, what, errors);
+  checkRequiredKeys(raw, CONTEXT_REQUIRED, what, errors);
+  checkSchema(raw["schema"], what, errors);
+  const dispatchId = checkDispatchId(raw["dispatch_id"], `${what}.dispatch_id`, errors);
+  checkEpoch(raw["workflow_epoch"], `${what}.workflow_epoch`, errors);
+  const parsed = dispatchId !== void 0 ? parseDispatchId(dispatchId) : null;
+  const role = parsed?.role;
+  if (parsed !== null && typeof raw["workflow_epoch"] === "string") {
+    const expected = `wf_${parsed.epochCode}`;
+    if (raw["workflow_epoch"] !== expected) {
+      errors.push(
+        `${what}.workflow_epoch "${String(raw["workflow_epoch"])}" does not match the dispatch_id epoch code (expected "${expected}")`
+      );
+    }
+  }
+  if (role === "executor") {
+    if (raw["plan_comment_id"] === void 0) {
+      errors.push(`${what}.plan_comment_id: required for executor dispatches`);
+    }
+    checkPositiveInt(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
+    if (raw["plan_sha256"] === void 0) {
+      errors.push(`${what}.plan_sha256: required for executor dispatches`);
+    }
+    if (typeof raw["plan_sha256"] !== "undefined" && (typeof raw["plan_sha256"] !== "string" || !SHA256_PATTERN.test(raw["plan_sha256"]))) {
+      errors.push(`${what}.plan_sha256: must be a 64-character hex sha256, got ${JSON.stringify(raw["plan_sha256"])}`);
+    }
+  } else if (role === "consumer") {
+    if (raw["plan_comment_id"] !== void 0 && raw["plan_comment_id"] !== null) {
+      errors.push(`${what}.plan_comment_id: must be absent or null for consumer dispatches`);
+    }
+    if (raw["plan_sha256"] !== void 0 && raw["plan_sha256"] !== null) {
+      errors.push(`${what}.plan_sha256: must be absent or null for consumer dispatches`);
+    }
+  }
+  checkNonNegativeInt(raw["feedback_count"], `${what}.feedback_count`, errors);
+  if (typeof raw["input_snapshot_sha256"] !== "undefined" && (typeof raw["input_snapshot_sha256"] !== "string" || !SHA256_PATTERN.test(raw["input_snapshot_sha256"]))) {
+    errors.push(`${what}.input_snapshot_sha256: must be a 64-character hex sha256, got ${JSON.stringify(raw["input_snapshot_sha256"])}`);
   }
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: raw };
@@ -16702,12 +16870,18 @@ var RECEIPT_KEYS = [
   "dispatch_id",
   "status",
   "attempts",
+  "workflow_epoch",
+  "plan_comment_id",
+  "approval_comment_id",
   "tracker_comment_id",
+  "published_comment_id",
   "last_progress_sha256",
   "last_feedback_comment_id",
   "last_sync_at",
   "error",
-  "last_notice_state"
+  "last_notice_key",
+  "activation",
+  "input_snapshot_sha256"
 ];
 var RECEIPT_REQUIRED = ["dispatch_id", "status", "attempts"];
 function validateReceipt(raw) {
@@ -16717,12 +16891,16 @@ function validateReceipt(raw) {
   checkUnknownKeys(raw, RECEIPT_KEYS, what, errors);
   checkRequiredKeys(raw, RECEIPT_REQUIRED, what, errors);
   checkDispatchId(raw["dispatch_id"], `${what}.dispatch_id`, errors);
+  checkEpoch(raw["workflow_epoch"], `${what}.workflow_epoch`, errors);
   const status = raw["status"];
   if (status !== void 0 && !RECEIPT_STATUSES.includes(status)) {
     errors.push(`${what}.status: must be one of ${RECEIPT_STATUSES.join("|")}, got ${JSON.stringify(status)}`);
   }
   checkPositiveInt(raw["attempts"], `${what}.attempts`, errors);
+  checkPositiveInt(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
+  checkPositiveInt(raw["approval_comment_id"], `${what}.approval_comment_id`, errors);
   checkPositiveInt(raw["tracker_comment_id"], `${what}.tracker_comment_id`, errors);
+  checkPositiveInt(raw["published_comment_id"], `${what}.published_comment_id`, errors);
   checkPositiveInt(raw["last_feedback_comment_id"], `${what}.last_feedback_comment_id`, errors);
   checkString(raw["last_progress_sha256"], `${what}.last_progress_sha256`, errors, { min: 1 });
   checkIsoDate(raw["last_sync_at"], `${what}.last_sync_at`, errors);
@@ -16730,18 +16908,48 @@ function validateReceipt(raw) {
   if (error !== void 0 && error !== null) {
     checkString(error, `${what}.error`, errors, { min: 1, max: 2e3 });
   }
-  checkString(raw["last_notice_state"], `${what}.last_notice_state`, errors, { min: 1, max: 64 });
+  checkString(raw["last_notice_key"], `${what}.last_notice_key`, errors, { min: 1, max: 64 });
+  if (typeof raw["last_notice_key"] === "string" && !/^[0-9a-f]{16}$/.test(raw["last_notice_key"])) {
+    errors.push(`${what}.last_notice_key: must be a 16-character lowercase hex sha256 prefix, got ${JSON.stringify(raw["last_notice_key"])}`);
+  }
+  if (typeof raw["input_snapshot_sha256"] !== "undefined" && (typeof raw["input_snapshot_sha256"] !== "string" || !SHA256_PATTERN.test(raw["input_snapshot_sha256"]))) {
+    errors.push(`${what}.input_snapshot_sha256: must be a 64-character hex sha256, got ${JSON.stringify(raw["input_snapshot_sha256"])}`);
+  }
+  const activation = raw["activation"];
+  if (activation !== void 0) {
+    if (!isRecord2(activation)) {
+      errors.push(`${what}.activation: expected a JSON object`);
+    } else {
+      const aWhat = `${what}.activation`;
+      checkUnknownKeys(activation, ["adapter", "state", "detail", "at"], aWhat, errors);
+      checkRequiredKeys(activation, ["adapter", "state", "at"], aWhat, errors);
+      checkString(activation["adapter"], `${aWhat}.adapter`, errors, { min: 1, max: 64 });
+      const state = activation["state"];
+      if (state !== void 0 && state !== "notified" && state !== "started" && state !== "failed") {
+        errors.push(`${aWhat}.state: must be "notified"|"started"|"failed", got ${JSON.stringify(state)}`);
+      }
+      checkString(activation["detail"], `${aWhat}.detail`, errors, { max: 500 });
+      checkIsoDate(activation["at"], `${aWhat}.at`, errors);
+    }
+  }
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: raw };
 }
-var SUBMIT_KEYS = ["schema", "title", "kind", "maturity_hint", "created_at"];
+var SUBMIT_KEYS = ["schema", "submission_id", "title", "kind", "maturity_hint", "created_at"];
+var SUBMIT_REQUIRED = ["schema", "title", "kind", "maturity_hint", "created_at"];
+var SUBMISSION_ID_SHAPE = /^sub_[0-9a-z]{16}$/;
 function validateSubmit(raw) {
   const what = "submit";
   if (!isRecord2(raw)) return fail(what, "expected a JSON object");
   const errors = [];
   checkUnknownKeys(raw, SUBMIT_KEYS, what, errors);
-  checkRequiredKeys(raw, SUBMIT_KEYS, what, errors);
+  checkRequiredKeys(raw, SUBMIT_REQUIRED, what, errors);
   checkSchema(raw["schema"], what, errors);
+  if (raw["submission_id"] !== void 0 && (typeof raw["submission_id"] !== "string" || !SUBMISSION_ID_SHAPE.test(raw["submission_id"]))) {
+    errors.push(
+      `${what}.submission_id: must be "sub_" + 16 base36 chars, got ${JSON.stringify(raw["submission_id"])}`
+    );
+  }
   checkString(raw["title"], `${what}.title`, errors, { min: 1, max: TITLE_MAX });
   const kind = raw["kind"];
   if (kind !== void 0 && !SUBMIT_KINDS.includes(kind)) {
@@ -17004,16 +17212,118 @@ var ManualActivationAdapter = class {
       "Steps:",
       "  1. Open the project in ChatGPT / ZCode.",
       "  2. Tell the agent to load the gateflow-agent skill.",
-      "  3. The agent reads .gateflow/current.json and processes the dispatch.",
+      `  3. The agent reads exactly ${workspaceRoot}/.gateflow/inbox/${dispatch.dispatchId}/dispatch.json`,
+      "     and processes ONLY that dispatch (never .gateflow/current.json \u2014",
+      "     that file is a manual UI pointer, not task identity).",
       "============================================================"
     ];
     for (const line of lines) {
       this.out(line);
     }
     this.bell();
-    return { notified: true, detail: "manual" };
+    return { state: "notified", detail: "manual" };
+  }
+  /**
+   * There is no session handle to cancel: the human activated the client.
+   * The answer is explicit (hardening §9) — cancel support is `unsupported`,
+   * and stopping the agent is a human/Skill-level action.
+   */
+  async cancel(_dispatchId) {
+    return {
+      state: "unsupported",
+      detail: "manual activation has no session handle; ask the running agent to stop and let the Driver refuse the dispatch's outbox (revocation happens at sync time)"
+    };
   }
 };
+
+// src/activation/env.ts
+var BASE_ALLOWLIST = [
+  // Process/OS essentials
+  "PATH",
+  "PATHEXT",
+  "COMSPEC",
+  "SYSTEMROOT",
+  "SYSTEMDRIVE",
+  "WINDIR",
+  "OS",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "HOME",
+  "USERPROFILE",
+  "USERNAME",
+  "DOMAINNAME",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+  "COMMONPROGRAMFILES",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+  "TERM",
+  "DISPLAY",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "SHELL",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE"
+];
+var DENYLIST = [
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "HUB_TOKEN",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "GATEFLOW_TOKEN",
+  "GATEFLOW_WEBHOOK_SECRET",
+  "GATEFLOW_APP_KEY",
+  "GATEFLOW_APP_PRIVATE_KEY",
+  "NODE_OPTIONS"
+];
+var CredentialInPassthroughError = class extends Error {
+  constructor(keys) {
+    super(
+      `env_passthrough requested secret-shaped key(s) that are never passed to agents: ${keys.join(", ")}`
+    );
+    this.keys = keys;
+    this.name = "CredentialInPassthroughError";
+  }
+  keys;
+};
+function isDenied(key) {
+  const upper = key.trim().toUpperCase();
+  if (DENYLIST.includes(upper)) return true;
+  return upper.startsWith("GATEFLOW_");
+}
+function buildAgentEnv(passthrough = [], source = process.env) {
+  const deniedRequested = [];
+  const env = {};
+  const wanted = new Set(BASE_ALLOWLIST);
+  for (const key of passthrough) {
+    if (typeof key !== "string" || key.length === 0) continue;
+    if (isDenied(key)) {
+      deniedRequested.push(key);
+      continue;
+    }
+    wanted.add(key);
+  }
+  if (deniedRequested.length > 0) {
+    throw new CredentialInPassthroughError(deniedRequested);
+  }
+  for (const [key, value] of Object.entries(source)) {
+    if (value === void 0) continue;
+    if (isDenied(key)) continue;
+    if (wanted.has(key)) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
 
 // src/activation/chatgpt.ts
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
@@ -17027,12 +17337,12 @@ async function commandExists(command) {
   }
 }
 function buildLaunchPrompt(dispatch, workspaceRoot) {
-  return `GateFlow dispatch ${dispatch.dispatchId} is ready (issue #${dispatch.issueNumber}, role ${dispatch.role}, repo ${dispatch.repository}). Load the gateflow-agent skill, then read .gateflow/current.json under ${workspaceRoot} and process the dispatch.`;
+  return `GateFlow dispatch ${dispatch.dispatchId} is ready (issue #${dispatch.issueNumber}, role ${dispatch.role}, repo ${dispatch.repository}). Load the gateflow-agent skill, then read exactly ${workspaceRoot}/.gateflow/inbox/${dispatch.dispatchId}/dispatch.json and process ONLY that dispatch; write all output to the matching outbox directory.`;
 }
-function defaultRunner(cmd, args) {
+function defaultRunner(cmd, args, env) {
   return new Promise((resolve4, reject) => {
     let settled = false;
-    const child = (0, import_node_child_process.spawn)(cmd, args, { detached: true, stdio: "ignore", windowsHide: true });
+    const child = (0, import_node_child_process.spawn)(cmd, args, { detached: true, stdio: "ignore", windowsHide: true, env });
     child.unref();
     child.once("error", (err) => {
       if (!settled) {
@@ -17052,11 +17362,15 @@ var ChatGPTActivationAdapter = class {
   name = "chatgpt";
   command;
   autoStart;
+  envPassthrough;
+  envSource;
   runner;
   manual;
   constructor(options = {}) {
     this.command = options.command ?? "chatgpt";
     this.autoStart = options.autoStart === true;
+    this.envPassthrough = options.envPassthrough ?? [];
+    this.envSource = options.envSource ?? process.env;
     this.runner = options.runner ?? defaultRunner;
     this.manual = options.manual ?? new ManualActivationAdapter();
   }
@@ -17076,21 +17390,32 @@ var ChatGPTActivationAdapter = class {
   }
   /**
    * Auto-start only when explicitly configured (`autoStart === true`) AND the
-   * capability probe passes. Every other path — and any failure at all —
-   * delegates to the injected ManualActivationAdapter. NEVER throws.
+   * capability probe passes. The child environment is the explicit allowlist
+   * build (secret-shaped passthrough keys fail closed via
+   * CredentialInPassthroughError). Every other path — and any failure at
+   * all — delegates to the injected ManualActivationAdapter. NEVER throws.
    */
   async notify(dispatch, workspaceRoot) {
-    try {
-      if (this.autoStart === true && (await this.probe()).available) {
-        await this.runner(this.command, [buildLaunchPrompt(dispatch, workspaceRoot)]);
-        return { notified: true, detail: `auto-started via '${this.command}'` };
+    if (this.autoStart === true && (await this.probe()).available) {
+      try {
+        const env = buildAgentEnv(this.envPassthrough, this.envSource);
+        await this.runner(this.command, [buildLaunchPrompt(dispatch, workspaceRoot)], env);
+        return { state: "started", detail: `auto-started via '${this.command}'` };
+      } catch (err) {
+        if (err instanceof Error && err.name === "CredentialInPassthroughError") {
+          return { state: "failed", detail: err.message };
+        }
       }
-    } catch {
     }
-    return this.manual.notify(dispatch, workspaceRoot);
+    const manual = await this.manual.notify(dispatch, workspaceRoot);
+    return manual;
   }
-  /** Trivial no-op: a detached one-shot launch cannot be cancelled remotely. */
+  /** A detached one-shot launch cannot be cancelled: explicit, not silent. */
   async cancel(_dispatchId) {
+    return {
+      state: "unsupported",
+      detail: "detached one-shot launch has no cancellation handle; instruct the running agent session to stop and revoke the dispatch instead"
+    };
   }
 };
 
@@ -17108,12 +17433,12 @@ async function commandExists2(command) {
   }
 }
 function buildLaunchPrompt2(dispatch, workspaceRoot) {
-  return `GateFlow dispatch ${dispatch.dispatchId} is ready (issue #${dispatch.issueNumber}, role ${dispatch.role}, repo ${dispatch.repository}). Load the gateflow-agent skill, then read .gateflow/current.json under ${workspaceRoot} and process the dispatch.`;
+  return `GateFlow dispatch ${dispatch.dispatchId} is ready (issue #${dispatch.issueNumber}, role ${dispatch.role}, repo ${dispatch.repository}). Load the gateflow-agent skill, then read exactly ${workspaceRoot}/.gateflow/inbox/${dispatch.dispatchId}/dispatch.json and process ONLY that dispatch; write all output to the matching outbox directory.`;
 }
-function defaultRunner2(cmd, args) {
+function defaultRunner2(cmd, args, env) {
   return new Promise((resolve4, reject) => {
     let settled = false;
-    const child = (0, import_node_child_process2.spawn)(cmd, args, { detached: true, stdio: "ignore", windowsHide: true });
+    const child = (0, import_node_child_process2.spawn)(cmd, args, { detached: true, stdio: "ignore", windowsHide: true, env });
     child.unref();
     child.once("error", (err) => {
       if (!settled) {
@@ -17133,12 +17458,16 @@ var ZCodeActivationAdapter = class {
   name = "zcode";
   command;
   autoStart;
+  envPassthrough;
+  envSource;
   runner;
   out;
   manual;
   constructor(options = {}) {
     this.command = options.command ?? "zcode";
     this.autoStart = options.autoStart === true;
+    this.envPassthrough = options.envPassthrough ?? [];
+    this.envSource = options.envSource ?? process.env;
     this.runner = options.runner ?? defaultRunner2;
     this.out = options.out ?? ((line) => {
       process.stdout.write(`${line}
@@ -17164,8 +17493,10 @@ var ZCodeActivationAdapter = class {
    * Conservative by default (`autoStart` defaults to false, see the options
    * docs): without opt-in we print the exact command the human can run plus
    * the manual instructions, and never spawn anything. With opt-in we mirror
-   * the ChatGPT adapter: spawn only when the probe passes; ANY failure falls
-   * back to the injected ManualActivationAdapter. NEVER throws.
+   * the ChatGPT adapter: spawn only when the probe passes, with the explicit
+   * allowlist environment; a credential-shaped passthrough request fails
+   * closed instead of falling back; ANY spawn failure falls back to the
+   * injected ManualActivationAdapter. NEVER throws.
    */
   async notify(dispatch, workspaceRoot) {
     if (this.autoStart !== true) {
@@ -17175,15 +17506,23 @@ var ZCodeActivationAdapter = class {
     }
     try {
       if ((await this.probe()).available) {
-        await this.runner(this.command, [buildLaunchPrompt2(dispatch, workspaceRoot)]);
-        return { notified: true, detail: `auto-started via '${this.command}'` };
+        const env = buildAgentEnv(this.envPassthrough, this.envSource);
+        await this.runner(this.command, [buildLaunchPrompt2(dispatch, workspaceRoot)], env);
+        return { state: "started", detail: `auto-started via '${this.command}'` };
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.name === "CredentialInPassthroughError") {
+        return { state: "failed", detail: err.message };
+      }
     }
     return this.manual.notify(dispatch, workspaceRoot);
   }
-  /** Trivial no-op: a detached one-shot launch cannot be cancelled remotely. */
+  /** A detached one-shot launch cannot be cancelled: explicit, not silent. */
   async cancel(_dispatchId) {
+    return {
+      state: "unsupported",
+      detail: "detached one-shot launch has no cancellation handle; instruct the running agent session to stop and revoke the dispatch instead"
+    };
   }
 };
 
@@ -17191,9 +17530,17 @@ var ZCodeActivationAdapter = class {
 function createActivationAdapter(kind, opts) {
   switch (kind) {
     case "chatgpt":
-      return new ChatGPTActivationAdapter({ command: opts?.command, autoStart: opts?.autoStart });
+      return new ChatGPTActivationAdapter({
+        command: opts?.command,
+        autoStart: opts?.autoStart,
+        envPassthrough: opts?.envPassthrough
+      });
     case "zcode":
-      return new ZCodeActivationAdapter({ command: opts?.command, autoStart: opts?.autoStart });
+      return new ZCodeActivationAdapter({
+        command: opts?.command,
+        autoStart: opts?.autoStart,
+        envPassthrough: opts?.envPassthrough
+      });
     case "manual":
     default:
       return new ManualActivationAdapter();
@@ -17316,8 +17663,35 @@ async function readCurrent(paths) {
   const parsed = validateCurrent(raw);
   return parsed.ok ? parsed.value : null;
 }
+async function readInboxContext(paths, dispatchId) {
+  let file;
+  try {
+    file = nodePath4.join(inboxDispatchDir(paths, dispatchId), "context.json");
+  } catch {
+    return null;
+  }
+  let text;
+  try {
+    text = await (0, import_promises4.readFile)(file, "utf8");
+  } catch {
+    return null;
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = validateContext(raw);
+  return parsed.ok ? parsed.value : null;
+}
 function sha256Hex(content) {
   return (0, import_node_crypto5.createHash)("sha256").update(content, "utf8").digest("hex");
+}
+function inputSnapshotSha256(content) {
+  return sha256Hex(
+    JSON.stringify({ task: content.task, plan: content.plan, feedback: content.feedback })
+  );
 }
 
 // src/workspace/outbox.ts
@@ -17351,19 +17725,7 @@ async function readOutboxMarkdown(paths, dispatchId, name) {
   return content;
 }
 async function listOutboxDispatchIds(paths) {
-  let entries;
-  try {
-    entries = await (0, import_promises5.readdir)(paths.outbox, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const ids = [];
-  for (const entry of entries) {
-    if (entry.isDirectory() && validateDispatchDirName(entry.name)) {
-      ids.push(entry.name);
-    }
-  }
-  return ids.sort();
+  return listDispatchDirs(paths.outbox);
 }
 function receiptFile(paths, dispatchId) {
   return nodePath5.join(paths.receipts, `${dispatchId}.json`);
@@ -17520,6 +17882,389 @@ function inspectCommentMarkers(body) {
   return { kind: "none" };
 }
 
+// src/protocol/epoch.ts
+var import_node_crypto6 = require("node:crypto");
+var EPOCH_BODY_PATTERN = /^wf_[0-9a-z]{12}$/;
+function isWorkflowEpoch(value) {
+  return typeof value === "string" && EPOCH_BODY_PATTERN.test(value);
+}
+function newWorkflowEpoch() {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  let epoch = "wf_";
+  while (epoch.length < 3 + 12) {
+    const bytes = (0, import_node_crypto6.randomBytes)(16);
+    for (const byte of bytes) {
+      if (epoch.length >= 3 + 12) break;
+      if (byte >= 252) continue;
+      epoch += alphabet[byte % 36];
+    }
+  }
+  return epoch;
+}
+
+// src/protocol/records.ts
+var RECORD_SCHEMA_VERSION = 2;
+var EPOCH_RECORD_MARKER = "<!-- gateflow:workflow:v2 -->";
+var APPROVAL_RECORD_MARKER = "<!-- gateflow:approval:v2 -->";
+var FEEDBACK_RECORD_MARKER = "<!-- gateflow:feedback:v2 -->";
+var HEX64 = /^[0-9a-f]{64}$/;
+var ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+var LOGIN = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?!$)){0,37}(\[bot\])?$/;
+var OPERATION_ID = /^[a-z]+(:[\w.-]+)+$/;
+function isObj(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function epochOperationId(repositoryId, issueNumber, epoch) {
+  return `epoch:${repositoryId}:${issueNumber}:${epoch}`;
+}
+function approvalOperationId(repositoryId, issueNumber, epoch, planCommentId) {
+  return `approval:${repositoryId}:${issueNumber}:${epoch}:p${planCommentId}`;
+}
+function feedbackOperationId(repositoryId, issueNumber, epoch, feedbackCommentId) {
+  return `feedback:${repositoryId}:${issueNumber}:${epoch}:${feedbackCommentId}`;
+}
+function submitOperationId(submissionId) {
+  return `submit:${submissionId}`;
+}
+function buildRecordBody(record) {
+  return `${recordMarkerFor(record.kind)}
+
+\`\`\`json
+${JSON.stringify(record, null, 2)}
+\`\`\`
+`;
+}
+function recordMarkerFor(kind) {
+  switch (kind) {
+    case "workflow_epoch":
+      return EPOCH_RECORD_MARKER;
+    case "approval":
+      return APPROVAL_RECORD_MARKER;
+    case "feedback_accepted":
+      return FEEDBACK_RECORD_MARKER;
+  }
+}
+function recordKindOf(body) {
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === EPOCH_RECORD_MARKER) return "workflow_epoch";
+    if (trimmed === APPROVAL_RECORD_MARKER) return "approval";
+    if (trimmed === FEEDBACK_RECORD_MARKER) return "feedback_accepted";
+  }
+  return null;
+}
+function parseRecord(commentId, body) {
+  const lines = body.split(/\r?\n/);
+  let markerIdx = -1;
+  let kind = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = (lines[i] ?? "").trim();
+    const detected = recordKindOf(trimmed);
+    if (detected !== null) {
+      markerIdx = i;
+      kind = detected;
+      break;
+    }
+  }
+  if (markerIdx === -1 || kind === null) {
+    return { ok: false, reason: "no record marker" };
+  }
+  if ((lines[markerIdx] ?? "").trim() !== recordMarkerFor(kind)) {
+    return { ok: false, reason: "record marker does not own its line" };
+  }
+  let jsonLines = null;
+  for (let i = markerIdx + 1; i < lines.length; i += 1) {
+    if ((lines[i] ?? "").trim() !== "```json") {
+      continue;
+    }
+    const content = [];
+    let closed = false;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if ((lines[j] ?? "").trim() === "```") {
+        closed = true;
+        break;
+      }
+      content.push(lines[j] ?? "");
+    }
+    if (!closed) {
+      return { ok: false, reason: "record JSON fence is not closed" };
+    }
+    jsonLines = content;
+    break;
+  }
+  if (jsonLines === null) {
+    return { ok: false, reason: "no ```json fence after the record marker" };
+  }
+  let raw;
+  try {
+    raw = JSON.parse(jsonLines.join("\n"));
+  } catch (err) {
+    return { ok: false, reason: `record JSON is not valid JSON: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!isObj(raw)) {
+    return { ok: false, reason: "record JSON is not an object" };
+  }
+  switch (kind) {
+    case "workflow_epoch":
+      return validateEpochRecord(commentId, raw);
+    case "approval":
+      return validateApprovalRecord(commentId, raw);
+    case "feedback_accepted":
+      return validateFeedbackRecord(commentId, raw);
+  }
+}
+function checkFields(raw, required, what, errors) {
+  for (const key of Object.keys(raw)) {
+    if (!required.includes(key)) {
+      errors.push(`${what}: unknown key "${key}"`);
+    }
+  }
+  for (const key of required) {
+    if (!(key in raw)) {
+      errors.push(`${what}: missing key "${key}"`);
+    }
+  }
+}
+function str(raw, key, pattern, errors) {
+  const value = raw[key];
+  if (typeof value !== "string" || !pattern.test(value)) {
+    errors.push(`${key}: expected string matching ${pattern.source}, got ${JSON.stringify(value)}`);
+    return null;
+  }
+  return value;
+}
+function num(raw, key, errors) {
+  const value = raw[key];
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    errors.push(`${key}: expected a non-negative integer, got ${JSON.stringify(value)}`);
+    return null;
+  }
+  return value;
+}
+function validateEpochRecord(commentId, raw) {
+  const errors = [];
+  const required = [
+    "schema",
+    "kind",
+    "repository_id",
+    "issue_number",
+    "workflow_epoch",
+    "created_at",
+    "issued_by",
+    "operation_id"
+  ];
+  checkFields(raw, required, "workflow_epoch record", errors);
+  if (raw["schema"] !== RECORD_SCHEMA_VERSION) {
+    errors.push(`schema: expected ${RECORD_SCHEMA_VERSION}, got ${JSON.stringify(raw["schema"])}`);
+  }
+  if (raw["kind"] !== "workflow_epoch") {
+    errors.push(`kind: expected "workflow_epoch", got ${JSON.stringify(raw["kind"])}`);
+  }
+  const repositoryId = num(raw, "repository_id", errors);
+  const issueNumber = num(raw, "issue_number", errors);
+  const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
+  if (epoch === null) errors.push("workflow_epoch: malformed epoch string");
+  const createdAt = str(raw, "created_at", ISO_DATE, errors);
+  const issuedBy = str(raw, "issued_by", LOGIN, errors);
+  const operationId = str(raw, "operation_id", OPERATION_ID, errors);
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || createdAt === null || issuedBy === null || operationId === null) {
+    return { ok: false, reason: `invalid workflow_epoch record: ${errors.join("; ")}` };
+  }
+  if (operationId !== epochOperationId(repositoryId, issueNumber, epoch)) {
+    return { ok: false, reason: `invalid workflow_epoch record: operation_id "${operationId}" does not bind repository/issue/epoch` };
+  }
+  return {
+    ok: true,
+    commentId,
+    record: {
+      schema: RECORD_SCHEMA_VERSION,
+      kind: "workflow_epoch",
+      repository_id: repositoryId,
+      issue_number: issueNumber,
+      workflow_epoch: epoch,
+      created_at: createdAt,
+      issued_by: issuedBy,
+      operation_id: operationId
+    }
+  };
+}
+function validateApprovalRecord(commentId, raw) {
+  const errors = [];
+  const required = [
+    "schema",
+    "kind",
+    "repository_id",
+    "issue_number",
+    "workflow_epoch",
+    "plan_comment_id",
+    "plan_sha256",
+    "approval_command_comment_id",
+    "approved_by_id",
+    "approved_by_login",
+    "gate_login",
+    "gate_user_id",
+    "created_at",
+    "operation_id"
+  ];
+  checkFields(raw, required, "approval record", errors);
+  if (raw["schema"] !== RECORD_SCHEMA_VERSION) {
+    errors.push(`schema: expected ${RECORD_SCHEMA_VERSION}, got ${JSON.stringify(raw["schema"])}`);
+  }
+  if (raw["kind"] !== "approval") {
+    errors.push(`kind: expected "approval", got ${JSON.stringify(raw["kind"])}`);
+  }
+  const repositoryId = num(raw, "repository_id", errors);
+  const issueNumber = num(raw, "issue_number", errors);
+  const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
+  if (epoch === null) errors.push("workflow_epoch: malformed epoch string");
+  const planCommentId = num(raw, "plan_comment_id", errors);
+  const planSha = str(raw, "plan_sha256", HEX64, errors);
+  const commandCommentId = num(raw, "approval_command_comment_id", errors);
+  const approvedById = num(raw, "approved_by_id", errors);
+  const approvedByLogin = str(raw, "approved_by_login", LOGIN, errors);
+  const gateLogin = str(raw, "gate_login", LOGIN, errors);
+  const gateUserId = num(raw, "gate_user_id", errors);
+  const createdAt = str(raw, "created_at", ISO_DATE, errors);
+  const operationId = str(raw, "operation_id", OPERATION_ID, errors);
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || planCommentId === null || planSha === null || commandCommentId === null || approvedById === null || approvedByLogin === null || gateLogin === null || gateUserId === null || createdAt === null || operationId === null) {
+    return { ok: false, reason: `invalid approval record: ${errors.join("; ")}` };
+  }
+  const expectedOperation = approvalOperationId(repositoryId, issueNumber, epoch, planCommentId);
+  if (operationId !== expectedOperation) {
+    return { ok: false, reason: `invalid approval record: operation_id "${operationId}" does not bind repository/issue/epoch/plan` };
+  }
+  return {
+    ok: true,
+    commentId,
+    record: {
+      schema: RECORD_SCHEMA_VERSION,
+      kind: "approval",
+      repository_id: repositoryId,
+      issue_number: issueNumber,
+      workflow_epoch: epoch,
+      plan_comment_id: planCommentId,
+      plan_sha256: planSha,
+      approval_command_comment_id: commandCommentId,
+      approved_by_id: approvedById,
+      approved_by_login: approvedByLogin,
+      gate_login: gateLogin,
+      gate_user_id: gateUserId,
+      created_at: createdAt,
+      operation_id: operationId
+    }
+  };
+}
+function validateFeedbackRecord(commentId, raw) {
+  const errors = [];
+  const required = [
+    "schema",
+    "kind",
+    "repository_id",
+    "issue_number",
+    "workflow_epoch",
+    "event_id",
+    "feedback_comment_id",
+    "feedback_kind",
+    "gate_login",
+    "gate_user_id",
+    "created_at",
+    "operation_id"
+  ];
+  checkFields(raw, required, "feedback record", errors);
+  if (raw["schema"] !== RECORD_SCHEMA_VERSION) {
+    errors.push(`schema: expected ${RECORD_SCHEMA_VERSION}, got ${JSON.stringify(raw["schema"])}`);
+  }
+  if (raw["kind"] !== "feedback_accepted") {
+    errors.push(`kind: expected "feedback_accepted", got ${JSON.stringify(raw["kind"])}`);
+  }
+  const repositoryId = num(raw, "repository_id", errors);
+  const issueNumber = num(raw, "issue_number", errors);
+  const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
+  if (epoch === null) errors.push("workflow_epoch: malformed epoch string");
+  const eventId = str(raw, "event_id", /^fe\d+$/, errors);
+  const feedbackCommentId = num(raw, "feedback_comment_id", errors);
+  const feedbackKind = raw["feedback_kind"];
+  if (feedbackKind !== "choose" && feedbackKind !== "change") {
+    errors.push(`feedback_kind: expected "choose"|"change", got ${JSON.stringify(feedbackKind)}`);
+  }
+  const gateLogin = str(raw, "gate_login", LOGIN, errors);
+  const gateUserId = num(raw, "gate_user_id", errors);
+  const createdAt = str(raw, "created_at", ISO_DATE, errors);
+  const operationId = str(raw, "operation_id", OPERATION_ID, errors);
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || eventId === null || feedbackCommentId === null || gateLogin === null || gateUserId === null || createdAt === null || operationId === null || feedbackKind !== "choose" && feedbackKind !== "change") {
+    return { ok: false, reason: `invalid feedback record: ${errors.join("; ")}` };
+  }
+  if (eventId !== `fe${feedbackCommentId}`) {
+    return { ok: false, reason: `invalid feedback record: event_id "${eventId}" does not match feedback_comment_id ${feedbackCommentId}` };
+  }
+  if (operationId !== feedbackOperationId(repositoryId, issueNumber, epoch, feedbackCommentId)) {
+    return { ok: false, reason: `invalid feedback record: operation_id "${operationId}" does not bind repository/issue/epoch/feedback` };
+  }
+  return {
+    ok: true,
+    commentId,
+    record: {
+      schema: RECORD_SCHEMA_VERSION,
+      kind: "feedback_accepted",
+      repository_id: repositoryId,
+      issue_number: issueNumber,
+      workflow_epoch: epoch,
+      event_id: eventId,
+      feedback_comment_id: feedbackCommentId,
+      feedback_kind: feedbackKind,
+      gate_login: gateLogin,
+      gate_user_id: gateUserId,
+      created_at: createdAt,
+      operation_id: operationId
+    }
+  };
+}
+function approvalRecordsConflict(records) {
+  const byOperation = /* @__PURE__ */ new Map();
+  const firstCommentIdByOperation = /* @__PURE__ */ new Map();
+  for (const { commentId, record } of records) {
+    const existing = byOperation.get(record.operation_id);
+    if (existing === void 0) {
+      byOperation.set(record.operation_id, record);
+      firstCommentIdByOperation.set(record.operation_id, commentId);
+      continue;
+    }
+    const sameContent = existing.workflow_epoch === record.workflow_epoch && existing.plan_comment_id === record.plan_comment_id && existing.plan_sha256 === record.plan_sha256 && existing.approval_command_comment_id === record.approval_command_comment_id && existing.approved_by_id === record.approved_by_id && existing.approved_by_login.toLowerCase() === record.approved_by_login.toLowerCase() && existing.gate_login.toLowerCase() === record.gate_login.toLowerCase() && existing.gate_user_id === record.gate_user_id && existing.repository_id === record.repository_id && existing.issue_number === record.issue_number;
+    if (!sameContent) {
+      return {
+        conflict: true,
+        reason: `conflicting approval records for operation ${record.operation_id}: comment ${firstCommentIdByOperation.get(record.operation_id)} vs ${commentId}`
+      };
+    }
+  }
+  return { conflict: false, reason: null };
+}
+function sourceIdComment(operationId) {
+  return `<!-- gateflow:source-id: ${operationId} -->`;
+}
+var SOURCE_ID_PATTERN = /<!--\s*gateflow:source-id:\s*(submit:sub_[0-9a-z]{16})\s*-->/;
+function findSourceIdInBody(body) {
+  return SOURCE_ID_PATTERN.exec(body)?.[1] ?? null;
+}
+function parseRecords(kind, comments) {
+  const records = [];
+  const invalid = [];
+  for (const comment of comments) {
+    if (recordKindOf(comment.body) !== kind) continue;
+    const parsed = parseRecord(comment.id, comment.body);
+    if (parsed.ok && parsed.record.kind === kind) {
+      records.push({
+        commentId: comment.id,
+        record: parsed.record,
+        comment
+      });
+    } else {
+      invalid.push({ commentId: comment.id, reason: parsed.ok ? "kind mismatch" : parsed.reason });
+    }
+  }
+  return { records, invalid };
+}
+
 // src/gate/tracker.ts
 var TRACKER_STATUSES = ["In Progress", "Blocked", "Completed"];
 var STATUS_PATTERN = /^\*\*Status:\*\*\s*(.*)$/;
@@ -17551,7 +18296,7 @@ function parseTrackerStatus(body) {
 }
 
 // src/github/comments.ts
-var DISPATCH_ID_COMMENT_PATTERN = /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+_(?:consumer|executor)_\S+) -->/;
+var DISPATCH_ID_COMMENT_PATTERN = /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:consumer|executor)_\S+) -->/;
 var STATUS_LINE_PATTERN = /^\*\*Status:\*\*\s*(.*)$/;
 function findDispatchIdInComment(body) {
   return DISPATCH_ID_COMMENT_PATTERN.exec(body)?.[1] ?? null;
@@ -17619,6 +18364,18 @@ function findTrackerComment(comments, dispatchId) {
   }
   return null;
 }
+function findCompletionReportComments(comments, dispatchId) {
+  const reports = [];
+  for (const comment of comments) {
+    if (detectCommentMarker(comment.body) !== MARKERS.completionReport) {
+      continue;
+    }
+    if (findDispatchIdInComment(comment.body) === dispatchId) {
+      reports.push(comment);
+    }
+  }
+  return reports;
+}
 var CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
 var CHANGE_PATTERN = /^\/change (.+)$/;
 function isTrustedAuthor(comment, trustedHumans, repoOwner) {
@@ -17633,53 +18390,89 @@ function isTrustedAuthor(comment, trustedHumans, repoOwner) {
   }
   return false;
 }
-function findHumanFeedbackCommands(comments, trustedHumans, repoOwner) {
-  const entries = [];
-  for (const comment of comments) {
-    if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) {
-      continue;
-    }
-    const trimmed = comment.body.trim();
-    if (CHOOSE_PATTERN.exec(trimmed) !== null) {
-      entries.push({ comment, kind: "choose" });
-      continue;
-    }
-    if (CHANGE_PATTERN.exec(trimmed) !== null) {
-      entries.push({ comment, kind: "change" });
-    }
-  }
-  return entries;
+function isKnownLogin(login, allowlist) {
+  return allowlist.has(login.toLowerCase());
 }
 var APPROVE_PATTERN = /^\/approve (\d+)$/;
-function findApprovalRecords(comments, trustedHumans, repoOwner) {
-  const records = [];
-  for (const comment of comments) {
-    if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) {
-      continue;
-    }
-    const match = APPROVE_PATTERN.exec(comment.body.trim());
-    if (match === null) {
-      continue;
-    }
-    const planCommentId = Number.parseInt(match[1] ?? "", 10);
-    if (Number.isNaN(planCommentId)) {
-      continue;
-    }
-    records.push({ comment, planCommentId });
+function approvalRecordAnchorFailure(record, comments, trustedHumans, repoOwner) {
+  const command = comments.find((entry) => entry.id === record.approval_command_comment_id);
+  if (command === void 0) {
+    return `approval command comment ${record.approval_command_comment_id} no longer exists`;
   }
-  return records;
+  const match = APPROVE_PATTERN.exec(command.body.trim());
+  if (match === null || Number.parseInt(match[1] ?? "", 10) !== record.plan_comment_id) {
+    return `approval command comment ${command.id} is not an anchored "/approve ${record.plan_comment_id}"`;
+  }
+  if (!isTrustedAuthor(command, trustedHumans, repoOwner)) {
+    return `approval command comment ${command.id} author "${command.user}" is not a trusted human`;
+  }
+  if (command.user.toLowerCase() !== record.approved_by_login.toLowerCase()) {
+    return `approval record approver "${record.approved_by_login}" does not match command author "${command.user}"`;
+  }
+  return null;
 }
-async function publishPlanComment(client, ref, planMarkdown, dispatchId) {
-  return client.addIssueComment(ref, buildPlanCommentBody(planMarkdown, dispatchId));
+function readIssueRecords(comments, gateLogins) {
+  const epoch = parseRecords("workflow_epoch", comments);
+  const approvals = parseRecords("approval", comments);
+  const feedback = parseRecords("feedback_accepted", comments);
+  const suspect = [];
+  for (const invalid of [...epoch.invalid, ...approvals.invalid, ...feedback.invalid]) {
+    suspect.push({ commentId: invalid.commentId, reason: invalid.reason });
+  }
+  const latestEpochRecord = epoch.records[epoch.records.length - 1] ?? null;
+  const trustedApprovals = approvals.records.filter((entry) => isKnownLogin(entry.comment.user, gateLogins)).map((entry) => ({ commentId: entry.commentId, record: entry.record }));
+  const trustedFeedback = feedback.records.filter((entry) => isKnownLogin(entry.comment.user, gateLogins)).map((entry) => ({ commentId: entry.commentId, record: entry.record }));
+  for (const entry of approvals.records) {
+    if (!isKnownLogin(entry.comment.user, gateLogins)) {
+      suspect.push({
+        commentId: entry.commentId,
+        reason: `approval record authored by untrusted identity "${entry.comment.user}"`
+      });
+    }
+  }
+  for (const entry of feedback.records) {
+    if (!isKnownLogin(entry.comment.user, gateLogins)) {
+      suspect.push({
+        commentId: entry.commentId,
+        reason: `feedback record authored by untrusted identity "${entry.comment.user}"`
+      });
+    }
+  }
+  return {
+    epoch: latestEpochRecord === null ? null : { record: latestEpochRecord.record, commentId: latestEpochRecord.commentId },
+    approvals: trustedApprovals,
+    feedback: trustedFeedback,
+    suspect
+  };
 }
-async function publishTrackerComment(client, ref, opts) {
+function acceptedFeedbackEvents(view, comments, trustedHumans, repoOwner) {
+  if (view.epoch === null) return [];
+  const epoch = view.epoch.record.workflow_epoch;
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  const accepted = [];
+  for (const { record } of view.feedback) {
+    if (record.workflow_epoch !== epoch) continue;
+    const comment = byId.get(record.feedback_comment_id);
+    if (comment === void 0) continue;
+    if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) continue;
+    const trimmed = comment.body.trim();
+    if (record.feedback_kind === "choose" && CHOOSE_PATTERN.exec(trimmed) === null) continue;
+    if (record.feedback_kind === "change" && CHANGE_PATTERN.exec(trimmed) === null) continue;
+    accepted.push({ comment, kind: record.feedback_kind });
+  }
+  return accepted;
+}
+async function publishPlanComment(client, ref2, planMarkdown, dispatchId) {
+  return client.addIssueComment(ref2, buildPlanCommentBody(planMarkdown, dispatchId));
+}
+async function publishTrackerComment(client, ref2, opts) {
   const body = buildTrackerCommentBody({
     dispatchId: opts.dispatchId,
     issueNumber: opts.issueNumber,
     status: "In Progress",
     progressMarkdown: opts.progressMarkdown
   });
-  return client.addIssueComment(ref, body);
+  return client.addIssueComment(ref2, body);
 }
 function extractProgressTail(body) {
   const lines = body.split(/\r?\n/);
@@ -17699,7 +18492,7 @@ function extractProgressTail(body) {
   }
   return "";
 }
-async function updateTracker(client, ref, commentId, currentBody, opts) {
+async function updateTracker(client, ref2, commentId, currentBody, opts) {
   const dispatchId = findDispatchIdInComment(currentBody);
   if (dispatchId === null) {
     throw new Error(
@@ -17711,33 +18504,59 @@ async function updateTracker(client, ref, commentId, currentBody, opts) {
   const progressMarkdown = opts.progressMarkdown ?? extractProgressTail(currentBody);
   const body = buildTrackerCommentBody({
     dispatchId,
-    issueNumber: ref.issueNumber,
+    issueNumber: ref2.issueNumber,
     status,
     progressMarkdown
   });
-  await client.updateIssueComment(ref, commentId, body);
+  await client.updateIssueComment(ref2, commentId, body);
 }
-async function publishCompletionReport(client, ref, reportMarkdown, dispatchId) {
-  return client.addIssueComment(ref, buildCompletionReportBody(reportMarkdown, dispatchId));
+async function publishCompletionReport(client, ref2, reportMarkdown, dispatchId) {
+  return client.addIssueComment(ref2, buildCompletionReportBody(reportMarkdown, dispatchId));
+}
+
+// src/protocol/plan.ts
+var import_node_crypto7 = require("node:crypto");
+var DROPPED_LINE_PATTERNS = [
+  /^<!--\s*ai-workflow:[a-z-]+:v\d+\s*-->$/,
+  // workflow markers (plan/tracker/report/append)
+  /^<!--\s*gateflow:dispatch-id:\s*\S+\s*-->$/,
+  // dispatch-id anchor comment
+  /^<!--\s*gateflow:[a-z-]+:v\d+\s*-->$/
+  // gate record markers (workflow/approval/feedback)
+];
+function canonicalPlanContent(planCommentBody) {
+  const kept = planCommentBody.split(/(?:\r\n|\r|\n)/).filter((line) => {
+    const trimmed = line.trim();
+    return !DROPPED_LINE_PATTERNS.some((pattern) => pattern.test(trimmed));
+  }).join("\n");
+  return kept.trim();
+}
+function sha256Hex2(content) {
+  return (0, import_node_crypto7.createHash)("sha256").update(content, "utf8").digest("hex");
+}
+function planSha256(planCommentBody) {
+  return sha256Hex2(canonicalPlanContent(planCommentBody));
 }
 
 // src/driver/intent.ts
 function aiLabels(labels) {
   return labels.filter((label) => label.startsWith("ai:"));
 }
-var CHANGE_PATTERN2 = /^\/change (.+)$/;
-var CHOOSE_PATTERN2 = /^\/choose (\S+) (\S+)$/;
 function consumerRound(feedbackCount) {
   return String(1 + feedbackCount).padStart(2, "0");
 }
-function deriveIntents(issue, comments, trustedHumans, repoOwner) {
+function deriveIntents(issue, comments, ctx) {
   if (issue.state === "closed") return [];
   const labels = aiLabels(issue.labels);
   if (labels.length !== 1) return [];
   const state = labels[0];
   if (state === void 0) return [];
-  const feedback = findHumanFeedbackCommands(comments, trustedHumans, repoOwner);
-  const feedbackCount = feedback.length;
+  const view = readIssueRecords(comments, ctx.gateLogins);
+  if (view.suspect.length > 0) return [];
+  if (view.epoch === null) return [];
+  const epoch = view.epoch.record.workflow_epoch;
+  const accepted = acceptedFeedbackEvents(view, comments, ctx.trustedHumans, ctx.repoOwner);
+  const feedbackCount = accepted.length;
   switch (state) {
     case "ai:planning": {
       return [
@@ -17746,15 +18565,18 @@ function deriveIntents(issue, comments, trustedHumans, repoOwner) {
           issueNumber: issue.number,
           reason: feedbackCount > 0 ? "feedback_applied" : "planning",
           revision: consumerRound(feedbackCount),
+          epoch,
           planCommentId: null,
-          approvalCommentId: null
+          approvalCommentId: null,
+          planSha256: null
         }
       ];
     }
     case "ai:review": {
-      const plan = findLatestPlanComment(comments);
-      if (plan === null) return [];
-      const newerFeedback = feedback.some((entry) => entry.comment.id > plan.id);
+      const plans = findPlanComments(comments);
+      const plan = plans[plans.length - 1];
+      if (plan === void 0) return [];
+      const newerFeedback = accepted.some((entry) => entry.comment.id > plan.id);
       if (!newerFeedback) return [];
       return [
         {
@@ -17762,28 +18584,35 @@ function deriveIntents(issue, comments, trustedHumans, repoOwner) {
           issueNumber: issue.number,
           reason: "feedback_applied",
           revision: consumerRound(feedbackCount),
+          epoch,
           planCommentId: null,
-          approvalCommentId: null
+          approvalCommentId: null,
+          planSha256: null
         }
       ];
     }
     case "ai:ready": {
-      const plan = findLatestPlanComment(comments);
-      if (plan === null) return [];
-      const approvals = findApprovalRecords(comments, trustedHumans, repoOwner);
-      const approval = approvals.find((record) => record.planCommentId === plan.id);
+      const plans = findPlanComments(comments);
+      const plan = plans[plans.length - 1];
+      if (plan === void 0) return [];
+      const candidates = view.approvals.filter(
+        (entry) => entry.record.workflow_epoch === epoch && entry.record.plan_comment_id === plan.id && entry.record.plan_sha256 === planSha256(plan.body) && approvalRecordAnchorFailure(entry.record, comments, ctx.trustedHumans, ctx.repoOwner) === null
+      );
+      if (candidates.length === 0) return [];
+      const conflict = approvalRecordsConflict(candidates);
+      if (conflict.conflict) return [];
+      const approval = candidates[candidates.length - 1];
       if (approval === void 0) return [];
-      const planEditedAt = Date.parse(plan.updatedAt);
-      const approvedAt = Date.parse(approval.comment.createdAt);
-      if (!(planEditedAt <= approvedAt)) return [];
       return [
         {
           role: "executor",
           issueNumber: issue.number,
           reason: "approved_plan",
           revision: `p${plan.id}`,
+          epoch,
           planCommentId: plan.id,
-          approvalCommentId: approval.comment.id
+          approvalCommentId: approval.commentId,
+          planSha256: approval.record.plan_sha256
         }
       ];
     }
@@ -17814,14 +18643,14 @@ function formatTimestamp(iso) {
 function feedbackEntryText(entry) {
   const trimmed = entry.comment.body.trim();
   if (entry.kind === "choose") {
-    const match = CHOOSE_PATTERN2.exec(trimmed);
+    const match = /^\/choose (\S+) (\S+)$/.exec(trimmed);
     const question = match?.[1];
     const answer = match?.[2];
     if (question !== void 0 && answer !== void 0) {
       return `Q: ${question} \u2192 A: ${answer}`;
     }
   } else {
-    const match = CHANGE_PATTERN2.exec(trimmed);
+    const match = /^\/change (.+)$/.exec(trimmed);
     const text = match?.[1];
     if (text !== void 0) {
       return text;
@@ -17842,15 +18671,6 @@ ${feedbackEntryText(entry)}`;
 ${sections.join("\n\n")}
 `;
 }
-var MARKER_LINE_PATTERN = /^<!--\s*ai-workflow:[a-z-]+:v\d+\s*-->$/;
-var DISPATCH_ID_LINE_PATTERN = /<!--\s*gateflow:dispatch-id:\s*\S+\s*-->/;
-function extractPlanContent(planCommentBody) {
-  const kept = planCommentBody.split(/\r?\n/).filter((line) => {
-    const trimmed = line.trim();
-    return !MARKER_LINE_PATTERN.test(trimmed) && !DISPATCH_ID_LINE_PATTERN.test(trimmed);
-  }).join("\n");
-  return kept.trim();
-}
 
 // src/driver/discovery.ts
 function parseRepositorySlug(repository) {
@@ -17861,32 +18681,67 @@ function parseRepositorySlug(repository) {
   if (owner === void 0 || name === void 0) return null;
   return { owner, name };
 }
-async function discoverIssue(client, repository, issue, config) {
+async function bootstrapEpochIfNeeded(client, ref2, repositoryInfo, issue, records) {
+  const labels = aiLabels(issue.labels);
+  if (!(labels.length === 1 && labels[0] === "ai:planning")) return null;
+  if (records.epoch !== null) return null;
+  if (records.suspect.some((entry) => entry.reason.includes("workflow_epoch"))) return null;
+  const identity = await client.getAuthenticatedUser();
+  const epoch = newWorkflowEpoch();
+  const record = {
+    schema: 2,
+    kind: "workflow_epoch",
+    repository_id: repositoryInfo.id,
+    issue_number: issue.number,
+    workflow_epoch: epoch,
+    created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    issued_by: identity.login,
+    operation_id: epochOperationId(repositoryInfo.id, issue.number, epoch)
+  };
+  await client.addIssueComment(ref2, buildRecordBody(record));
+  return client.listComments(ref2);
+}
+async function discoverIssue(client, repository, issue, config, repositoryInfo) {
   const slug = parseRepositorySlug(repository);
   if (slug === null) {
     throw new Error(`invalid repository slug: ${JSON.stringify(repository)}`);
   }
-  const ref = { owner: slug.owner, repo: slug.name, issueNumber: issue.number };
-  const comments = await client.listComments(ref);
-  const trustedHumans = new Set(config.trustedHumans);
+  const ref2 = { owner: slug.owner, repo: slug.name, issueNumber: issue.number };
+  let comments = await client.listComments(ref2);
+  const gateLogins = new Set(config.gateLogins.map((login) => login.toLowerCase()));
+  let records = readIssueRecords(comments, gateLogins);
+  const bootstrapped = await bootstrapEpochIfNeeded(client, ref2, repositoryInfo, issue, records);
+  if (bootstrapped !== null) {
+    comments = bootstrapped;
+    records = readIssueRecords(comments, gateLogins);
+  }
+  const ctx = {
+    repositoryId: repositoryInfo.id,
+    repoOwner: slug.owner,
+    trustedHumans: /* @__PURE__ */ new Set([slug.owner.toLowerCase(), ...config.trustedHumans.map((h) => h.toLowerCase())]),
+    gateLogins
+  };
   return {
     issue,
     comments,
-    intents: deriveIntents(issue, comments, trustedHumans, slug.owner),
-    feedback: findHumanFeedbackCommands(comments, trustedHumans, slug.owner)
+    intents: deriveIntents(issue, comments, ctx),
+    // Only Gate-ACCEPTED feedback events are projected; raw command comments
+    // alone are never enough (hardening Phase 3.2).
+    feedback: acceptedFeedbackEvents(records, comments, ctx.trustedHumans, slug.owner),
+    records
   };
 }
-async function discoverWork(client, repository, config, log) {
+async function discoverWork(client, repository, config, repositoryInfo, log) {
   const slug = parseRepositorySlug(repository);
   if (slug === null) {
     throw new Error(`invalid repository slug: ${JSON.stringify(repository)}`);
   }
-  const issues = await client.listOpenIssues({ owner: slug.owner, repo: slug.name });
+  const issues = await client.listIssues({ owner: slug.owner, repo: slug.name });
   const discoveries = [];
   for (const issue of issues) {
     if (aiLabels(issue.labels).length !== 1) continue;
     try {
-      discoveries.push(await discoverIssue(client, repository, issue, config));
+      discoveries.push(await discoverIssue(client, repository, issue, config, repositoryInfo));
     } catch (err) {
       log?.error(`discovery failed for issue #${issue.number}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -17902,10 +18757,14 @@ function shouldDispatch(existing, maxAttempts) {
   }
   switch (existing.status) {
     case "dispatched":
-    case "syncing":
+    case "publishing":
       return { ok: false, reason: "already-dispatched" };
-    case "synced":
-      return { ok: false, reason: "synced" };
+    case "published":
+      return { ok: false, reason: "published" };
+    case "accepted":
+      return { ok: false, reason: "accepted" };
+    case "obsolete":
+      return { ok: false, reason: "obsolete" };
     case "failed":
       if (existing.attempts < maxAttempts) {
         return { ok: true, reason: "retry" };
@@ -17928,6 +18787,100 @@ async function clearReceipt(paths, dispatchId) {
   }
 }
 
+// src/driver/workspace-lock.ts
+var import_promises7 = require("node:fs/promises");
+var nodePath6 = __toESM(require("node:path"));
+function executorLockFile(paths) {
+  return nodePath6.join(paths.locks, "executor.lock");
+}
+function driverLockFile(paths) {
+  return nodePath6.join(paths.locks, "driver.lock");
+}
+var DRIVER_LOCK_HOLDER = "gateflow-driver";
+var MAX_LOCK_AGE_MS = 6 * 60 * 60 * 1e3;
+function isAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = err.code;
+    return code === "EPERM";
+  }
+}
+async function readLock(file) {
+  try {
+    const raw = await (0, import_promises7.readFile)(file, "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const candidate = parsed;
+    if (typeof candidate.pid !== "number" || typeof candidate.holder !== "string") return null;
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+async function lockAgeMs(file, nowMs) {
+  try {
+    const raw = await (0, import_promises7.readFile)(file, "utf8");
+    const parsed = JSON.parse(raw);
+    const at = typeof parsed.acquired_at === "string" ? Date.parse(parsed.acquired_at) : NaN;
+    if (Number.isNaN(at)) return MAX_LOCK_AGE_MS + 1;
+    return nowMs - at;
+  } catch {
+    return MAX_LOCK_AGE_MS + 1;
+  }
+}
+async function acquireLock(file, holder, dispatchId, now = () => /* @__PURE__ */ new Date()) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const contents = {
+      pid: process.pid,
+      holder,
+      acquired_at: now().toISOString(),
+      ...dispatchId !== void 0 ? { dispatch_id: dispatchId } : {}
+    };
+    let fd;
+    try {
+      fd = await (0, import_promises7.open)(file, "wx");
+    } catch (err) {
+      const code = err.code;
+      if (code !== "EEXIST") {
+        return { ok: false, reason: `lock file could not be created: ${err.message}`, holder: null };
+      }
+      const existing = await readLock(file);
+      const age = await lockAgeMs(file, now().getTime());
+      const stale = existing === null || !isAlive(existing.pid) || age > MAX_LOCK_AGE_MS;
+      if (!stale) {
+        return { ok: false, reason: "workspace busy: lock held by a live process", holder: existing };
+      }
+      try {
+        await (0, import_promises7.unlink)(file);
+      } catch {
+      }
+      continue;
+    }
+    try {
+      await fd.writeFile(JSON.stringify(contents, null, 2) + "\n", "utf8");
+    } finally {
+      await fd.close();
+    }
+    return { ok: true };
+  }
+  return { ok: false, reason: "workspace busy: lock held by a live process", holder: await readLock(file) };
+}
+async function releaseLock(file, holder, dispatchId) {
+  const existing = await readLock(file);
+  if (existing === null) return false;
+  if (existing.pid !== process.pid || existing.holder !== holder) return false;
+  if (dispatchId !== void 0 && existing.dispatch_id !== dispatchId) return false;
+  try {
+    await (0, import_promises7.unlink)(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // src/driver/dispatch.ts
 function errorMessage(err) {
   return err instanceof Error ? err.message : String(err);
@@ -17938,7 +18891,7 @@ async function dispatchIntent(deps, repositoryInfo, discovery, intent) {
   const { id: repositoryId, owner, name } = repositoryInfo;
   const issueNumber = intent.issueNumber;
   const repository = `${owner}/${name}`;
-  const dispatchId = intent.role === "consumer" ? makeConsumerDispatchId(repositoryId, issueNumber, Number(intent.revision)) : makeExecutorDispatchId(repositoryId, issueNumber, intent.planCommentId ?? 0);
+  const dispatchId = intent.role === "consumer" ? makeConsumerDispatchId(repositoryId, issueNumber, intent.epoch, Number(intent.revision)) : makeExecutorDispatchId(repositoryId, issueNumber, intent.epoch, intent.planCommentId ?? 0);
   const existing = await readReceipt(paths, dispatchId);
   const verdict = shouldDispatch(existing, deps.config.driver.maxAttempts);
   if (!verdict.ok) {
@@ -17954,15 +18907,43 @@ async function dispatchIntent(deps, repositoryInfo, discovery, intent) {
       deps.log.warning(`skip ${dispatchId}: approved plan comment vanished mid-cycle`);
       return { dispatched: false, dispatchId, reason: "plan-comment-not-found" };
     }
-    plan = extractPlanContent(planComment.body);
+    plan = canonicalPlanContent(planComment.body);
+  }
+  let lockAcquired = false;
+  if (intent.role === "executor") {
+    if (existing !== null && existing.dispatch_id === dispatchId) {
+      await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
+    }
+    const lock = await acquireLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId, now);
+    if (!lock.ok) {
+      deps.log.warning(
+        `skip ${dispatchId}: workspace-executor-busy (holder ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : "unknown"})`
+      );
+      return { dispatched: false, dispatchId, reason: "workspace-executor-busy" };
+    }
+    lockAcquired = true;
+  }
+  const snapshot = inputSnapshotSha256({ task, plan, feedback });
+  const existingDispatch = await readInboxDispatch(paths, dispatchId);
+  if (existingDispatch !== null) {
+    const existingContext = await readInboxContext(paths, dispatchId);
+    const existingSnapshot = existingContext?.input_snapshot_sha256;
+    if (existingSnapshot !== void 0 && existingSnapshot !== snapshot) {
+      if (lockAcquired) await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
+      deps.log.warning(
+        `skip ${dispatchId}: input snapshot changed since the inbox was built (refusing to overwrite a possibly-running task)`
+      );
+      return { dispatched: false, dispatchId, reason: "input-changed" };
+    }
   }
   const createdAt = now().toISOString();
   const dispatch = {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
     repository,
     repository_id: repositoryId,
     issue_number: issueNumber,
+    workflow_epoch: intent.epoch,
     role: intent.role,
     reason: intent.reason,
     created_at: createdAt,
@@ -17975,15 +18956,17 @@ async function dispatchIntent(deps, repositoryInfo, discovery, intent) {
     }
   };
   const context = {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
-    ...intent.role === "executor" && intent.planCommentId !== null && plan !== null ? { plan_comment_id: intent.planCommentId, plan_sha256: sha256Hex(plan) } : {},
-    feedback_count: discovery.feedback.length
+    workflow_epoch: intent.epoch,
+    ...intent.role === "executor" && intent.planCommentId !== null && plan !== null ? { plan_comment_id: intent.planCommentId, plan_sha256: intent.planSha256 ?? sha256Hex(plan) } : {},
+    feedback_count: discovery.feedback.length,
+    input_snapshot_sha256: snapshot
   };
   const build = { dispatch, context, task, plan, feedback };
   await writeInbox(paths, build);
   await writeCurrent(paths, {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
     role: intent.role,
     issue_number: issueNumber,
@@ -17994,6 +18977,10 @@ async function dispatchIntent(deps, repositoryInfo, discovery, intent) {
     dispatch_id: dispatchId,
     status: "dispatched",
     attempts: (existing?.attempts ?? 0) + 1,
+    workflow_epoch: intent.epoch,
+    plan_comment_id: intent.planCommentId ?? void 0,
+    approval_comment_id: intent.approvalCommentId ?? void 0,
+    input_snapshot_sha256: snapshot,
     error: null
   });
   const agentName = intent.role === "consumer" ? deps.config.routing.consumer : deps.config.routing.executor;
@@ -18002,8 +18989,14 @@ async function dispatchIntent(deps, repositoryInfo, discovery, intent) {
     deps.config.agents,
     deps.config.activation.fallback
   );
+  let activation = {
+    adapter: adapter.name,
+    state: "failed",
+    detail: "activation not attempted",
+    at: createdAt
+  };
   try {
-    const activation = await adapter.notify(
+    const result = await adapter.notify(
       toActivationDispatch({
         dispatch_id: dispatchId,
         role: intent.role,
@@ -18012,20 +19005,40 @@ async function dispatchIntent(deps, repositoryInfo, discovery, intent) {
       }),
       deps.projectRoot
     );
-    if (activation.notified) {
-      deps.log.info(`activation '${adapter.name}' notified for ${dispatchId}: ${activation.detail}`);
+    activation = {
+      adapter: adapter.name,
+      state: result.state,
+      detail: result.detail,
+      at: now().toISOString()
+    };
+    if (result.state === "failed") {
+      deps.log.warning(`activation '${adapter.name}' failed for ${dispatchId}: ${result.detail}`);
     } else {
-      deps.log.warning(`activation '${adapter.name}' could not notify for ${dispatchId}: ${activation.detail}`);
+      deps.log.info(`activation '${adapter.name}' ${result.state} for ${dispatchId}: ${result.detail}`);
     }
   } catch (err) {
+    activation = {
+      adapter: adapter.name,
+      state: "failed",
+      detail: errorMessage(err),
+      at: now().toISOString()
+    };
     deps.log.warning(`activation adapter threw for ${dispatchId} (dispatch stays valid): ${errorMessage(err)}`);
   }
+  const currentReceipt = await readReceipt(paths, dispatchId);
+  await writeReceipt(paths, {
+    ...currentReceipt ?? {},
+    dispatch_id: dispatchId,
+    status: currentReceipt?.status ?? "dispatched",
+    attempts: currentReceipt?.attempts ?? 1,
+    activation
+  });
   deps.log.info(`dispatched ${dispatchId} (${intent.role}/${intent.reason}) for issue #${issueNumber}`);
   return { dispatched: true, dispatchId, reason: verdict.reason };
 }
 async function processIntents(deps, repositoryInfo) {
   const repository = `${repositoryInfo.owner}/${repositoryInfo.name}`;
-  const discoveries = await discoverWork(deps.client, repository, deps.config, deps.log);
+  const discoveries = await discoverWork(deps.client, repository, deps.config, repositoryInfo, deps.log);
   const outcomes = [];
   for (const discovery of discoveries) {
     for (const intent of discovery.intents) {
@@ -18042,28 +19055,42 @@ async function processIntents(deps, repositoryInfo) {
 }
 
 // src/workspace/submit.ts
-var import_promises7 = require("node:fs/promises");
-var nodePath6 = __toESM(require("node:path"));
+var import_node_crypto8 = require("node:crypto");
+var import_promises8 = require("node:fs/promises");
+var nodePath7 = __toESM(require("node:path"));
 var SUBMIT_JSON = "submit.json";
 var SUBMIT_TASK = "TASK.md";
 var SUBMIT_ERROR = "error.json";
+function newSubmissionId() {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  let id = "sub_";
+  while (id.length < 4 + 16) {
+    const bytes = (0, import_node_crypto8.randomBytes)(16);
+    for (const byte of bytes) {
+      if (id.length >= 4 + 16) break;
+      if (byte >= 252) continue;
+      id += alphabet[byte % 36];
+    }
+  }
+  return id;
+}
 async function readIfExists(file) {
   let info;
   try {
-    info = await (0, import_promises7.stat)(file);
+    info = await (0, import_promises8.stat)(file);
     if (!info.isFile()) return null;
   } catch {
     return null;
   }
   try {
-    return { text: await (0, import_promises7.readFile)(file, "utf8"), size: info.size };
+    return { text: await (0, import_promises8.readFile)(file, "utf8"), size: info.size };
   } catch {
     return null;
   }
 }
 async function inspectSubmit(paths) {
-  const submitJson = await readIfExists(nodePath6.join(paths.submit, SUBMIT_JSON));
-  const task = await readIfExists(nodePath6.join(paths.submit, SUBMIT_TASK));
+  const submitJson = await readIfExists(nodePath7.join(paths.submit, SUBMIT_JSON));
+  const task = await readIfExists(nodePath7.join(paths.submit, SUBMIT_TASK));
   if (submitJson === null && task === null) return { status: "empty" };
   if (submitJson === null) {
     return { status: "invalid", error: `${SUBMIT_JSON} is missing while ${SUBMIT_TASK} exists` };
@@ -18090,28 +19117,40 @@ async function inspectSubmit(paths) {
   if (task.size > MAX_FILE_BYTES) {
     return { status: "invalid", error: `${SUBMIT_TASK} exceeds ${MAX_FILE_BYTES} bytes` };
   }
-  return { status: "ready", request: parsed.value, task: task.text };
+  let request2 = parsed.value;
+  if (request2.submission_id === void 0) {
+    request2 = { ...request2, submission_id: newSubmissionId() };
+    try {
+      await atomicWriteJson(nodePath7.join(paths.submit, SUBMIT_JSON), request2);
+    } catch (err) {
+      return {
+        status: "invalid",
+        error: `could not persist the injected submission_id: ${err.message}`
+      };
+    }
+  }
+  return { status: "ready", request: request2, task: task.text };
 }
 async function markSubmitProcessed(paths) {
-  await (0, import_promises7.mkdir)(paths.submit, { recursive: true });
+  await (0, import_promises8.mkdir)(paths.submit, { recursive: true });
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
   const dirName = `processed-${stamp}`;
-  const targetDir = nodePath6.join(paths.submit, dirName);
-  await (0, import_promises7.mkdir)(targetDir, { recursive: true });
-  const entries = await (0, import_promises7.readdir)(paths.submit, { withFileTypes: true });
+  const targetDir = nodePath7.join(paths.submit, dirName);
+  await (0, import_promises8.mkdir)(targetDir, { recursive: true });
+  const entries = await (0, import_promises8.readdir)(paths.submit, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     if (entry.name === SUBMIT_ERROR) continue;
     try {
-      await (0, import_promises7.rename)(nodePath6.join(paths.submit, entry.name), nodePath6.join(targetDir, entry.name));
+      await (0, import_promises8.rename)(nodePath7.join(paths.submit, entry.name), nodePath7.join(targetDir, entry.name));
     } catch {
     }
   }
   return dirName;
 }
 async function writeSubmitError(paths, error) {
-  await (0, import_promises7.mkdir)(paths.submit, { recursive: true });
-  await atomicWriteJson(nodePath6.join(paths.submit, SUBMIT_ERROR), {
+  await (0, import_promises8.mkdir)(paths.submit, { recursive: true });
+  await atomicWriteJson(nodePath7.join(paths.submit, SUBMIT_ERROR), {
     error,
     created_at: (/* @__PURE__ */ new Date()).toISOString()
   });
@@ -18126,14 +19165,25 @@ function buildSubmitIssueBody(task, request2) {
   return `${task}
 
 <!-- ai-workflow
-schema: 1
+schema: 2
 source: producer
 kind: ${request2.kind}
 maturity_hint: ${request2.maturity_hint}
 -->
 
+${sourceIdComment(submitOperationId(request2.submission_id))}
+
 > Submitted via GateFlow local submit (.gateflow/submit).
 `;
+}
+async function findIssueBySourceId(deps, owner, repo, operationId) {
+  const issues = await deps.client.listIssues({ owner, repo, state: "all" });
+  for (const issue of issues) {
+    if (findSourceIdInBody(issue.body) === operationId) {
+      return issue.number;
+    }
+  }
+  return null;
 }
 async function processSubmit(deps, repositoryInfo) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
@@ -18147,7 +19197,16 @@ async function processSubmit(deps, repositoryInfo) {
     return { action: "invalid", detail: inspection.error };
   }
   const { request: request2, task } = inspection;
+  const operationId = submitOperationId(request2.submission_id);
   try {
+    const existing = await findIssueBySourceId(deps, repositoryInfo.owner, repositoryInfo.repo, operationId);
+    if (existing !== null) {
+      await markSubmitProcessed(paths);
+      deps.log.warning(
+        `submit reconciled: issue #${existing} already carries ${operationId}; adopted instead of re-creating`
+      );
+      return { action: "adopted", detail: `adopted existing issue #${existing}`, issueNumber: existing };
+    }
     const { number } = await deps.client.createIssue(
       { owner: repositoryInfo.owner, repo: repositoryInfo.repo },
       {
@@ -18161,19 +19220,122 @@ async function processSubmit(deps, repositoryInfo) {
     return { action: "created", detail: `issue #${number} created`, issueNumber: number };
   } catch (err) {
     const message = errorMessage2(err);
-    deps.log.error(`submit issue creation failed (left unprocessed, will retry next cycle): ${message}`);
+    deps.log.error(
+      `submit issue creation failed (left unprocessed; next cycle reconciles by ${operationId} first): ${message}`
+    );
     return { action: "error", detail: message };
   }
 }
 
 // src/driver/sync.ts
-var import_promises8 = require("node:fs/promises");
-var nodePath7 = __toESM(require("node:path"));
+var import_promises9 = require("node:fs/promises");
+var nodePath8 = __toESM(require("node:path"));
+
+// src/driver/preflight.ts
+async function runPreflight(client, repositoryInfo, dispatch, identity) {
+  const parsed = parseDispatchId(dispatch.dispatch_id);
+  if (parsed === null) {
+    return { ok: false, reason: `dispatch id "${dispatch.dispatch_id}" violates the frozen grammar`, obsolete: true };
+  }
+  if (parsed.repositoryId !== dispatch.repository_id || parsed.issueNumber !== dispatch.issue_number) {
+    return { ok: false, reason: "dispatch id components disagree with the dispatch document", obsolete: true };
+  }
+  if (parsed.epochCode !== dispatch.workflow_epoch.slice(3)) {
+    return { ok: false, reason: "dispatch id epoch code disagrees with the dispatch epoch", obsolete: true };
+  }
+  if (dispatch.repository_id !== repositoryInfo.id) {
+    return { ok: false, reason: `dispatch targets repository ${dispatch.repository_id}, driver operates on ${repositoryInfo.id}`, obsolete: true };
+  }
+  const ref2 = {
+    owner: repositoryInfo.owner,
+    repo: repositoryInfo.name,
+    issueNumber: dispatch.issue_number
+  };
+  const issue = await client.getIssue(ref2);
+  if (issue === null) {
+    return { ok: false, reason: `issue #${dispatch.issue_number} does not exist`, obsolete: true };
+  }
+  if (issue.state === "closed") {
+    return { ok: false, reason: `issue #${dispatch.issue_number} is closed (cancel/closure invalidates the dispatch)`, obsolete: true };
+  }
+  const labels = aiLabels(issue.labels);
+  if (labels.length === 0) {
+    return { ok: false, reason: `issue #${dispatch.issue_number} carries no ai:* label (workflow exited \u2014 cancel invalidates the dispatch)`, obsolete: true };
+  }
+  if (labels.length > 1) {
+    return { ok: false, reason: `issue #${dispatch.issue_number} carries multiple ai:* labels [${labels.join(", ")}] (corrupted state \u2014 refusing to guess)`, obsolete: false };
+  }
+  const comments = await client.listComments(ref2);
+  const view = readIssueRecords(comments, identity.gateLogins);
+  if (view.suspect.length > 0) {
+    return {
+      ok: false,
+      reason: `suspect authorization record(s) on #${dispatch.issue_number} (fail closed): ` + view.suspect.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", "),
+      obsolete: false
+    };
+  }
+  if (view.epoch === null) {
+    return { ok: false, reason: `no workflow_epoch record on #${dispatch.issue_number} (fail closed)`, obsolete: false };
+  }
+  if (view.epoch.record.workflow_epoch !== dispatch.workflow_epoch) {
+    return {
+      ok: false,
+      reason: `dispatch epoch ${dispatch.workflow_epoch} is superseded by current epoch ${view.epoch.record.workflow_epoch} (old dispatch invalid)`,
+      obsolete: true
+    };
+  }
+  let planCommentId = null;
+  let planHash = null;
+  if (dispatch.role === "executor") {
+    const plan = findLatestPlanComment(comments);
+    if (plan === null || plan.id !== dispatch.plan_comment_id) {
+      return {
+        ok: false,
+        reason: `approved plan comment ${String(dispatch.plan_comment_id)} is no longer the current plan`,
+        obsolete: true
+      };
+    }
+    const hash = planSha256(plan.body);
+    const candidates = view.approvals.filter(
+      (entry) => entry.record.workflow_epoch === dispatch.workflow_epoch && entry.record.plan_comment_id === dispatch.plan_comment_id && entry.record.plan_sha256 === hash && approvalRecordAnchorFailure(entry.record, comments, identity.trustedHumans, identity.repoOwner) === null
+    );
+    if (candidates.length === 0) {
+      return {
+        ok: false,
+        reason: `no valid Gate-issued approval record binds (epoch, plan ${String(dispatch.plan_comment_id)}, hash)`,
+        obsolete: true
+      };
+    }
+    const conflict = approvalRecordsConflict(candidates);
+    if (conflict.conflict) {
+      return { ok: false, reason: `conflicting approval records: ${conflict.reason ?? "divergent content"}`, obsolete: true };
+    }
+    planCommentId = plan.id;
+    planHash = hash;
+  }
+  return {
+    ok: true,
+    snapshot: {
+      issue,
+      comments,
+      epoch: view.epoch.record.workflow_epoch,
+      view,
+      planCommentId,
+      planSha256: planHash,
+      aiState: labels[0] ?? ""
+    }
+  };
+}
+
+// src/driver/sync.ts
 function errorMessage3(err) {
   return err instanceof Error ? err.message : String(err);
 }
 function noticeBody(role, what, dispatchId, reason) {
   return `[gateflow] ${role} ${what} (dispatch ${dispatchId}): ${reason}`;
+}
+function noticeKey(body) {
+  return sha256Hex(body).slice(0, 16);
 }
 function receiptBase(receipt, dispatchId) {
   return {
@@ -18182,6 +19344,12 @@ function receiptBase(receipt, dispatchId) {
     status: receipt?.status ?? "dispatched",
     attempts: receipt?.attempts ?? 1
   };
+}
+async function releaseExecutorLockIfTerminal(paths, dispatch, status) {
+  if (dispatch.role !== "executor") return;
+  if (status === "accepted" || status === "obsolete" || status === "failed") {
+    await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatch.dispatch_id);
+  }
 }
 async function readMarkdownCapped(paths, dispatchId, name) {
   try {
@@ -18193,16 +19361,12 @@ async function readMarkdownCapped(paths, dispatchId, name) {
     throw err;
   }
 }
-async function resolveTracker(deps, ref, dispatchId, receipt) {
-  const comments = await deps.client.listComments(ref);
-  let tracker = null;
+function resolveTrackerFrom(comments, dispatchId, receipt) {
   if (receipt?.tracker_comment_id !== void 0) {
-    tracker = comments.find((comment) => comment.id === receipt.tracker_comment_id) ?? null;
+    const found = comments.find((comment) => comment.id === receipt.tracker_comment_id);
+    if (found !== void 0) return found;
   }
-  if (tracker === null) {
-    tracker = findTrackerComment(comments, dispatchId);
-  }
-  return { comments, tracker };
+  return findTrackerComment(comments, dispatchId);
 }
 function validateOrDetail(raw, validate, dispatchId, role) {
   if (raw === null) return [null, null];
@@ -18215,13 +19379,13 @@ function validateOrDetail(raw, validate, dispatchId, role) {
 async function readOutboxJsonStrict(paths, dispatchId, fileName) {
   let file;
   try {
-    file = nodePath7.join(outboxDispatchDir(paths, dispatchId), fileName);
+    file = nodePath8.join(outboxDispatchDir(paths, dispatchId), fileName);
   } catch {
     return null;
   }
   let text;
   try {
-    text = await (0, import_promises8.readFile)(file, "utf8");
+    text = await (0, import_promises9.readFile)(file, "utf8");
   } catch {
     return null;
   }
@@ -18242,7 +19406,6 @@ async function syncDispatch(deps, repositoryInfo, dispatchId) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   const now = deps.now ?? (() => /* @__PURE__ */ new Date());
   const nowIso = now().toISOString();
-  const ref = { owner: repositoryInfo.owner, repo: repositoryInfo.name, issueNumber: 0 };
   const inboxDispatch = await readInboxDispatch(paths, dispatchId);
   if (inboxDispatch === null) {
     return {
@@ -18251,16 +19414,7 @@ async function syncDispatch(deps, repositoryInfo, dispatchId) {
       detail: "no valid inbox dispatch.json for this id (unknown dispatch, docs \xA78.3)"
     };
   }
-  ref.issueNumber = inboxDispatch.issue_number;
   const role = inboxDispatch.role;
-  const receipt = await readReceipt(paths, dispatchId);
-  if (receipt?.status === "synced") {
-    return {
-      dispatchId,
-      action: "skipped",
-      detail: "receipt already synced \u2014 later result overwrites are not accepted (docs \xA78.4)"
-    };
-  }
   const rawStatus = await readOutboxJsonStrict(paths, dispatchId, "status.json");
   if (rawStatus !== null && rawStatus.error !== null) {
     deps.log.warning(`rejected ${dispatchId}: unparseable status.json \u2014 ${rawStatus.error}`);
@@ -18281,14 +19435,86 @@ async function syncDispatch(deps, repositoryInfo, dispatchId) {
     deps.log.warning(`rejected ${dispatchId}: invalid result.json \u2014 ${resultError}`);
     return { dispatchId, action: "rejected", detail: `invalid result.json: ${resultError}` };
   }
-  if (role === "consumer") {
-    return syncConsumer(deps, ref, paths, dispatchId, receipt, status, result, nowIso);
+  const receipt = await readReceipt(paths, dispatchId);
+  const preflight = await runPreflight(deps.client, repositoryInfo, inboxDispatch, {
+    gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
+    trustedHumans: /* @__PURE__ */ new Set([
+      repositoryInfo.owner.toLowerCase(),
+      ...deps.config.trustedHumans.map((login) => login.toLowerCase())
+    ]),
+    repoOwner: repositoryInfo.owner
+  });
+  if (!preflight.ok) {
+    if (preflight.obsolete) {
+      await writeReceipt(paths, {
+        ...receiptBase(receipt, dispatchId),
+        status: "obsolete",
+        error: preflight.reason,
+        last_sync_at: nowIso
+      });
+      await releaseExecutorLockIfTerminal(paths, inboxDispatch, "obsolete");
+      deps.log.warning(`obsolete ${dispatchId}: ${preflight.reason}`);
+      return { dispatchId, action: "obsolete", detail: preflight.reason };
+    }
+    deps.log.warning(`blocked ${dispatchId} (preflight): ${preflight.reason}`);
+    return { dispatchId, action: "rejected", detail: `preflight: ${preflight.reason}` };
   }
-  return syncExecutor(deps, ref, paths, dispatchId, receipt, status, result, nowIso);
+  const snapshot = preflight.snapshot;
+  if (receipt?.status === "published" && receipt.published_comment_id !== void 0) {
+    const isConsumerPlanAccepted = role === "consumer" && snapshot.view.approvals.some(
+      (entry) => entry.record.workflow_epoch === snapshot.epoch && entry.record.plan_comment_id === receipt.published_comment_id
+    );
+    const isExecutorReportAccepted = role === "executor" && snapshot.aiState === "ai:done";
+    if (isConsumerPlanAccepted || isExecutorReportAccepted) {
+      await writeReceipt(paths, {
+        ...receiptBase(receipt, dispatchId),
+        status: "accepted",
+        last_sync_at: nowIso
+      });
+      await releaseExecutorLockIfTerminal(paths, inboxDispatch, "accepted");
+      return { dispatchId, action: "accepted", detail: `Gate accepted the ${role} output (${snapshot.aiState})` };
+    }
+  }
+  if (receipt?.status === "published" || receipt?.status === "accepted") {
+    return {
+      dispatchId,
+      action: "skipped",
+      detail: `receipt already ${receipt.status} \u2014 later result overwrites are not accepted (docs \xA78.4)`
+    };
+  }
+  if (role === "consumer") {
+    return syncConsumer(deps, ref(repositoryInfo, inboxDispatch.issue_number), paths, dispatchId, receipt, status, result, snapshot, nowIso);
+  }
+  return syncExecutor(deps, ref(repositoryInfo, inboxDispatch.issue_number), paths, dispatchId, inboxDispatch, receipt, status, result, snapshot, nowIso);
 }
-async function syncConsumer(deps, ref, paths, dispatchId, receipt, status, result, nowIso) {
+function ref(repositoryInfo, issueNumber) {
+  return { owner: repositoryInfo.owner, repo: repositoryInfo.name, issueNumber };
+}
+function reconcileMarkerComment(comments, dispatchId, localContent, kind) {
+  const mine = kind === "plan" ? findPlanComments(comments).filter((plan) => plan.dispatchId === dispatchId) : findCompletionReportComments(comments, dispatchId);
+  if (mine.length === 0) return { verdict: "absent" };
+  const latest = mine[mine.length - 1];
+  if (latest === void 0) return { verdict: "absent" };
+  const remoteHash = canonicalPlanContent(latest.body);
+  const localHash = canonicalPlanContent(localContent);
+  if (remoteHash !== localHash) {
+    return {
+      verdict: "conflict",
+      detail: `remote ${kind} comment #${latest.id} exists for ${dispatchId} with DIFFERENT content (fail closed: no overwrite, no duplicate)`
+    };
+  }
+  return { verdict: "adopt", comment: latest };
+}
+async function syncConsumer(deps, issueRef, paths, dispatchId, receipt, status, result, snapshot, nowIso) {
   if (result !== null) {
     if (result.result === "plan_ready") {
+      if (snapshot.aiState !== "ai:planning" && snapshot.aiState !== "ai:review") {
+        return {
+          dispatchId,
+          action: "unchanged",
+          detail: `plan publication requires ai:planning|ai:review, current state is ${snapshot.aiState}`
+        };
+      }
       const plan = await readMarkdownCapped(paths, dispatchId, "PLAN.md");
       if (plan.error !== null) {
         return { dispatchId, action: "rejected", detail: `PLAN.md rejected: ${plan.error}` };
@@ -18296,32 +19522,66 @@ async function syncConsumer(deps, ref, paths, dispatchId, receipt, status, resul
       if (plan.content === null) {
         return { dispatchId, action: "rejected", detail: "result=plan_ready but PLAN.md is missing or empty" };
       }
-      await publishPlanComment(deps.client, ref, plan.content, dispatchId);
-      await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: "synced", last_sync_at: nowIso });
-      return { dispatchId, action: "plan-published", detail: `plan comment published for issue #${ref.issueNumber}` };
+      const reconciliation = reconcileMarkerComment(snapshot.comments, dispatchId, plan.content, "plan");
+      if (reconciliation.verdict === "conflict") {
+        await writeReceipt(paths, {
+          ...receiptBase(receipt, dispatchId),
+          status: "failed",
+          error: reconciliation.detail,
+          last_sync_at: nowIso
+        });
+        deps.log.error(`conflict ${dispatchId}: ${reconciliation.detail}`);
+        return { dispatchId, action: "rejected", detail: reconciliation.detail };
+      }
+      let commentId;
+      if (reconciliation.verdict === "adopt") {
+        commentId = reconciliation.comment.id;
+        deps.log.info(`reconciled ${dispatchId}: adopting existing plan comment #${commentId}`);
+      } else {
+        await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: "publishing", last_sync_at: nowIso });
+        const published = await publishPlanComment(deps.client, issueRef, plan.content, dispatchId);
+        commentId = published.id;
+      }
+      await writeReceipt(paths, {
+        ...receiptBase(receipt, dispatchId),
+        status: "published",
+        published_comment_id: commentId,
+        last_sync_at: nowIso,
+        error: null
+      });
+      return {
+        dispatchId,
+        action: "plan-published",
+        detail: `plan comment #${commentId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`
+      };
     }
-    await deps.client.addIssueComment(
-      ref,
-      noticeBody("consumer", result.result, dispatchId, result.reason ?? "(no reason given)")
-    );
-    await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: "synced", last_sync_at: nowIso });
+    const body = noticeBody("consumer", result.result, dispatchId, result.reason ?? "(no reason given)");
+    const key = noticeKey(body);
+    if (receipt?.last_notice_key === key) {
+      return { dispatchId, action: "unchanged", detail: "notice already posted for this result" };
+    }
+    await deps.client.addIssueComment(issueRef, body);
+    await writeReceipt(paths, {
+      ...receiptBase(receipt, dispatchId),
+      last_notice_key: key,
+      last_sync_at: nowIso
+    });
     return { dispatchId, action: "notice", detail: `consumer ${result.result} notice posted` };
   }
   if (status !== null && status.state === "blocked") {
-    if (receipt?.last_notice_state === "blocked") {
+    const body = noticeBody("consumer", "blocked", dispatchId, status.summary ?? status.phase ?? "(blocked, no summary)");
+    const key = noticeKey(body);
+    if (receipt?.last_notice_key === key) {
       return {
         dispatchId,
         action: "unchanged",
         detail: "consumer blocked notice already posted for this dispatch"
       };
     }
-    await deps.client.addIssueComment(
-      ref,
-      noticeBody("consumer", "blocked", dispatchId, status.summary ?? status.phase ?? "(blocked, no summary)")
-    );
+    await deps.client.addIssueComment(issueRef, body);
     await writeReceipt(paths, {
       ...receiptBase(receipt, dispatchId),
-      last_notice_state: "blocked",
+      last_notice_key: key,
       last_sync_at: nowIso
     });
     return { dispatchId, action: "notice", detail: "consumer blocked notice posted" };
@@ -18332,7 +19592,7 @@ async function syncConsumer(deps, ref, paths, dispatchId, receipt, status, resul
     detail: "no terminal result yet; consumer working/failed status is not echoed to GitHub"
   };
 }
-async function syncExecutor(deps, ref, paths, dispatchId, receipt, status, result, nowIso) {
+async function syncExecutor(deps, issueRef, paths, dispatchId, inboxDispatch, receipt, status, result, snapshot, nowIso) {
   const now = deps.now ?? (() => /* @__PURE__ */ new Date());
   if (result !== null) {
     if (result.result === "completed") {
@@ -18343,6 +19603,13 @@ async function syncExecutor(deps, ref, paths, dispatchId, receipt, status, resul
           detail: `result=completed requires validation="passed", got ${JSON.stringify(result.validation ?? null)}`
         };
       }
+      if (snapshot.aiState !== "ai:working") {
+        return {
+          dispatchId,
+          action: "unchanged",
+          detail: `completion report requires ai:working, current state is ${snapshot.aiState}`
+        };
+      }
       const report = await readMarkdownCapped(paths, dispatchId, "REPORT.md");
       if (report.error !== null) {
         return { dispatchId, action: "rejected", detail: `REPORT.md rejected: ${report.error}` };
@@ -18350,39 +19617,99 @@ async function syncExecutor(deps, ref, paths, dispatchId, receipt, status, resul
       if (report.content === null) {
         return { dispatchId, action: "rejected", detail: "result=completed but REPORT.md is missing or empty" };
       }
-      await publishCompletionReport(deps.client, ref, report.content, dispatchId);
-      await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: "synced", last_sync_at: nowIso });
-      return { dispatchId, action: "completed", detail: `completion report published for issue #${ref.issueNumber}` };
+      let tracker3 = resolveTrackerFrom(snapshot.comments, dispatchId, receipt);
+      let trackerId2 = tracker3?.id;
+      if (tracker3 === null) {
+        const progress2 = await readMarkdownCapped(paths, dispatchId, "PROGRESS.md");
+        const created = await publishTrackerComment(deps.client, issueRef, {
+          dispatchId,
+          issueNumber: issueRef.issueNumber,
+          progressMarkdown: progress2.content ?? ""
+        });
+        trackerId2 = created.id;
+        await writeReceipt(paths, {
+          ...receiptBase(receipt, dispatchId),
+          status: receipt?.status ?? "dispatched",
+          tracker_comment_id: created.id,
+          last_sync_at: nowIso
+        });
+        deps.log.info(`repaired ${dispatchId}: lawful tracker #${created.id} created before report publication`);
+      }
+      const reconciliation = reconcileMarkerComment(
+        snapshot.comments,
+        dispatchId,
+        report.content,
+        "report"
+      );
+      if (reconciliation.verdict === "conflict") {
+        await writeReceipt(paths, {
+          ...receiptBase(receipt, dispatchId),
+          status: "failed",
+          error: reconciliation.detail,
+          last_sync_at: nowIso
+        });
+        await releaseExecutorLockIfTerminal(paths, inboxDispatch, "failed");
+        deps.log.error(`conflict ${dispatchId}: ${reconciliation.detail}`);
+        return { dispatchId, action: "rejected", detail: reconciliation.detail };
+      }
+      let reportId;
+      if (reconciliation.verdict === "adopt") {
+        reportId = reconciliation.comment.id;
+        deps.log.info(`reconciled ${dispatchId}: adopting existing report comment #${reportId}`);
+      } else {
+        await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: "publishing", last_sync_at: nowIso });
+        const published = await publishCompletionReport(deps.client, issueRef, report.content, dispatchId);
+        reportId = published.id;
+      }
+      await writeReceipt(paths, {
+        ...receiptBase(receipt, dispatchId),
+        status: "published",
+        published_comment_id: reportId,
+        tracker_comment_id: trackerId2,
+        last_sync_at: nowIso,
+        error: null
+      });
+      return {
+        dispatchId,
+        action: "completed",
+        detail: `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`
+      };
     }
-    const { tracker: tracker2 } = await resolveTracker(deps, ref, dispatchId, receipt);
+    if (snapshot.aiState !== "ai:working" && snapshot.aiState !== "ai:blocked") {
+      return {
+        dispatchId,
+        action: "unchanged",
+        detail: `blocked-state reporting requires ai:working|ai:blocked, current state is ${snapshot.aiState}`
+      };
+    }
+    const { tracker: tracker2 } = await resolveTracker(deps, issueRef, dispatchId, receipt);
     let trackerId;
     if (tracker2 !== null) {
-      await updateTracker(deps.client, ref, tracker2.id, tracker2.body, { status: "Blocked" });
+      await updateTracker(deps.client, issueRef, tracker2.id, tracker2.body, { status: "Blocked" });
       trackerId = tracker2.id;
     } else {
       const progress2 = await readMarkdownCapped(paths, dispatchId, "PROGRESS.md");
-      const created = await publishTrackerComment(deps.client, ref, {
+      const created = await publishTrackerComment(deps.client, issueRef, {
         dispatchId,
-        issueNumber: ref.issueNumber,
+        issueNumber: issueRef.issueNumber,
         progressMarkdown: progress2.content ?? ""
       });
       const createdBody = buildTrackerCommentBody({
         dispatchId,
-        issueNumber: ref.issueNumber,
+        issueNumber: issueRef.issueNumber,
         status: "In Progress",
         progressMarkdown: progress2.content ?? ""
       });
-      await updateTracker(deps.client, ref, created.id, createdBody, { status: "Blocked" });
+      await updateTracker(deps.client, issueRef, created.id, createdBody, { status: "Blocked" });
       trackerId = created.id;
     }
-    await deps.client.addIssueComment(
-      ref,
-      noticeBody("executor", result.result, dispatchId, result.reason ?? "(no reason given)")
-    );
+    const body = noticeBody("executor", result.result, dispatchId, result.reason ?? "(no reason given)");
+    await deps.client.addIssueComment(issueRef, body);
     await writeReceipt(paths, {
       ...receiptBase(receipt, dispatchId),
-      status: "synced",
+      status: receipt?.status ?? "dispatched",
       tracker_comment_id: trackerId,
+      last_notice_key: noticeKey(body),
       last_sync_at: nowIso
     });
     return { dispatchId, action: "notice", detail: `executor ${result.result}: tracker #${trackerId} set to Blocked, notice posted` };
@@ -18390,17 +19717,25 @@ async function syncExecutor(deps, ref, paths, dispatchId, receipt, status, resul
   if (status === null) {
     return { dispatchId, action: "unchanged", detail: "no status.json or result.json in the outbox yet" };
   }
+  const trackerStateAllowed = status.state === "blocked" ? snapshot.aiState === "ai:working" || snapshot.aiState === "ai:blocked" : snapshot.aiState === "ai:ready" || snapshot.aiState === "ai:working" || snapshot.aiState === "ai:blocked";
+  if (!trackerStateAllowed) {
+    return {
+      dispatchId,
+      action: "unchanged",
+      detail: `tracker lifecycle requires ai:ready|ai:working|ai:blocked, current state is ${snapshot.aiState}`
+    };
+  }
   const progress = await readMarkdownCapped(paths, dispatchId, "PROGRESS.md");
   if (progress.error !== null) {
     return { dispatchId, action: "rejected", detail: `PROGRESS.md rejected: ${progress.error}` };
   }
   const progressMd = progress.content;
   const progressSha = progressMd === null ? null : sha256Hex(progressMd);
-  const { tracker } = await resolveTracker(deps, ref, dispatchId, receipt);
+  const { tracker } = await resolveTracker(deps, issueRef, dispatchId, receipt);
   if (tracker === null) {
-    const created = await publishTrackerComment(deps.client, ref, {
+    const created = await publishTrackerComment(deps.client, issueRef, {
       dispatchId,
-      issueNumber: ref.issueNumber,
+      issueNumber: issueRef.issueNumber,
       progressMarkdown: progressMd ?? ""
     });
     await writeReceipt(paths, {
@@ -18412,11 +19747,11 @@ async function syncExecutor(deps, ref, paths, dispatchId, receipt, status, resul
     if (status.state === "blocked") {
       const createdBody = buildTrackerCommentBody({
         dispatchId,
-        issueNumber: ref.issueNumber,
+        issueNumber: issueRef.issueNumber,
         status: "In Progress",
         progressMarkdown: progressMd ?? ""
       });
-      await updateTracker(deps.client, ref, created.id, createdBody, { status: "Blocked" });
+      await updateTracker(deps.client, issueRef, created.id, createdBody, { status: "Blocked" });
       await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), tracker_comment_id: created.id, last_sync_at: nowIso });
       return { dispatchId, action: "blocked", detail: `tracker #${created.id} created and set to Blocked` };
     }
@@ -18431,12 +19766,12 @@ async function syncExecutor(deps, ref, paths, dispatchId, receipt, status, resul
     return { dispatchId, action: "tracker-created", detail: `recovered existing tracker comment #${tracker.id}` };
   }
   if (status.state === "blocked") {
-    await updateTracker(deps.client, ref, tracker.id, tracker.body, { status: "Blocked" });
+    await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: "Blocked" });
     await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), tracker_comment_id: tracker.id, last_sync_at: nowIso });
     return { dispatchId, action: "blocked", detail: `tracker #${tracker.id} set to Blocked` };
   }
   if (status.state === "working" && findTrackerStatus(tracker.body) === "Blocked") {
-    await updateTracker(deps.client, ref, tracker.id, tracker.body, {
+    await updateTracker(deps.client, issueRef, tracker.id, tracker.body, {
       status: "In Progress",
       ...progressMd !== null ? { progressMarkdown: progressMd } : {}
     });
@@ -18452,7 +19787,7 @@ async function syncExecutor(deps, ref, paths, dispatchId, receipt, status, resul
     const lastSyncMs = Date.parse(receipt?.last_sync_at ?? "1970-01-01T00:00:00Z");
     const windowMs = deps.config.driver.progressSyncSeconds * 1e3;
     if (now().getTime() - lastSyncMs >= windowMs) {
-      await updateTracker(deps.client, ref, tracker.id, tracker.body, {
+      await updateTracker(deps.client, issueRef, tracker.id, tracker.body, {
         status: "In Progress",
         progressMarkdown: progressMd ?? ""
       });
@@ -18470,6 +19805,10 @@ async function syncExecutor(deps, ref, paths, dispatchId, receipt, status, resul
     action: "unchanged",
     detail: "tracker is current (progress unchanged or debounce window not elapsed)"
   };
+}
+async function resolveTracker(deps, issueRef, dispatchId, receipt) {
+  const comments = await deps.client.listComments(issueRef);
+  return { comments, tracker: resolveTrackerFrom(comments, dispatchId, receipt) };
 }
 async function syncAll(deps, repositoryInfo) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
@@ -18492,10 +19831,18 @@ function errorMessage4(err) {
 function sleep2(ms) {
   return new Promise((resolve4) => setTimeout(resolve4, ms));
 }
+function assertUsableRepository(config, repositoryInfo) {
+  if (config.requireExplicitHumans && repositoryInfo.ownerType !== "User" && config.trustedHumans.length === 0) {
+    throw new Error(
+      `repository owner "${repositoryInfo.owner}" has GitHub type "${repositoryInfo.ownerType}"; Driver refuses to run on an Organization-owned repository without an explicit \`trusted_humans\` allowlist in gateflow.config.yml (fail closed, hardening GF-H10).`
+    );
+  }
+}
 async function runOnce(deps) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
   const repositoryInfo = await deps.client.getRepository();
+  assertUsableRepository(deps.config, repositoryInfo);
   const submit = await processSubmit(deps, {
     owner: repositoryInfo.owner,
     repo: repositoryInfo.name,
@@ -18512,7 +19859,15 @@ async function runOnce(deps) {
 async function startDriver(deps) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
+  const now = deps.now ?? (() => /* @__PURE__ */ new Date());
+  const lock = await acquireLock(driverLockFile(paths), DRIVER_LOCK_HOLDER, void 0, now);
+  if (!lock.ok) {
+    throw new Error(
+      `another GateFlow driver instance appears to be running for this workspace (driver.lock held by ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : "an unknown process"}); refusing to start a second instance (single-writer rule, hardening \xA79)`
+    );
+  }
   const repositoryInfo = await deps.client.getRepository();
+  assertUsableRepository(deps.config, repositoryInfo);
   const pollMs = Math.max(1, deps.config.driver.pollIntervalSeconds) * 1e3;
   const pending = /* @__PURE__ */ new Set();
   let stopped = false;
@@ -18554,6 +19909,7 @@ async function startDriver(deps) {
     deps.log.info("GateFlow driver shutting down (signal received)");
     void watcher.close().catch(() => {
     }).then(() => {
+      void releaseLock(driverLockFile(paths), DRIVER_LOCK_HOLDER);
       process.exit(0);
     });
   };
@@ -18583,12 +19939,17 @@ async function startDriver(deps) {
     process.removeListener("SIGTERM", onSignal);
     await watcher.close().catch(() => {
     });
+    await releaseLock(driverLockFile(paths), DRIVER_LOCK_HOLDER);
   }
 }
 
 // src/driver/retry.ts
 async function retryDispatch(paths, dispatchId) {
-  return clearReceipt(paths, dispatchId);
+  const cleared = await clearReceipt(paths, dispatchId);
+  if (cleared) {
+    await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
+  }
+  return cleared;
 }
 
 // src/cli.ts
@@ -18731,7 +20092,7 @@ async function runStatus(args) {
   console.log(`receipts: ${receipts.length}`);
   for (const receipt of receipts) {
     console.log(
-      `  ${receipt.dispatch_id}  status=${receipt.status} attempts=${receipt.attempts} tracker=${receipt.tracker_comment_id ?? "-"} last_sync=${receipt.last_sync_at ?? "-"}`
+      `  ${receipt.dispatch_id}  status=${receipt.status} attempts=${receipt.attempts} epoch=${receipt.workflow_epoch ?? "-"} published=${receipt.published_comment_id ?? "-"} activation=${receipt.activation ? receipt.activation.state : "-"} last_sync=${receipt.last_sync_at ?? "-"}${receipt.error !== void 0 && receipt.error !== null ? ` error=${receipt.error}` : ""}`
     );
   }
   const outboxIds = await listOutboxDispatchIds(paths);
@@ -18752,7 +20113,9 @@ async function runStatus(args) {
 async function runRetry(args) {
   const dispatchId = args.dispatchId ?? "";
   if (!DISPATCH_DIR_PATTERN.test(dispatchId)) {
-    console.error(`invalid dispatch id: ${JSON.stringify(dispatchId)} (expected gf_r<id>_i<issue>_<role>_<revision>)`);
+    console.error(
+      `invalid dispatch id: ${JSON.stringify(dispatchId)} (expected gf_r<id>_i<issue>_w<epoch-code>_<role>_<revision>)`
+    );
     return 1;
   }
   const config = await loadConfig(args.root, args.config);
@@ -18799,7 +20162,7 @@ var invokedDirectly = (() => {
   if (entry === void 0) return false;
   try {
     if (typeof __filename === "string") {
-      return nodePath8.resolve(entry) === nodePath8.resolve(__filename);
+      return nodePath9.resolve(entry) === nodePath9.resolve(__filename);
     }
     return (0, import_node_url.pathToFileURL)(entry).href === import_meta.url;
   } catch {

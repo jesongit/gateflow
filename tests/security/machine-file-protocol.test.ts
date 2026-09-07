@@ -8,9 +8,12 @@ import { describe, expect, it } from 'vitest';
 
 import { syncDispatch } from '../../src/driver/sync';
 import { readReceipt } from '../../src/workspace/outbox';
+import { buildPlanCommentBody } from '../../src/github/comments';
+import { planSha256 } from '../../src/protocol/plan';
 import {
   CONSUMER_ID,
   EXECUTOR_ID,
+  EPOCH,
   ISSUE,
   countedClient,
   seedInbox,
@@ -24,11 +27,41 @@ import type { CountedDriverClient } from './helpers';
 const PLAN = '# Execution Plan\n\n1. step one\n2. step two';
 const REPORT = '# Report\n\nEverything verified.';
 
+/**
+ * Seed the canonical authorization chain an executor dispatch binds to: the
+ * current plan comment #501 plus a Gate-issued approval record pinning its
+ * hash. (Consumer dispatches need only the epoch record from setup.)
+ */
+function seedExecutorChain(client: CountedDriverClient): void {
+  const planBody = buildPlanCommentBody(PLAN, EXECUTOR_ID);
+  client.addComment(ISSUE, 'gateflow-driver[bot]', planBody, { id: 501 });
+  // The human /approve command the record anchors to (the anchor check in
+  // preflight re-finds it on the issue).
+  client.addComment(ISSUE, 'octo', '/approve 501', { id: 600 });
+  client.addGateRecord(ISSUE, {
+    schema: 2,
+    kind: 'approval',
+    repository_id: 123,
+    issue_number: ISSUE,
+    workflow_epoch: EPOCH,
+    plan_comment_id: 501,
+    plan_sha256: planSha256(planBody),
+    approval_command_comment_id: 600,
+    approved_by_id: 9001,
+    approved_by_login: 'octo',
+    gate_login: 'github-actions[bot]',
+    gate_user_id: 41898282,
+    created_at: '2026-09-06T12:00:00Z',
+    operation_id: `approval:123:${ISSUE}:${EPOCH}:p501`,
+  });
+}
+
 async function setup() {
   const client = countedClient(new FakeDriverClient());
   const fixture = await makeWorkspace();
   const deps = makeDeps(client, testConfig(), fixture);
   client.addIssue(ISSUE, { labels: ['ai:planning'] });
+  client.ensureEpoch(ISSUE, EPOCH);
   return { client, fixture, deps, cleanup: fixture.cleanup };
 }
 
@@ -39,15 +72,27 @@ interface RejectionCtx {
   deps: ReturnType<typeof makeDeps>;
 }
 
+/** Gate record comments are protocol plumbing — never content side effects. */
+function contentCommentCount(client: CountedDriverClient, issueNumber: number): number {
+  return (client.issues.get(issueNumber)?.comments ?? []).filter(
+    (comment) => !/<!-- gateflow:(workflow|approval|feedback):v2/.test(comment.body),
+  ).length;
+}
+
 /** Assert the full "rejected + zero side effects" invariant. */
-async function expectRejected(ctx: RejectionCtx, dispatchId: string, detailPattern?: RegExp) {
+async function expectRejected(
+  ctx: RejectionCtx,
+  dispatchId: string,
+  detailPattern?: RegExp,
+  expectedContentComments = 0,
+) {
   const outcome = await syncDispatch(ctx.deps, ctx.client.repository, dispatchId);
   expect(outcome.action).toBe('rejected');
   if (detailPattern !== undefined) {
     expect(outcome.detail).toMatch(detailPattern);
   }
   expect(ctx.client.writes).toBe(0);
-  expect(ctx.client.commentCount(ISSUE)).toBe(0);
+  expect(contentCommentCount(ctx.client, ISSUE)).toBe(expectedContentComments);
   expect(await readReceipt(ctx.fixture.paths, dispatchId)).toBeNull();
 }
 
@@ -57,7 +102,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
     try {
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
       const valid = JSON.stringify({
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'question',
@@ -74,7 +119,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       await expectRejected({ client, fixture, deps }, CONSUMER_ID, /unparseable result\.json/);
 
       const validStatus = JSON.stringify({
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         state: 'working',
@@ -95,7 +140,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
     try {
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: 'gf_r123_i7_consumer_02',
         role: 'consumer',
         result: 'question',
@@ -104,7 +149,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       await expectRejected({ client, fixture, deps }, CONSUMER_ID, /dispatch_id/);
 
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'status.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: 'gf_r123_i8_consumer_01',
         role: 'consumer',
         state: 'working',
@@ -123,7 +168,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       await seedInbox(fixture, EXECUTOR_ID, 'executor');
       await writeOutboxFile(fixture.paths, EXECUTOR_ID, 'PLAN.md', PLAN);
       await writeOutboxJson(fixture.paths, EXECUTOR_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: EXECUTOR_ID,
         role: 'consumer',
         result: 'plan_ready',
@@ -135,7 +180,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
       await writeOutboxFile(fixture.paths, CONSUMER_ID, 'REPORT.md', REPORT);
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'executor',
         result: 'completed',
@@ -154,7 +199,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
       for (const result of ['approve', 'APPROVE', 'Approve', 'ready', 'READY', 'cancel', 'human-close']) {
         await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-          schema: 1,
+          schema: 2,
           dispatch_id: CONSUMER_ID,
           role: 'consumer',
           result,
@@ -163,7 +208,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       }
       // A case-variant "self-cancellation" story is still not a valid value.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'cancelled-by-human',
@@ -172,7 +217,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
 
       // state=ready (fake "the human said go") in status.json dies too.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'status.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         state: 'ready',
@@ -183,8 +228,8 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       // Same for an executor dispatch claiming approval semantics.
       await seedInbox(fixture, EXECUTOR_ID, 'executor');
       for (const [file, body] of [
-        ['result.json', { schema: 1, dispatch_id: EXECUTOR_ID, role: 'executor', result: 'approve' }],
-        ['status.json', { schema: 1, dispatch_id: EXECUTOR_ID, role: 'executor', state: 'cancel', updated_at: '2026-09-06T17:30:00Z' }],
+        ['result.json', { schema: 2, dispatch_id: EXECUTOR_ID, role: 'executor', result: 'approve' }],
+        ['status.json', { schema: 2, dispatch_id: EXECUTOR_ID, role: 'executor', state: 'cancel', updated_at: '2026-09-06T17:30:00Z' }],
       ] as const) {
         await writeOutboxJson(fixture.paths, EXECUTOR_ID, file, body);
         await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /human-only|not a valid result|not allowed for role/);
@@ -203,7 +248,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       await seedInbox(fixture, EXECUTOR_ID, 'executor');
       await writeOutboxFile(fixture.paths, EXECUTOR_ID, 'PLAN.md', '# Forged plan');
       await writeOutboxJson(fixture.paths, EXECUTOR_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: EXECUTOR_ID,
         role: 'consumer',
         result: 'plan_ready',
@@ -216,7 +261,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
       await writeOutboxFile(fixture.paths, CONSUMER_ID, 'REPORT.md', REPORT);
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'executor',
         result: 'completed',
@@ -232,65 +277,74 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
   it('rejects field-constraint abuse on completion (missing/malformed report bindings)', async () => {
     const { client, fixture, deps, cleanup } = await setup();
     try {
+      // The executor preflight needs the full authorization chain on GitHub;
+      // these attacks must die at VALIDATION (before preflight), proving the
+      // machine-file gates are independent of canonical state.
+      seedExecutorChain(client);
+      // The report-content gate sits inside the publication path, whose state
+      // matrix requires ai:working (the T6 from-state).
+      client.issues.get(ISSUE)!.labels = ['ai:working'];
       await seedInbox(fixture, EXECUTOR_ID, 'executor');
       await writeOutboxFile(fixture.paths, EXECUTOR_ID, 'REPORT.md', REPORT);
 
       // completed without report_file.
       await writeOutboxJson(fixture.paths, EXECUTOR_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: EXECUTOR_ID,
         role: 'executor',
         result: 'completed',
         validation: 'passed',
       });
-      await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /report_file/);
+      await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /report_file/, 2);
 
       // report_file pointing outside the dispatch dir.
       await writeOutboxJson(fixture.paths, EXECUTOR_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: EXECUTOR_ID,
         role: 'executor',
         result: 'completed',
         report_file: '../../PLAN.md',
         validation: 'passed',
       });
-      await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /report_file/);
+      await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /report_file/, 2);
 
       // validation claimed but REPORT.md missing on disk.
       await writeOutboxFile(fixture.paths, EXECUTOR_ID, 'REPORT.md', '');
       await writeOutboxJson(fixture.paths, EXECUTOR_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: EXECUTOR_ID,
         role: 'executor',
         result: 'completed',
         report_file: 'REPORT.md',
         validation: 'passed',
       });
-      await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /REPORT\.md/);
+      await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /REPORT\.md/, 2);
 
       // completed without validation.
       await writeOutboxFile(fixture.paths, EXECUTOR_ID, 'REPORT.md', REPORT);
       await writeOutboxJson(fixture.paths, EXECUTOR_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: EXECUTOR_ID,
         role: 'executor',
         result: 'completed',
         report_file: 'REPORT.md',
       });
-      await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /validation/);
+      // The seeded authorization chain contributes one content comment (the
+      // plan); the attacks themselves must still write NOTHING.
+      await expectRejected({ client, fixture, deps }, EXECUTOR_ID, /validation/, 2);
     } finally {
       await cleanup();
     }
   });
 
-  it('rejects schema tampering (schema != 1, unknown keys, missing schema)', async () => {
+  it('rejects schema tampering (schema != 2, unknown keys, missing schema)', async () => {
     const { client, fixture, deps, cleanup } = await setup();
     try {
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
 
-      // schema 2.
+      // schema 3.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 2,
+        schema: 3,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'question',
@@ -300,7 +354,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
 
       // Unknown extra key smuggling an authorization claim.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'question',
@@ -320,7 +374,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
 
       // Same for status.json.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'status.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         state: 'working',
@@ -339,7 +393,7 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       await seedInbox(fixture, CONSUMER_ID, 'consumer');
       await writeOutboxFile(fixture.paths, CONSUMER_ID, 'PLAN.md', PLAN);
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'plan_ready',
@@ -347,11 +401,11 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       });
       const first = await syncDispatch(deps, client.repository, CONSUMER_ID);
       expect(first.action).toBe('plan-published');
-      expect(client.commentCount(ISSUE)).toBe(1);
+      expect(contentCommentCount(client, ISSUE)).toBe(1);
 
       // The attacker rewrites the terminal result after acceptance.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'question',
@@ -359,22 +413,28 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       });
       const replay = await syncDispatch(deps, client.repository, CONSUMER_ID);
       expect(replay.action).toBe('skipped');
-      expect(client.commentCount(ISSUE)).toBe(1);
-      expect(client.issues.get(ISSUE)!.comments[0]!.body).toContain('1. step one');
-      expect(client.issues.get(ISSUE)!.comments[0]!.body).not.toContain('SECOND bite');
-      expect((await readReceipt(fixture.paths, CONSUMER_ID))?.status).toBe('synced');
+      expect(contentCommentCount(client, ISSUE)).toBe(1);
+      const published = (client.issues.get(ISSUE)?.comments ?? []).filter(
+        (comment) => !/<!-- gateflow:(workflow|approval|feedback):v2/.test(comment.body),
+      );
+      expect(published[0]?.body).toContain('1. step one');
+      expect(published[0]?.body).not.toContain('SECOND bite');
+      expect((await readReceipt(fixture.paths, CONSUMER_ID))?.status).toBe('published');
     } finally {
       await cleanup();
     }
   });
 
-  it('blocks executor completion replay with a swapped report after "synced"', async () => {
+  it('blocks executor completion replay with a swapped report after "published"', async () => {
     const { client, fixture, deps, cleanup } = await setup();
     try {
+      seedExecutorChain(client);
+      // Completion reports publish only from WORKING (the T6 from-state).
+      client.issues.get(ISSUE)!.labels = ['ai:working'];
       await seedInbox(fixture, EXECUTOR_ID, 'executor');
       await writeOutboxFile(fixture.paths, EXECUTOR_ID, 'REPORT.md', REPORT);
       await writeOutboxJson(fixture.paths, EXECUTOR_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: EXECUTOR_ID,
         role: 'executor',
         result: 'completed',
@@ -383,13 +443,17 @@ describe('B. machine-file protocol attacks (docs/workspace-protocol.md §5)', ()
       });
       const first = await syncDispatch(deps, client.repository, EXECUTOR_ID);
       expect(first.action).toBe('completed');
-      expect(client.commentCount(ISSUE)).toBe(1);
+      // Content comments: seeded plan + repaired tracker + report.
+      expect(contentCommentCount(client, ISSUE)).toBe(4);
 
       await writeOutboxFile(fixture.paths, EXECUTOR_ID, 'REPORT.md', '# TAMPERED REPORT');
       const replay = await syncDispatch(deps, client.repository, EXECUTOR_ID);
       expect(replay.action).toBe('skipped');
-      expect(client.commentCount(ISSUE)).toBe(1);
-      expect(client.issues.get(ISSUE)!.comments[0]!.body).not.toContain('TAMPERED REPORT');
+      expect(contentCommentCount(client, ISSUE)).toBe(4);
+      const comments = (client.issues.get(ISSUE)?.comments ?? []).filter(
+        (comment) => !/<!-- gateflow:(workflow|approval|feedback):v2/.test(comment.body),
+      );
+      expect(comments[2]?.body).not.toContain('TAMPERED REPORT');
     } finally {
       await cleanup();
     }
@@ -404,7 +468,7 @@ describe('B+. regressions for integration findings (notice token, size bound, nu
 
       // 1) blocked status echo → plain notice, receipt stays `dispatched`.
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'status.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         state: 'blocked',
@@ -416,7 +480,8 @@ describe('B+. regressions for integration findings (notice token, size bound, nu
       expect(client.writes).toBe(1);
       const receiptAfterNotice = await readReceipt(fixture.paths, CONSUMER_ID);
       expect(receiptAfterNotice?.status).toBe('dispatched');
-      expect(receiptAfterNotice?.last_notice_state).toBe('blocked');
+      // Schema 2: the notice is remembered by its content-hash key (16 hex).
+      expect(receiptAfterNotice?.last_notice_key).toMatch(/^[0-9a-f]{16}$/);
 
       // 2) the same blocked status again → no duplicate notice.
       const repeat = await syncDispatch(deps, client.repository, CONSUMER_ID);
@@ -427,7 +492,7 @@ describe('B+. regressions for integration findings (notice token, size bound, nu
       //    (this exact sequence dead-locked before the fix: the notice
       //    consumed the `synced` token and plan_ready was skipped forever).
       await writeOutboxJson(fixture.paths, CONSUMER_ID, 'result.json', {
-        schema: 1,
+        schema: 2,
         dispatch_id: CONSUMER_ID,
         role: 'consumer',
         result: 'plan_ready',
@@ -436,13 +501,13 @@ describe('B+. regressions for integration findings (notice token, size bound, nu
       await writeOutboxFile(fixture.paths, CONSUMER_ID, 'PLAN.md', PLAN);
       const published = await syncDispatch(deps, client.repository, CONSUMER_ID);
       expect(published.action).toBe('plan-published');
-      expect(client.commentCount(ISSUE)).toBe(2); // notice + plan comment
-      expect(await readReceipt(fixture.paths, CONSUMER_ID)).toMatchObject({ status: 'synced' });
+      expect(contentCommentCount(client, ISSUE)).toBe(2); // notice + plan comment
+      expect(await readReceipt(fixture.paths, CONSUMER_ID)).toMatchObject({ status: 'published' });
 
       // 4) replay protection still holds after the real result.
       const replay = await syncDispatch(deps, client.repository, CONSUMER_ID);
       expect(replay.action).toBe('skipped');
-      expect(client.commentCount(ISSUE)).toBe(2);
+      expect(contentCommentCount(client, ISSUE)).toBe(2);
     } finally {
       await cleanup();
     }

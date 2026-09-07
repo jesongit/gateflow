@@ -17,8 +17,8 @@ import {
 import { GATE_VERSION } from '../../src/index';
 
 describe('Phase 0 protocol freeze (docs/protocol.md <-> src/protocol.ts)', () => {
-  it('freezes the schema version', () => {
-    expect(SCHEMA_VERSION).toBe(1);
+  it('freezes the schema version (hardening: GitHub Protocol Schema 2)', () => {
+    expect(SCHEMA_VERSION).toBe(2);
   });
 
   it('freezes the six workflow labels', () => {
@@ -81,9 +81,9 @@ describe('Phase 0 protocol freeze (docs/protocol.md <-> src/protocol.ts)', () =>
   });
 
   it('has a gate entry with a version', () => {
-    // Gate version tracks the implementation milestone (V1 plan-ID approval =
-    // 1.0.0, protocol v2 command surface); the frozen protocol schema itself
-    // stays at 1 (SCHEMA_VERSION above).
+    // Gate version tracks the implementation milestone (V1 hardening = 1.0.0);
+    // the frozen protocol schema itself moved to 2 in the same wave
+    // (SCHEMA_VERSION above).
     expect(GATE_VERSION).toBe('1.0.0');
   });
 });

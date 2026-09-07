@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { WORKSPACE_SCHEMA_VERSION } from '../../src/workspace/protocol';
 import {
   validateContext,
   validateCurrent,
@@ -10,6 +11,8 @@ import {
   validateSubmit,
 } from '../../src/workspace/schemas';
 import {
+  EXECUTOR_DISPATCH_ID,
+  WORKFLOW_EPOCH,
   consumerContext,
   consumerDispatch,
   currentPointer,
@@ -34,7 +37,7 @@ describe('validateDispatch', () => {
     expect(validateDispatch(null).ok).toBe(false);
     expect(validateDispatch('nope').ok).toBe(false);
     expect(validateDispatch([]).ok).toBe(false);
-    const bad = consumerDispatch({ schema: 2 as unknown as 1 });
+    const bad = consumerDispatch({ schema: 1 as unknown as typeof WORKSPACE_SCHEMA_VERSION });
     const parsed = validateDispatch(bad);
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) expect(parsed.errors.join(' ')).toContain('schema');
@@ -51,6 +54,15 @@ describe('validateDispatch', () => {
       input: { task: 'TASK.md', plan: null, feedback: null, extra: 1 },
     };
     expect(validateDispatch(dispatchWithBadInput).ok).toBe(false);
+  });
+
+  it('requires the workflow epoch and binds it to the dispatch_id epoch code', () => {
+    const { workflow_epoch: _epoch, ...noEpoch } = consumerDispatch();
+    void _epoch;
+    expect(validateDispatch(noEpoch).ok).toBe(false);
+    expect(validateDispatch(consumerDispatch({ workflow_epoch: 'wf_short' })).ok).toBe(false);
+    // Schema 2: the epoch field must agree with the dispatch_id epoch code.
+    expect(validateDispatch(consumerDispatch({ workflow_epoch: 'wf_000000000000' })).ok).toBe(false);
   });
 
   it('enforces the role/reason coupling', () => {
@@ -77,7 +89,7 @@ describe('validateDispatch', () => {
   });
 
   it('rejects dispatch_ids that mismatch the role or the grammar', () => {
-    expect(validateDispatch(consumerDispatch({ dispatch_id: 'gf_r1_i2_executor_p100' })).ok).toBe(false);
+    expect(validateDispatch(consumerDispatch({ dispatch_id: EXECUTOR_DISPATCH_ID })).ok).toBe(false);
     expect(validateDispatch(consumerDispatch({ dispatch_id: '../escape' })).ok).toBe(false);
   });
 
@@ -95,6 +107,16 @@ describe('validateContext', () => {
     expect(validateContext(consumerContext({ feedback_count: 3 })).ok).toBe(true);
   });
 
+  it('requires the schema-2 keys: workflow_epoch and input_snapshot_sha256', () => {
+    const { workflow_epoch: _we, ...noEpoch } = consumerContext();
+    void _we;
+    expect(validateContext(noEpoch).ok).toBe(false);
+    const { input_snapshot_sha256: _is, ...noSnapshot } = consumerContext();
+    void _is;
+    expect(validateContext(noSnapshot).ok).toBe(false);
+    expect(validateContext(consumerContext({ input_snapshot_sha256: 'nothex' })).ok).toBe(false);
+  });
+
   it('requires plan anchors for executors only', () => {
     const { plan_comment_id: _pc, plan_sha256: _ps, ...bare } = executorContext();
     void _pc;
@@ -108,7 +130,7 @@ describe('validateContext', () => {
   it('rejects unknown keys and negative feedback counts', () => {
     expect(validateContext({ ...consumerContext(), bonus: 1 }).ok).toBe(false);
     expect(validateContext(consumerContext({ feedback_count: -1 })).ok).toBe(false);
-    expect(validateContext(consumerContext({ dispatch_id: 'gf_rzz_i2_consumer_01' })).ok).toBe(false);
+    expect(validateContext(consumerContext({ dispatch_id: 'gf_rzz_i2_wabcdef012345_consumer_01' })).ok).toBe(false);
   });
 });
 
@@ -116,7 +138,7 @@ describe('validateStatus', () => {
   it('accepts working/blocked/failed for both roles', () => {
     for (const state of ['working', 'blocked', 'failed'] as const) {
       for (const role of ['consumer', 'executor'] as const) {
-        expect(validateStatus(statusFile({ state, role, dispatch_id: role === 'consumer' ? 'gf_r1_i2_consumer_01' : 'gf_r1_i2_executor_p100' })).ok).toBe(true);
+        expect(validateStatus(statusFile({ state, role, dispatch_id: role === 'consumer' ? 'gf_r1_i2_wabcdef012345_consumer_01' : 'gf_r1_i2_wabcdef012345_executor_p100' })).ok).toBe(true);
       }
     }
   });
@@ -139,7 +161,7 @@ describe('validateStatus', () => {
     expect(validateStatus(statusFile({ summary: 'x'.repeat(501) })).ok).toBe(false);
     expect(validateStatus(statusFile({ phase: 'x'.repeat(500) })).ok).toBe(true);
     expect(validateStatus(statusFile({ updated_at: 'yesterday' })).ok).toBe(false);
-    expect(validateStatus(statusFile({ schema: 2 as unknown as 1 })).ok).toBe(false);
+    expect(validateStatus(statusFile({ schema: 1 as unknown as typeof WORKSPACE_SCHEMA_VERSION })).ok).toBe(false);
   });
 });
 
@@ -148,8 +170,8 @@ describe('validateResult', () => {
     expect(validateResult(resultFile())).toEqual({ ok: true, value: resultFile() });
     expect(
       validateResult({
-        schema: 1,
-        dispatch_id: 'gf_r1_i2_executor_p100',
+        schema: 2,
+        dispatch_id: 'gf_r1_i2_wabcdef012345_executor_p100',
         role: 'executor',
         result: 'completed',
         report_file: 'REPORT.md',
@@ -158,8 +180,8 @@ describe('validateResult', () => {
     ).toBe(true);
     expect(
       validateResult({
-        schema: 1,
-        dispatch_id: 'gf_r1_i2_executor_p100',
+        schema: 2,
+        dispatch_id: 'gf_r1_i2_wabcdef012345_executor_p100',
         role: 'executor',
         result: 'blocked',
         reason: 'missing credentials',
@@ -194,7 +216,7 @@ describe('validateResult', () => {
     expect(validateResult(resultFile({ validation: 'skipped' as 'passed' })).ok).toBe(false);
     expect(validateResult(resultFile({ reason: 'x'.repeat(1001) })).ok).toBe(false);
     expect(validateResult(resultFile({ result: 'victory' as 'plan_ready' })).ok).toBe(false);
-    expect(validateResult(resultFile({ dispatch_id: 'gf_r1_i2_consumer_XX' })).ok).toBe(false);
+    expect(validateResult(resultFile({ dispatch_id: 'gf_r1_i2_wabcdef012345_consumer_XX' })).ok).toBe(false);
   });
 });
 
@@ -209,37 +231,57 @@ describe('validateCurrent', () => {
 });
 
 describe('validateReceipt', () => {
-  it('round-trips a full receipt', () => {
+  it('round-trips a full receipt with the schema-2 fields', () => {
     const full = receipt({
-      status: 'synced',
+      status: 'published',
       attempts: 2,
       tracker_comment_id: 123,
+      published_comment_id: 789,
       last_progress_sha256: 'b'.repeat(64),
       last_feedback_comment_id: 456,
       last_sync_at: '2026-09-06T17:31:00Z',
+      last_notice_key: 'c'.repeat(16),
       error: null,
     });
     expect(validateReceipt(full)).toEqual({ ok: true, value: full });
+    expect(validateReceipt(receipt({ status: 'accepted' })).ok).toBe(true);
+    expect(validateReceipt(receipt({ status: 'publishing' })).ok).toBe(true);
+    expect(validateReceipt(receipt({ status: 'obsolete' })).ok).toBe(true);
   });
 
   it('is strict: no schema field, unknown keys rejected', () => {
-    expect(validateReceipt({ ...receipt(), schema: 1 }).ok).toBe(false);
+    expect(validateReceipt({ ...receipt(), schema: WORKSPACE_SCHEMA_VERSION }).ok).toBe(false);
     expect(validateReceipt({ ...receipt(), extra: 1 }).ok).toBe(false);
   });
 
   it('validates enums, attempts and dates', () => {
+    // Schema 2: the schema-1 `synced`/`syncing` tokens are gone.
+    expect(validateReceipt(receipt({ status: 'synced' as 'dispatched' })).ok).toBe(false);
+    expect(validateReceipt(receipt({ status: 'syncing' as 'dispatched' })).ok).toBe(false);
     expect(validateReceipt(receipt({ status: 'queued' as 'dispatched' })).ok).toBe(false);
     expect(validateReceipt(receipt({ attempts: 0 })).ok).toBe(false);
     expect(validateReceipt(receipt({ attempts: 1.5 })).ok).toBe(false);
     expect(validateReceipt(receipt({ last_sync_at: 'nope' })).ok).toBe(false);
     expect(validateReceipt(receipt({ error: '' })).ok).toBe(false);
     expect(validateReceipt(receipt({ dispatch_id: 'junk' })).ok).toBe(false);
+    expect(validateReceipt(receipt({ workflow_epoch: 'wf_bad' })).ok).toBe(false);
+    expect(validateReceipt(receipt({ published_comment_id: 0 })).ok).toBe(false);
+    expect(validateReceipt(receipt({ last_notice_key: '' })).ok).toBe(false);
   });
 });
 
 describe('validateSubmit', () => {
   it('accepts a canonical submit request', () => {
     expect(validateSubmit(submitRequest())).toEqual({ ok: true, value: submitRequest() });
+  });
+
+  it('requires a well-formed submission_id when present (schema 2)', () => {
+    expect(validateSubmit(submitRequest({ submission_id: 'nope' })).ok).toBe(false);
+    expect(validateSubmit(submitRequest({ submission_id: 'sub_SHORT' })).ok).toBe(false);
+    // The Driver injects the id when the agent omitted it, so absence is legal.
+    const { submission_id: _sid, ...rawWithoutId } = submitRequest();
+    void _sid;
+    expect(validateSubmit(rawWithoutId).ok).toBe(true);
   });
 
   it('enforces title cap and enums', () => {
@@ -249,7 +291,7 @@ describe('validateSubmit', () => {
     expect(validateSubmit(submitRequest({ kind: 'hotfix' as 'feature' })).ok).toBe(false);
     expect(validateSubmit(submitRequest({ maturity_hint: 'someday' as 'requirement' })).ok).toBe(false);
     expect(validateSubmit(submitRequest({ created_at: '2026/09/06' })).ok).toBe(false);
-    expect(validateSubmit({ ...submitRequest(), schema: 3 as unknown as 1 }).ok).toBe(false);
+    expect(validateSubmit({ ...submitRequest(), schema: 3 as unknown as typeof WORKSPACE_SCHEMA_VERSION }).ok).toBe(false);
     expect(validateSubmit({ ...submitRequest(), whoops: 1 }).ok).toBe(false);
   });
 });

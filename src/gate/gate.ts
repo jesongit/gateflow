@@ -24,16 +24,26 @@
  *    Progress -> ai:working). "Completed" never transitions: completion goes
  *    exclusively through the completion-report marker (T6). Non-machine
  *    values and missing values are logged no-ops.
- *  - V1 approval hardening (plan phases 9 + protocol v2): /approve is bound
- *    to a specific plan comment ("/approve <plan-comment-id>"). After the
- *    existing permission / open-issue / REVIEW checks, the referenced
- *    comment must exist on this issue, carry a valid plan marker and be the
- *    CURRENT plan (the last valid plan-marker comment, chronological by id).
- *    A failing target is a logged no-op WITHOUT a reaction (state-
- *    precondition convention); a passing one performs T2 exactly as before
- *    and reacts with ✅. The durable Approval Record is the human's own
- *    "/approve <id>" comment; the Driver re-validates it before executor
- *    dispatch (architecture-v1 section 3.3).
+ *  - SCHEMA 2 AUTHORIZATION (docs/plans/v1_hardening_decisions.md §4): the
+ *    durable authorization facts are GATE-ISSUED RECORDS, never the human's
+ *    command comments alone:
+ *      /ai-plan (T0)        -> workflow_epoch record (reusing a Driver-
+ *                              bootstrapped epoch when one already exists);
+ *      /approve <plan-id>   -> approval record binding repo/issue/epoch/
+ *                              plan-comment-id/plan-sha256/approver, written
+ *                              AND verified BEFORE the T2 label swap;
+ *      /choose, /change     -> feedback_accepted record (idempotent by
+ *                              operation id) — the Consumer-revision source.
+ *    The Driver independently re-validates these records before dispatch and
+ *    sync. A record write failure is a logged no-op WITHOUT a reaction and
+ *    WITHOUT any label migration; a record write that succeeded while the
+ *    label swap failed recovers through the record (re-running the command
+ *    reuses the existing record by operation id).
+ *  - Identity config is validated against the API before ANY transition:
+ *    owner type via repos.get (never the event payload), Organization repos
+ *    require an explicit trusted-humans allowlist, Human/Agent allowlists
+ *    must never overlap (src/gate/identity.ts, GF-H10). Failure fails the
+ *    run (fail closed).
  *  - The current state is derived from labels re-read via the GitHub API
  *    immediately before every migration; the event payload snapshot is never
  *    trusted (protocol section 7).
@@ -60,7 +70,22 @@ import { validatePlanCommentForApproval } from './approvals';
 import { detectCommentMarker, inspectCommentMarkers, parseIssueSchemaBlock } from './markers';
 import { isLegalTransition, readSnapshot, type WorkflowSnapshot } from './states';
 import { parseTrackerStatus } from './tracker';
-import { isTrustedAgent, isTrustedHuman } from './permissions';
+import { isTrustedAgent, isTrustedHuman, parseLoginList } from './permissions';
+import { validateIdentityConfig } from './identity';
+import {
+  approvalOperationId,
+  approvalRecordsConflict,
+  buildRecordBody,
+  epochOperationId,
+  feedbackOperationId,
+  parseRecord,
+  parseRecords,
+  type ApprovalRecord as ApprovalRecordPayload,
+  type FeedbackAcceptedRecord as FeedbackAcceptedRecordPayload,
+  type WorkflowEpochRecord,
+} from '../protocol/records';
+import { newWorkflowEpoch } from '../protocol/epoch';
+import { planSha256 } from '../protocol/plan';
 import type { GitHubClient, IssueRef } from './github';
 
 /** Minimal logging seam; the action entry binds it to @actions/core. */
@@ -77,6 +102,14 @@ export interface GateInput {
   eventAction: string | undefined;
   /** Login of the acting user (comment.user.login for comment events). */
   actor: string;
+  /**
+   * Numeric id of the acting user (comment.user.id). Used for the approval
+   * record's `approved_by_id`; 0-tolerant (recorded as 0 with a warning when
+   * the payload omits it).
+   */
+  actorId?: number;
+  /** Repository database id (payload.repository.id); embedded in records. */
+  repositoryId: number;
   /** Repository owner login (github.event.repository.owner.login). */
   repoOwner: string;
   repo: string;
@@ -94,6 +127,12 @@ export interface GateInput {
   trustedHumansInput: string;
   /** Raw `trusted-agents` action input (V0 default: empty). */
   trustedAgentsInput: string;
+  /**
+   * Raw `require-explicit-humans` action input ("true"/"false"; default
+   * true). When true, an Organization-owned repository without an explicit
+   * trusted-humans allowlist fails the run (GF-H10).
+   */
+  requireExplicitHumansInput?: string;
 }
 
 /** Comment actions that carry a command or marker. */
@@ -105,6 +144,21 @@ export async function runGate(
   client: GitHubClient,
   log: GateLogger,
 ): Promise<void> {
+  // Identity-config validation comes FIRST and is fail-closed (GF-H10): the
+  // owner type is verified against the API, never against the event payload.
+  const identity = await client.getRepoIdentity({ owner: input.repoOwner, repo: input.repo });
+  const verdict = validateIdentityConfig({
+    owner: identity.owner,
+    ownerType: identity.ownerType,
+    trustedHumans: parseLoginList(input.trustedHumansInput),
+    trustedAgents: parseLoginList(input.trustedAgentsInput),
+    requireExplicitHumans: input.requireExplicitHumansInput !== 'false',
+  });
+  if (!verdict.ok) {
+    log.warning(verdict.reason);
+    throw new Error(`gate identity configuration rejected: ${verdict.reason}`);
+  }
+
   if (input.eventName === 'issue_comment') {
     if (input.eventAction === undefined || !COMMAND_ACTIONS.has(input.eventAction)) {
       log.info(`issue_comment.${input.eventAction ?? 'unknown'}: nothing to do.`);
@@ -240,16 +294,16 @@ async function handleCommand(
   let accepted = false;
   switch (parsed.command) {
     case COMMANDS.aiPlan:
-      accepted = await applyAiPlan(ref, snapshot, client, log);
+      accepted = await applyAiPlan(ref, snapshot, input, client, log);
       break;
     case COMMANDS.approve:
-      accepted = await applyApprove(ref, snapshot, parsed.args, client, log);
+      accepted = await applyApprove(ref, snapshot, parsed.args, input, client, log);
       break;
     case COMMANDS.choose:
-      accepted = await applyChoose(ref, snapshot, parsed.args, log);
+      accepted = await applyChoose(ref, snapshot, parsed.args, input, client, log);
       break;
     case COMMANDS.change:
-      accepted = await applyChange(ref, snapshot, parsed.args, log);
+      accepted = await applyChange(ref, snapshot, parsed.args, input, client, log);
       break;
     case COMMANDS.cancel:
       accepted = await applyCancel(ref, snapshot, client, log);
@@ -389,10 +443,20 @@ async function handleMarkerComment(
   }
 }
 
-/** T0: outside -> PLANNING by adding ai:planning. */
+/**
+ * T0: outside -> PLANNING by adding ai:planning, then persisting the round's
+ * workflow_epoch record (schema 2, docs/plans/v1_hardening_decisions.md
+ * §4.1). The epoch is fresh CSPRNG randomness — never derived from
+ * timestamps, comment counts or labels. This path only fires for genuinely
+ * NEW rounds (the issue was outside the workflow), so any existing epoch
+ * record belongs to an earlier round and is never reused; Producer-submitted
+ * issues get their epoch from the Driver's bootstrap instead (the issue then
+ * carries ai:planning from creation and never reaches T0).
+ */
 async function applyAiPlan(
   ref: IssueRef,
   snapshot: WorkflowSnapshot,
+  input: GateInput,
   client: GitHubClient,
   log: GateLogger,
 ): Promise<boolean> {
@@ -416,24 +480,157 @@ async function applyAiPlan(
   }
   await client.addLabels(ref, [LABELS.planning]);
   log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
+
+  // Schema 2: persist the new round's epoch. The label is already applied, so
+  // a failed record write is recoverable: the Driver bootstraps any planning
+  // issue that lacks an epoch record (docs/plans/v1_hardening_decisions.md
+  // §4.1). The command is still "accepted" (T0 happened).
+  try {
+    const identity = await client.getAuthenticatedUser();
+    const epoch = newWorkflowEpoch();
+    const record: WorkflowEpochRecord = {
+      schema: 2,
+      kind: 'workflow_epoch',
+      repository_id: input.repositoryId,
+      issue_number: ref.issueNumber,
+      workflow_epoch: epoch,
+      created_at: new Date().toISOString(),
+      issued_by: identity.login,
+      operation_id: epochOperationId(input.repositoryId, ref.issueNumber, epoch),
+    };
+    const published = await publishRecord(client, ref, record, log);
+    if (published.ok) {
+      log.info(
+        `Epoch ${epoch} persisted as record comment #${published.commentId} ` +
+          `(issued by ${identity.login}).`,
+      );
+    } else {
+      log.warning(
+        `Epoch record publish failed after T0 on #${ref.issueNumber}; the Driver bootstrap ` +
+          `will reconcile a planning issue without an epoch record. Reason: ${published.reason}`,
+      );
+    }
+  } catch (err) {
+    log.warning(
+      `Epoch bootstrap failed after T0 on #${ref.issueNumber} (Driver will reconcile): ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
   return true;
 }
 
 /**
- * T2: REVIEW -> READY by adding ai:ready and removing ai:review.
+ * Publishes a Gate record comment and VERIFIES the remote content matches
+ * (docs/plans/v1_hardening_decisions.md §4: "确认记录可读取且内容匹配").
+ * Never throws: infrastructure failures come back as { ok: false } so the
+ * caller can no-op without a reaction and without any label migration.
+ * If the comment WAS created but the response was lost (timeout after POST),
+ * re-running the command reuses the record by operation id — the recovery
+ * path never duplicates authorization objects.
+ */
+async function publishRecord(
+  client: GitHubClient,
+  ref: IssueRef,
+  record: WorkflowEpochRecord | ApprovalRecordPayload | FeedbackAcceptedRecordPayload,
+  log: GateLogger,
+): Promise<{ ok: true; commentId: number } | { ok: false; reason: string }> {
+  const body = buildRecordBody(record);
+  let createdId: number;
+  try {
+    const created = await client.addComment(ref, body);
+    createdId = created.id;
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `record publish failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  try {
+    const remote = await client.getComment(ref, createdId);
+    if (remote === null) {
+      return { ok: false, reason: 'record publish could not be confirmed (comment missing)' };
+    }
+    const parsed = parseRecord(createdId, remote.body);
+    if (!parsed.ok || JSON.stringify(parsed.record) !== JSON.stringify(record)) {
+      return { ok: false, reason: 'record publish confirmed but content mismatch — failing closed' };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `record verification failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  return { ok: true, commentId: createdId };
+}
+
+/**
+ * Current epoch of an issue = the workflow_epoch record with the highest
+ * comment id. ANY unparsable epoch record fails closed (append-only records:
+ * an unparsable one signals tampering). Optionally reuses a prefetched
+ * comment list to avoid a second round-trip.
+ */
+async function readCurrentEpoch(
+  client: GitHubClient,
+  ref: IssueRef,
+  prefetchedComments?: Array<{ id: number; body: string }>,
+): Promise<
+  | { ok: true; record: WorkflowEpochRecord; commentId: number }
+  | { ok: false; reason: string }
+> {
+  let comments = prefetchedComments;
+  if (comments === undefined) {
+    try {
+      comments = await client.listComments(ref);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `cannot list comments for the epoch lookup: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  const { records, invalid } = parseRecords('workflow_epoch', comments);
+  if (invalid.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `unparsable workflow_epoch record(s) on #${ref.issueNumber} (fail closed): ` +
+        invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(', '),
+    };
+  }
+  const latest = records[records.length - 1];
+  if (latest === undefined) {
+    return { ok: false, reason: `no workflow_epoch record on #${ref.issueNumber}` };
+  }
+  return { ok: true, record: latest.record, commentId: latest.commentId };
+}
+
+/**
+ * T2: REVIEW -> READY by persisting a Gate-issued APPROVAL RECORD and only
+ * then swapping labels (schema 2, docs/plans/v1_hardening_decisions.md §4.2).
  *
- * V1: the approval is bound to a specific plan comment. After the unchanged
- * state preconditions (single ai:* label, in REVIEW), the comment named by
- * `/approve <plan-comment-id>` is validated (see approvals.ts): it must
- * exist on this issue, carry a valid plan marker and be the CURRENT plan —
- * the last valid plan-marker comment in chronological (id) order. A failed
- * validation is a logged no-op WITHOUT a reaction; a passed one performs the
- * add-then-remove label swap exactly as before and earns the ✅ reaction.
+ * Sequence (frozen — the durable authorization fact is the RECORD, never the
+ * human's command comment):
+ *  1. unchanged state preconditions (single ai:* label, REVIEW, legal T2);
+ *  2. validate the referenced plan comment (exists / valid marker / CURRENT
+ *     plan — approvals.ts);
+ *  3. compute `plan_sha256` with the FROZEN canonicalization;
+ *  4. read the current epoch (any unparsable epoch record fails closed);
+ *  5. build the approval record (repo/issue/epoch/plan/hash/approver/gate);
+ *  6. reuse-or-conflict check over existing records with the same operation
+ *     id: identical content -> reuse (crash recovery), divergent content
+ *     (e.g. the plan was edited after an earlier approval) -> FAIL CLOSED;
+ *  7. publish + verify the record;
+ *  8. only now perform the add-then-remove label swap.
+ *
+ * A failure in steps 4–7 is a logged no-op WITHOUT a reaction and WITHOUT any
+ * label migration. A record that persisted while the label swap failed
+ * recovers by re-running the command (step 6 reuses the record).
  */
 async function applyApprove(
   ref: IssueRef,
   snapshot: WorkflowSnapshot,
   args: ApproveArgs,
+  input: GateInput,
   client: GitHubClient,
   log: GateLogger,
 ): Promise<boolean> {
@@ -463,10 +660,10 @@ async function applyApprove(
     return false;
   }
 
-  // V1 plan-ID binding: validate the referenced plan comment before any
-  // write. The issue's comment list (id-ascending) establishes both issue
-  // membership and which plan marker is the current plan; the id-targeted
-  // fetch proves the referenced comment still exists with a valid marker.
+  // Plan-ID binding: validate the referenced plan comment before any write.
+  // The issue's comment list (id-ascending) establishes both issue membership
+  // and which plan marker is the current plan; the id-targeted fetch proves
+  // the referenced comment still exists with a valid marker.
   const allComments = await client.listComments(ref);
   const planMarkerComments = allComments.filter(
     (comment) => detectCommentMarker(comment.body) === MARKERS.plan,
@@ -485,28 +682,208 @@ async function applyApprove(
     );
     return false;
   }
+  if (referencedComment === null) {
+    // Unreachable (inspection 'valid' implies the comment exists); keeps
+    // null-safety honest for the hash computation below.
+    return false;
+  }
+
+  // Schema 2: bind repo/issue/epoch/plan/hash into a Gate-issued record.
+  const epoch = await readCurrentEpoch(client, ref, allComments);
+  if (!epoch.ok) {
+    log.warning(`Invalid /approve on #${ref.issueNumber}: ${epoch.reason}; no record, no transition.`);
+    return false;
+  }
+  if (input.commentId === undefined) {
+    log.warning(
+      `Invalid /approve on #${ref.issueNumber}: event carries no comment id, so the approval ` +
+        'command cannot be anchored in a record; no transition, no reaction.',
+    );
+    return false;
+  }
+  if (input.actorId === undefined) {
+    log.warning(
+      `/approve on #${ref.issueNumber}: payload carries no actor id; recording approved_by_id 0.`,
+    );
+  }
+  const identity = await client.getAuthenticatedUser();
+  const record: ApprovalRecordPayload = {
+    schema: 2,
+    kind: 'approval',
+    repository_id: input.repositoryId,
+    issue_number: ref.issueNumber,
+    workflow_epoch: epoch.record.workflow_epoch,
+    plan_comment_id: args.planCommentId,
+    plan_sha256: planSha256(referencedComment.body),
+    approval_command_comment_id: input.commentId,
+    approved_by_id: input.actorId ?? 0,
+    approved_by_login: input.actor,
+    gate_login: identity.login,
+    gate_user_id: identity.id,
+    created_at: new Date().toISOString(),
+    operation_id: approvalOperationId(
+      input.repositoryId,
+      ref.issueNumber,
+      epoch.record.workflow_epoch,
+      args.planCommentId,
+    ),
+  };
+
+  // Reuse-or-conflict over existing records with this operation id.
+  const { records: approvalRecords, invalid: unparsableApprovals } = parseRecords(
+    'approval',
+    allComments,
+  );
+  if (unparsableApprovals.length > 0) {
+    log.warning(
+      `Invalid /approve on #${ref.issueNumber}: unparsable approval record(s) present ` +
+        `(fail closed): ${unparsableApprovals.map((e) => `#${e.commentId} (${e.reason})`).join(', ')}.`,
+    );
+    return false;
+  }
+  const sameOperation = approvalRecords.filter(
+    (entry) => entry.record.operation_id === record.operation_id,
+  );
+  if (sameOperation.length > 0) {
+    const conflict = approvalRecordsConflict(sameOperation);
+    const first = sameOperation[0];
+    const matchesCurrent =
+      first !== undefined &&
+      first.record.plan_sha256 === record.plan_sha256 &&
+      first.record.approved_by_login.toLowerCase() === record.approved_by_login.toLowerCase() &&
+      first.record.approved_by_id === record.approved_by_id;
+    if (conflict.conflict || !matchesCurrent) {
+      log.warning(
+        `Invalid /approve on #${ref.issueNumber}: approval record(s) for ${record.operation_id} ` +
+          (conflict.conflict ? `CONFLICT (${conflict.reason ?? 'divergent content'})` : 'bind a different plan content') +
+          '. A Plan comment whose content changed after an approval stays burned: re-plan ' +
+          '(publish a new Plan comment) and approve that one instead. No transition, no reaction.',
+      );
+      return false;
+    }
+    log.info(
+      `Valid approval record #${first.commentId} already exists for ${record.operation_id}; ` +
+        'reusing it (crash recovery: record persisted, label swap did not complete).',
+    );
+  } else {
+    const published = await publishRecord(client, ref, record, log);
+    if (!published.ok) {
+      log.warning(
+        `Invalid /approve on #${ref.issueNumber}: approval record publish failed ` +
+          `(${published.reason}); the authorization is NOT granted, no label migration, no reaction.`,
+      );
+      return false;
+    }
+    log.info(
+      `Approval record #${published.commentId} persisted for ${record.operation_id} ` +
+        `(plan ${args.planCommentId}, sha256 ${record.plan_sha256}, approved by ${input.actor}).`,
+    );
+  }
 
   // Add-then-remove keeps the issue holding exactly one ai:* label even if a
-  // reader observes it between the two calls.
+  // reader observes it between the two calls. Only NOW is T2 performed.
   await client.addLabels(ref, [LABELS.ready]);
   await client.removeLabel(ref, LABELS.review);
   log.info(
     `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} ` +
-      `(REVIEW -> READY approving plan comment ${inspection.planCommentId}).`,
+      `(REVIEW -> READY approving plan comment ${inspection.planCommentId}, ` +
+      `sha256-bound approval record).`,
+  );
+  return true;
+}
+
+/**
+ * Schema 2 acceptance channel shared by /choose and /change: after the frozen
+ * format + REVIEW + identity preconditions pass, the gate persists a
+ * feedback_accepted record (docs/plans/v1_hardening_decisions.md §4.3).
+ * These records — not the raw comment count — are what Consumer revisions
+ * are built from: rejected, duplicated, foreign-epoch and plain-text comments
+ * never produce one. Idempotent by operation id; a publish failure is a
+ * logged no-op WITHOUT a reaction (the acceptance did not happen).
+ */
+async function acceptFeedbackEvent(
+  ref: IssueRef,
+  feedbackKind: 'choose' | 'change',
+  input: GateInput,
+  client: GitHubClient,
+  log: GateLogger,
+): Promise<boolean> {
+  if (input.commentId === undefined) {
+    log.warning(
+      `/${feedbackKind} on #${ref.issueNumber}: event carries no comment id; the accepted ` +
+        'event cannot be anchored — fail closed, no record, no reaction.',
+    );
+    return false;
+  }
+  const epoch = await readCurrentEpoch(client, ref);
+  if (!epoch.ok) {
+    log.warning(`/${feedbackKind} on #${ref.issueNumber}: ${epoch.reason}; no record, no reaction.`);
+    return false;
+  }
+  const operationId = feedbackOperationId(
+    input.repositoryId,
+    ref.issueNumber,
+    epoch.record.workflow_epoch,
+    input.commentId,
+  );
+  const comments = await client.listComments(ref);
+  const { records, invalid } = parseRecords('feedback_accepted', comments);
+  if (invalid.length > 0) {
+    log.warning(
+      `/${feedbackKind} on #${ref.issueNumber}: unparsable feedback record(s) present ` +
+        `(fail closed): ${invalid.map((e) => `#${e.commentId} (${e.reason})`).join(', ')}.`,
+    );
+    return false;
+  }
+  if (records.some((entry) => entry.record.operation_id === operationId)) {
+    log.info(
+      `Feedback record for ${operationId} already exists; acceptance is idempotent.`,
+    );
+    return true;
+  }
+  const identity = await client.getAuthenticatedUser();
+  const record: FeedbackAcceptedRecordPayload = {
+    schema: 2,
+    kind: 'feedback_accepted',
+    repository_id: input.repositoryId,
+    issue_number: ref.issueNumber,
+    workflow_epoch: epoch.record.workflow_epoch,
+    event_id: `fe${input.commentId}`,
+    feedback_comment_id: input.commentId,
+    feedback_kind: feedbackKind,
+    gate_login: identity.login,
+    gate_user_id: identity.id,
+    created_at: new Date().toISOString(),
+    operation_id: operationId,
+  };
+  const published = await publishRecord(client, ref, record, log);
+  if (!published.ok) {
+    log.warning(
+      `/${feedbackKind} on #${ref.issueNumber}: feedback record publish failed ` +
+        `(${published.reason}); the event is NOT accepted, no reaction.`,
+    );
+    return false;
+  }
+  log.info(
+    `Feedback event accepted (record #${published.commentId}, ${feedbackKind} on comment ` +
+      `${input.commentId}, epoch ${epoch.record.workflow_epoch}).`,
   );
   return true;
 }
 
 /**
  * /choose: a Trusted Human decision on an open question of the current plan.
- * The gate only validates the strict format (done in commands.ts) and the
- * REVIEW precondition; the arguments are forwarded verbatim to the Consumer
- * as untrusted data and NO state migration happens (protocol 3.2 / 3.3).
+ * The gate validates the strict format (done in commands.ts) and the REVIEW
+ * precondition, persists the accepted-event record and forwards the arguments
+ * verbatim to the Consumer as untrusted data. NO state migration (protocol
+ * 3.2 / 3.3).
  */
 async function applyChoose(
   ref: IssueRef,
   snapshot: WorkflowSnapshot,
   args: ChooseArgs,
+  input: GateInput,
+  client: GitHubClient,
   log: GateLogger,
 ): Promise<boolean> {
   if (snapshot.status === 'ambiguous') {
@@ -524,22 +901,27 @@ async function applyChoose(
     );
     return false;
   }
-  log.info(
-    `/choose on #${ref.issueNumber} accepted (REVIEW): question "${args.questionId}", ` +
-      `choice "${args.choice}" forwarded to the Consumer as untrusted data; no state migration.`,
-  );
-  return true;
+  const accepted = await acceptFeedbackEvent(ref, 'choose', input, client, log);
+  if (accepted) {
+    log.info(
+      `/choose on #${ref.issueNumber} accepted (REVIEW): question "${args.questionId}", ` +
+        `choice "${args.choice}" forwarded to the Consumer as untrusted data; no state migration.`,
+    );
+  }
+  return accepted;
 }
 
 /**
  * /change: a Trusted Human change request against the current plan. Same
- * policy as /choose: format + REVIEW precondition only, the free text is
- * forwarded verbatim as untrusted data, NO state migration.
+ * policy as /choose: format + REVIEW precondition, accepted-event record,
+ * free text forwarded verbatim as untrusted data, NO state migration.
  */
 async function applyChange(
   ref: IssueRef,
   snapshot: WorkflowSnapshot,
   args: ChangeArgs,
+  input: GateInput,
+  client: GitHubClient,
   log: GateLogger,
 ): Promise<boolean> {
   if (snapshot.status === 'ambiguous') {
@@ -557,11 +939,14 @@ async function applyChange(
     );
     return false;
   }
-  log.info(
-    `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the ` +
-      `Consumer as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`,
-  );
-  return true;
+  const accepted = await acceptFeedbackEvent(ref, 'change', input, client, log);
+  if (accepted) {
+    log.info(
+      `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the ` +
+        `Consumer as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`,
+    );
+  }
+  return accepted;
 }
 
 /**

@@ -11,7 +11,7 @@ import { readCurrent, writeCurrent } from '../../src/workspace/inbox';
 import { readReceipt, writeReceipt } from '../../src/workspace/outbox';
 import { makeWorkspace } from './helpers';
 
-const ID = 'gf_r123_i7_consumer_01';
+const ID = 'gf_r123_i7_w000000000007_consumer_01';
 
 describe('retryDispatch / clearReceipt', () => {
   it('clears an existing receipt so the next cycle may re-dispatch', async () => {
@@ -51,7 +51,7 @@ describe('retryDispatch / clearReceipt', () => {
     try {
       await writeReceipt(fixture.paths, { dispatch_id: ID, status: 'failed', attempts: 1 });
       await writeCurrent(fixture.paths, {
-        schema: 1,
+        schema: 2,
         dispatch_id: ID,
         role: 'consumer',
         issue_number: 7,

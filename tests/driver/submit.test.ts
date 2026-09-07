@@ -15,7 +15,8 @@ import { runOnce } from '../../src/driver/driver';
 import { processSubmit } from '../../src/driver/submit';
 import { resolveWorkspace } from '../../src/workspace/paths';
 import type { WorkspacePaths } from '../../src/workspace/paths';
-import { FakeDriverClient, makeDeps, makeWorkspace, testConfig } from './helpers';
+import { epochCode } from '../../src/protocol/epoch';
+import { FakeDriverClient, makeDeps, makeWorkspace, testConfig, testEpoch } from './helpers';
 
 /**
  * FakeDriverClient reusing the base class createIssue recording, plus an
@@ -54,7 +55,7 @@ async function setup(): Promise<{
 const REPO_INFO = { owner: 'octo', repo: 'repo', id: 123 };
 
 const VALID_SUBMIT_JSON = JSON.stringify({
-  schema: 1,
+  schema: 2,
   title: 'Add export button',
   kind: 'feature',
   maturity_hint: 'direction',
@@ -94,8 +95,10 @@ describe('processSubmit (docs/workspace-protocol.md §9)', () => {
       expect(created.body.startsWith('# Task\n\nBuild the export button.\n')).toBe(true);
       // …then the schema block in the EXACT format the gate parses…
       expect(created.body).toContain(
-        '<!-- ai-workflow\nschema: 1\nsource: producer\nkind: feature\nmaturity_hint: direction\n-->',
+        '<!-- ai-workflow\nschema: 2\nsource: producer\nkind: feature\nmaturity_hint: direction\n-->',
       );
+      // …then the source-id Operation anchor (submit reconciliation)…
+      expect(created.body).toContain('<!-- gateflow:source-id: submit:sub_');
       // …and the provenance note last.
       expect(
         created.body.trimEnd().endsWith('> Submitted via GateFlow local submit (.gateflow/submit).'),
@@ -103,7 +106,7 @@ describe('processSubmit (docs/workspace-protocol.md §9)', () => {
       // Cross-check against the gate's own parser.
       expect(parseIssueSchemaBlock(created.body)).toEqual({
         status: 'valid',
-        metadata: { schema: 1, source: 'producer', kind: 'feature', maturityHint: 'direction' },
+        metadata: { schema: 2, source: 'producer', kind: 'feature', maturityHint: 'direction' },
       });
 
       // submit/ renamed aside (never re-submitted), no error.json.
@@ -124,7 +127,7 @@ describe('processSubmit (docs/workspace-protocol.md §9)', () => {
     const { client, deps, paths, cleanup } = await setup();
     try {
       const bad = JSON.stringify({
-        schema: 1,
+        schema: 2,
         title: 'Broken',
         kind: 'featurerequest', // not in the frozen enum
         maturity_hint: 'direction',
@@ -201,22 +204,30 @@ describe('runOnce submit integration (submit BEFORE intents)', () => {
     try {
       await writeSubmit(paths, VALID_SUBMIT_JSON);
       // Existing work in the same cycle (issue 7 < created issue 501, so
-      // discovery visits it first — ascending issue numbers).
+      // discovery visits it first — ascending issue numbers). Its epoch is
+      // pinned; the CREATED issue's epoch is Driver-bootstrapped (CSPRNG),
+      // so its dispatch id is asserted by pattern below.
       client.addIssue(7, { labels: ['ai:planning'] });
+      client.ensureEpoch(7, testEpoch(7));
 
       const result = await runOnce(deps);
       expect(result.submit?.action).toBe('created');
       expect(result.submit?.issueNumber).toBe(501);
       // The issue CREATED by this cycle's submit step is already discovered:
       // proof that submit ran before processIntents.
-      expect(result.dispatched).toEqual([
-        { dispatched: true, dispatchId: 'gf_r123_i7_consumer_01', reason: 'new' },
-        { dispatched: true, dispatchId: 'gf_r123_i501_consumer_01', reason: 'new' },
-      ]);
-      expect([...(await readdir(paths.inbox))].sort()).toEqual([
-        'gf_r123_i501_consumer_01',
-        'gf_r123_i7_consumer_01',
-      ]);
+      const ids = result.dispatched.map((o) => o.dispatchId);
+      expect(result.dispatched).toHaveLength(2);
+      expect(result.dispatched.every((o) => o.dispatched)).toBe(true);
+      expect(ids).toContain(`gf_r123_i7_w${epochCode(testEpoch(7))!}_consumer_01`);
+      expect(ids.some((id) => /^gf_r123_i501_w[0-9a-z]{12}_consumer_01$/.test(id ?? ''))).toBe(
+        true,
+      );
+      const inboxes = [...(await readdir(paths.inbox))].sort();
+      expect(inboxes).toHaveLength(2);
+      expect(inboxes.some((id) => id === `gf_r123_i7_w${epochCode(testEpoch(7))!}_consumer_01`)).toBe(
+        true,
+      );
+      expect(inboxes.some((id) => /^gf_r123_i501_w[0-9a-z]{12}_consumer_01$/.test(id))).toBe(true);
 
       // Second cycle: the submission stays processed (no new issue), only
       // dedup no-ops remain.

@@ -3,16 +3,23 @@
  * current.json pointer, a receipt and an activation notice (docs/
  * architecture-v1.md §3.1-§3.4, workspace-protocol.md §6).
  *
- * FROZEN CONSTRAINTS:
- * - dispatch_id comes from the frozen grammar (docs §3): consumer rounds are
- *   zero-padded `01`-style revisions, executor revisions bind the approved
- *   Plan comment (`p<id>`). Dedup runs BEFORE any filesystem write.
- * - Inbox writes are atomic and dispatch.json is written LAST by writeInbox
- *   (ready-marker convention, docs §6); current.json follows, then the
- *   receipt. A crash mid-way leaves no "ready" inbox without a receipt.
- * - Activation failure must NEVER fail the dispatch (architecture §3.4):
- *   the issue keeps its canonical label state, the inbox stays valid, and a
- *   human can always act on current.json. We log and continue.
+ * SCHEMA 2 FROZEN CONSTRAINTS (docs/plans/v1_hardening_decisions.md):
+ * - dispatch_id binds repository/issue/EPOCH/role/revision (frozen grammar);
+ *   dedup runs BEFORE any filesystem write.
+ * - The inbox is bound by an input snapshot hash (context.json +
+ *   receipt): re-dispatching the SAME dispatch id with DIFFERENT content is
+ *   refused (`input-changed`) instead of silently overwriting a task an
+ *   agent may already be running. Identical content rebuilds idempotently
+ *   (crash between inbox and receipt).
+ * - dispatch.json is written LAST (ready-marker convention); current.json is
+ *   a MANUAL UI POINTER only and never decides task identity — prompts and
+ *   skills point at `.gateflow/inbox/<id>/dispatch.json`.
+ * - One workspace, one active Executor: an executor dispatch is refused with
+ *   `workspace-executor-busy` while the worktree's executor lock is held by
+ *   a live dispatch (queueing, never preemption).
+ * - Activation is best-effort and only ever recorded as
+ *   notified/started/failed — NEVER as "the agent accepted the task"
+ *   (hardening §9). Activation failure never fails the dispatch.
  * - The Driver never calls an LLM and never transitions labels here (or
  *   anywhere) — it only prepares the workspace and wakes a client.
  */
@@ -21,12 +28,14 @@ import { resolveAdapterForAgent, toActivationDispatch } from '../activation';
 import type { Dispatch, WorkspaceContext } from '../workspace/protocol';
 import { makeConsumerDispatchId, makeExecutorDispatchId } from '../workspace/protocol';
 import { resolveWorkspace } from '../workspace/paths';
-import { sha256Hex, writeCurrent, writeInbox } from '../workspace/inbox';
+import { inputSnapshotSha256, readInboxDispatch, readInboxContext, sha256Hex, writeCurrent, writeInbox } from '../workspace/inbox';
 import type { InboxBuild } from '../workspace/inbox';
 import { readReceipt, writeReceipt } from '../workspace/outbox';
-import { buildFeedbackMarkdown, buildTaskMarkdown, extractPlanContent } from './intent';
+import { buildFeedbackMarkdown, buildTaskMarkdown } from './intent';
+import { canonicalPlanContent } from '../protocol/plan';
 import { discoverWork } from './discovery';
 import { shouldDispatch } from './dedup';
+import { acquireLock, releaseLock, executorLockFile, DRIVER_LOCK_HOLDER } from './workspace-lock';
 import type { DispatchIntent } from './intent';
 import type { Discovery } from './discovery';
 import type { DriverDeps } from './driver';
@@ -44,11 +53,14 @@ function errorMessage(err: unknown): string {
 
 /**
  * Dispatch a single intent:
- * 1. compute the frozen-grammar dispatch_id;
+ * 1. compute the frozen-grammar dispatch_id (epoch-bound);
  * 2. dedup against the receipt (already-dispatched / retry-limit → no-op);
- * 3. atomically build the inbox (TASK.md, PLAN.md?, FEEDBACK.md?, context,
- *    dispatch.json LAST), write current.json, then the receipt;
- * 4. notify the role's activation adapter (failures logged, never thrown).
+ * 3. executors only: acquire the per-worktree executor lock (queue on
+ *    conflict);
+ * 4. atomically build the inbox (TASK.md, PLAN.md?, FEEDBACK.md?, context,
+ *    dispatch.json LAST) — refusing content-changed same-id rebuilds;
+ * 5. write current.json (manual pointer), then the receipt;
+ * 6. notify the role's activation adapter (failures logged, never thrown).
  */
 export async function dispatchIntent(
   deps: DriverDeps,
@@ -64,8 +76,8 @@ export async function dispatchIntent(
 
   const dispatchId =
     intent.role === 'consumer'
-      ? makeConsumerDispatchId(repositoryId, issueNumber, Number(intent.revision))
-      : makeExecutorDispatchId(repositoryId, issueNumber, intent.planCommentId ?? 0);
+      ? makeConsumerDispatchId(repositoryId, issueNumber, intent.epoch, Number(intent.revision))
+      : makeExecutorDispatchId(repositoryId, issueNumber, intent.epoch, intent.planCommentId ?? 0);
 
   const existing = await readReceipt(paths, dispatchId);
   const verdict = shouldDispatch(existing, deps.config.driver.maxAttempts);
@@ -91,16 +103,56 @@ export async function dispatchIntent(
       deps.log.warning(`skip ${dispatchId}: approved plan comment vanished mid-cycle`);
       return { dispatched: false, dispatchId, reason: 'plan-comment-not-found' };
     }
-    plan = extractPlanContent(planComment.body);
+    plan = canonicalPlanContent(planComment.body);
+  }
+
+  // Executors hold the per-worktree lock for their whole active life; a
+  // second executor dispatch queues (skipped, retried next cycle). A RETRY
+  // of the same dispatch id first releases the lock this Driver still holds
+  // from the failed attempt (retryDispatch also releases it on the explicit
+  // path; this covers automatic retries below max_attempts).
+  let lockAcquired = false;
+  if (intent.role === 'executor') {
+    if (existing !== null && existing.dispatch_id === dispatchId) {
+      await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
+    }
+    const lock = await acquireLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId, now);
+    if (!lock.ok) {
+      deps.log.warning(
+        `skip ${dispatchId}: workspace-executor-busy ` +
+          `(holder ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : 'unknown'})`,
+      );
+      return { dispatched: false, dispatchId, reason: 'workspace-executor-busy' };
+    }
+    lockAcquired = true;
+  }
+
+  const snapshot = inputSnapshotSha256({ task, plan, feedback });
+
+  // Snapshot binding: a same-id inbox with DIFFERENT content must never be
+  // silently overwritten (the agent may already be working from it).
+  const existingDispatch = await readInboxDispatch(paths, dispatchId);
+  if (existingDispatch !== null) {
+    const existingContext = await readInboxContext(paths, dispatchId);
+    const existingSnapshot = existingContext?.input_snapshot_sha256;
+    if (existingSnapshot !== undefined && existingSnapshot !== snapshot) {
+      if (lockAcquired) await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
+      deps.log.warning(
+        `skip ${dispatchId}: input snapshot changed since the inbox was built ` +
+          '(refusing to overwrite a possibly-running task)',
+      );
+      return { dispatched: false, dispatchId, reason: 'input-changed' };
+    }
   }
 
   const createdAt = now().toISOString();
   const dispatch: Dispatch = {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
     repository,
     repository_id: repositoryId,
     issue_number: issueNumber,
+    workflow_epoch: intent.epoch,
     role: intent.role,
     reason: intent.reason,
     created_at: createdAt,
@@ -113,22 +165,25 @@ export async function dispatchIntent(
     },
   };
   const context: WorkspaceContext = {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
+    workflow_epoch: intent.epoch,
     ...(intent.role === 'executor' && intent.planCommentId !== null && plan !== null
-      ? { plan_comment_id: intent.planCommentId, plan_sha256: sha256Hex(plan) }
+      ? { plan_comment_id: intent.planCommentId, plan_sha256: intent.planSha256 ?? sha256Hex(plan) }
       : {}),
     feedback_count: discovery.feedback.length,
+    input_snapshot_sha256: snapshot,
   };
 
   const build: InboxBuild = { dispatch, context, task, plan, feedback };
+
   // Ready-marker convention (docs §6): writeInbox writes dispatch.json LAST;
   // current.json then points agents at the dispatch; the receipt lands after
   // so a crash between inbox and receipt still re-dispatches idempotently
-  // (the inbox rebuild is a full overwrite).
+  // (the inbox rebuild is a full overwrite of IDENTICAL content).
   await writeInbox(paths, build);
   await writeCurrent(paths, {
-    schema: 1,
+    schema: 2,
     dispatch_id: dispatchId,
     role: intent.role,
     issue_number: issueNumber,
@@ -139,11 +194,17 @@ export async function dispatchIntent(
     dispatch_id: dispatchId,
     status: 'dispatched',
     attempts: (existing?.attempts ?? 0) + 1,
+    workflow_epoch: intent.epoch,
+    plan_comment_id: intent.planCommentId ?? undefined,
+    approval_comment_id: intent.approvalCommentId ?? undefined,
+    input_snapshot_sha256: snapshot,
     error: null,
   });
 
   // Activation is best-effort by design (architecture §3.4 note): a failed
-  // wake-up leaves the issue in its canonical state with a valid inbox.
+  // wake-up leaves the issue in its canonical state with a valid inbox. The
+  // observation is truthful by construction: notified/started/failed — it is
+  // never a claim that the agent accepted the task (hardening §9).
   const agentName =
     intent.role === 'consumer' ? deps.config.routing.consumer : deps.config.routing.executor;
   const adapter = resolveAdapterForAgent(
@@ -151,8 +212,14 @@ export async function dispatchIntent(
     deps.config.agents,
     deps.config.activation.fallback,
   );
+  let activation: { adapter: string; state: 'notified' | 'started' | 'failed'; detail?: string; at: string } = {
+    adapter: adapter.name,
+    state: 'failed',
+    detail: 'activation not attempted',
+    at: createdAt,
+  };
   try {
-    const activation = await adapter.notify(
+    const result = await adapter.notify(
       toActivationDispatch({
         dispatch_id: dispatchId,
         role: intent.role,
@@ -161,14 +228,34 @@ export async function dispatchIntent(
       }),
       deps.projectRoot,
     );
-    if (activation.notified) {
-      deps.log.info(`activation '${adapter.name}' notified for ${dispatchId}: ${activation.detail}`);
+    activation = {
+      adapter: adapter.name,
+      state: result.state,
+      detail: result.detail,
+      at: now().toISOString(),
+    };
+    if (result.state === 'failed') {
+      deps.log.warning(`activation '${adapter.name}' failed for ${dispatchId}: ${result.detail}`);
     } else {
-      deps.log.warning(`activation '${adapter.name}' could not notify for ${dispatchId}: ${activation.detail}`);
+      deps.log.info(`activation '${adapter.name}' ${result.state} for ${dispatchId}: ${result.detail}`);
     }
   } catch (err) {
+    activation = {
+      adapter: adapter.name,
+      state: 'failed',
+      detail: errorMessage(err),
+      at: now().toISOString(),
+    };
     deps.log.warning(`activation adapter threw for ${dispatchId} (dispatch stays valid): ${errorMessage(err)}`);
   }
+  const currentReceipt = await readReceipt(paths, dispatchId);
+  await writeReceipt(paths, {
+    ...(currentReceipt ?? {}),
+    dispatch_id: dispatchId,
+    status: currentReceipt?.status ?? 'dispatched',
+    attempts: currentReceipt?.attempts ?? 1,
+    activation,
+  });
 
   deps.log.info(`dispatched ${dispatchId} (${intent.role}/${intent.reason}) for issue #${issueNumber}`);
   return { dispatched: true, dispatchId, reason: verdict.reason };
@@ -185,7 +272,7 @@ export async function processIntents(
   repositoryInfo: RepositoryInfo,
 ): Promise<DispatchOutcome[]> {
   const repository = `${repositoryInfo.owner}/${repositoryInfo.name}`;
-  const discoveries = await discoverWork(deps.client, repository, deps.config, deps.log);
+  const discoveries = await discoverWork(deps.client, repository, deps.config, repositoryInfo, deps.log);
   const outcomes: DispatchOutcome[] = [];
   for (const discovery of discoveries) {
     for (const intent of discovery.intents) {
