@@ -95,6 +95,9 @@ activation:
 
 ## 5. CLI 参考
 
+（V1.1 新增：`gateflow driver unlock <dispatchId>` —— 显式释放冲突的 executor 锁，
+见 §9.1。invoking 即人工确认。）
+
 ```text
 gateflow driver start|once|status|retry <dispatchId>
 
@@ -222,7 +225,50 @@ Driver 准备 Dispatch（inbox 就绪，dispatch.json 最后写 = 就绪标记�
 
 ---
 
-## 9. FAQ
+## 9. V1.1 Driver 变更（Correctness Hardening）
+
+### 9.1 Executor Lock：无时间抢占 + 显式 unlock
+
+- executor 锁（`.gateflow/driver/locks/executor.lock`）记录
+  `{ pid, holder, kind: "executor", acquired_at, heartbeat_at, dispatch_id, workflow_epoch, workspace }`；
+- **没有**时间上限抢占，**不会**因 holder pid 死亡被自动偷取——Driver 崩溃 ≠ Agent 停止；
+  冲突分两类：持有者存活 → `workspace-executor-busy`（排队）；不可证明存活 →
+  `workspace-executor-conflict`（fail safe，等待人工处置）；
+- 人工确认旧客户端已停止后，执行显式释放：
+
+  ```bash
+  gateflow driver unlock gf_r123_i7_w..._executor_p...
+  ```
+
+  该命令即"人工确认"动作本身；dispatch id 不匹配会拒绝释放。driver.lock 仍是运行时锁
+  （pid + heartbeat，每轮刷新），超龄可自动接管。
+
+### 9.2 Receipt `accepted` 绑定迁移记录
+
+Executor dispatch 的 receipt 从 `published` 推进到 `accepted` 的唯一凭证是 Gate 的
+`gate_transition` 记录（epoch + dispatch_id + transition=T6 + source_comment_id 四元匹配本
+dispatch 发布的 Report 评论）。裸 `ai:done` 标签不再是接受信号；epoch/dispatch 变化时旧
+receipt 进入 `obsolete`。
+
+### 9.3 新配置：`bootstrap_drivers`
+
+```yaml
+bootstrap_drivers:        # 可显式引导 epoch 的身份（V1.1 Phase 2）
+  - gateflow-driver[bot]
+```
+
+缺省规则：个人仓库（owner type=User，API 核实）默认 owner；Organization 仓库**无默认**=
+无人可引导（Gate 自行签发全部 epoch）。仅对 Producer 提交产生的 planning issue 且完全无
+epoch 记录时生效；引导记录 `created_by: "driver_bootstrap"`，operation id 为
+`epoch:<repo>:<issue>:bootstrap`（确定性，超时可 search-adopt）。
+
+### 9.4 共享校验层
+
+派发意图、preflight 与 Gate 使用同一授权链实现（`src/protocol/workflow-chain.ts`）与同一命令
+语法（`src/protocol/commands.ts`）；Driver 侧仍独立重验——**Driver Preflight ≠ Gate
+Authorization**。
+
+## 10. FAQ
 
 **Q1：GitHub API 限流怎么办？**
 `poll_interval_seconds` 调大（30 → 60/120）；Driver 对无变化的轮询是廉价读操作，也可结合 GitHub 的条件请求（ETag / `updated_since` 类增量手段）降低请求量。`status` 命令完全离线，排查时优先用它，不消耗 API 配额。

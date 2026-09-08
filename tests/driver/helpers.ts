@@ -121,25 +121,25 @@ export class FakeDriverClient implements DriverGitHubClient {
 
   /**
    * Ensure an epoch record exists for the issue (the usual first fixture
-   * call for an in-workflow issue) and return the epoch.
+   * call for an in-workflow issue) and return the epoch. V1.1: gate-issued
+   * (`created_by: 'gate'`) with the deterministic `c<command>` operation id.
    */
   ensureEpoch(issueNumber: number, epoch: WorkflowEpoch = testEpoch(issueNumber)): WorkflowEpoch {
     const issue = this.issues.get(issueNumber);
     if (issue === undefined) throw new Error(`fake issue #${issueNumber} does not exist`);
     const existing = issue.comments.some((c) => c.body.includes('gateflow:workflow:v2'));
     if (!existing) {
-      this.addGateRecord(issueNumber, {
-        schema: 2,
-        kind: 'workflow_epoch',
-        repository_id: this.repository.id,
-        issue_number: issueNumber,
-        workflow_epoch: epoch,
-        created_at: '2026-09-06T11:00:00Z',
-        issued_by: this.gateUser,
-        operation_id: `epoch:${this.repository.id}:${issueNumber}:${epoch}`,
-      });
+      this.addGateRecord(
+        issueNumber,
+        epochRecord(this.repository.id, issueNumber, epoch),
+      );
     }
     return epoch;
+  }
+
+  /** The deterministic epoch operation id for a fixture issue (gate form). */
+  epochOperationId(issueNumber: number, commandCommentId = 900100): string {
+    return `epoch:${this.repository.id}:${issueNumber}:c${commandCommentId}`;
   }
 
   commentCount(issueNumber: number): number {
@@ -226,6 +226,7 @@ export function testConfig(
     repository?: string;
     trustedHumans?: string[];
     gateLogins?: string[];
+    bootstrapDrivers?: string[];
     requireExplicitHumans?: boolean;
     routing?: { consumer?: string; executor?: string };
     progressSyncSeconds?: number;
@@ -244,6 +245,7 @@ export function testConfig(
     },
     trustedHumans: overrides.trustedHumans ?? [],
     gateLogins: overrides.gateLogins ?? ['github-actions[bot]'],
+    bootstrapDrivers: overrides.bootstrapDrivers ?? [],
     requireExplicitHumans: overrides.requireExplicitHumans ?? true,
     routing: overrides.routing ?? {},
     agents: {},
@@ -316,22 +318,31 @@ function withSchema(record: Record<string, unknown>): GateRecord {
   return { schema: RECORD_SCHEMA_VERSION, ...record } as unknown as GateRecord;
 }
 
-/** A parser-valid workflow_epoch record (schema 2). */
+/** A parser-valid workflow_epoch record (schema 2, V1.1 trust fields). */
 export function epochRecord(
   repositoryId: number,
   issueNumber: number,
   epoch: WorkflowEpoch,
+  opts: { createdBy?: 'gate' | 'driver_bootstrap'; commandCommentId?: number; issuedBy?: string } = {},
 ): GateRecord {
+  const commandCommentId = opts.commandCommentId ?? DEFAULT_EPOCH_COMMAND_ID;
   return withSchema({
     kind: 'workflow_epoch',
     repository_id: repositoryId,
     issue_number: issueNumber,
     workflow_epoch: epoch,
+    created_by: opts.createdBy ?? 'gate',
     created_at: '2026-09-06T11:00:00Z',
-    issued_by: GATE_JSON_LOGIN,
-    operation_id: `epoch:${repositoryId}:${issueNumber}:${epoch}`,
+    issued_by: opts.issuedBy ?? GATE_JSON_LOGIN,
+    operation_id:
+      opts.createdBy === 'driver_bootstrap'
+        ? `epoch:${repositoryId}:${issueNumber}:bootstrap`
+        : `epoch:${repositoryId}:${issueNumber}:c${commandCommentId}`,
   });
 }
+
+/** The default /ai-plan command comment id the fixture operation ids bind. */
+export const DEFAULT_EPOCH_COMMAND_ID = 900100;
 
 /** Inputs for approvalRecord (all Operation-ID bindings derived here). */
 export interface ApprovalRecordInput {
@@ -389,6 +400,40 @@ export function feedbackRecord(input: FeedbackRecordInput): GateRecord {
     gate_user_id: 41898282,
     created_at: '2026-09-06T12:30:00Z',
     operation_id: `feedback:${input.repositoryId}:${input.issueNumber}:${input.epoch}:${id}`,
+  });
+}
+
+/** Inputs for transitionRecord. */
+export interface TransitionRecordInput {
+  repositoryId: number;
+  issueNumber: number;
+  epoch: WorkflowEpoch;
+  transition: 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
+  fromLabel: string;
+  toLabel: string;
+  sourceCommentId: number;
+  dispatchId?: string | null;
+}
+
+/** A parser-valid gate_transition record (schema 2, Gate-issued). */
+export function transitionRecord(input: TransitionRecordInput): GateRecord {
+  return withSchema({
+    kind: 'gate_transition',
+    repository_id: input.repositoryId,
+    issue_number: input.issueNumber,
+    workflow_epoch: input.epoch,
+    dispatch_id: input.dispatchId ?? null,
+    transition: input.transition,
+    from_label: input.fromLabel,
+    to_label: input.toLabel,
+    source_comment_id: input.sourceCommentId,
+    gate_login: GATE_JSON_LOGIN,
+    gate_user_id: 41898282,
+    gate_version: '1.1.0',
+    created_at: '2026-09-06T13:00:00Z',
+    operation_id:
+      `transition:${input.repositoryId}:${input.issueNumber}:${input.epoch}:` +
+      `${input.transition}:${input.sourceCommentId}`,
   });
 }
 

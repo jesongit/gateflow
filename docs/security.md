@@ -230,3 +230,54 @@ Agent 的 `result=completed` 永远不是 DONE——只有 Driver 观察 到 Gat
 | 同机用户读取凭证 | env 白名单 + 私有目录 | 需 Secure Mode（容器/独立用户）才能根治 |
 | 本地锁被绕过 | O_EXCL + pid 活性 + 年龄上限 | 仅同机有效；跨机需外部协调（文档声明，不虚称全局互斥） |
 | Cancel 后 Agent 仍在本地改代码 | Skill 约定停止 + Driver 拒绝旧 outbox + obsolete 标记 | 无法远程杀死已启动的会话——这是 Manual Activation 的固有边界 |
+
+## 10. V1.1 Correctness Hardening（安全语义收尾）
+
+V1.1 不新增架构层，只把既有设计的授权链闭环。核心变化与安全含义：
+
+### 10.1 Dispatch 授权链进 Gate（P0）
+
+Gate 的全部 marker 迁移（T1/T3/T4/T5/T6）现在绑定完整执行链：当前 epoch、当前 Plan、
+有效 approval 记录、dispatch 归属。伪造 marker、旧轮次对象、无 approval 的 READY、孤儿 Report
+在 Gate 一侧即死（此前只有 Driver 的 preflight 拦截——Driver Preflight ≠ Gate Authorization，
+两者独立执行同一校验，实现在共享的 `src/protocol/workflow-chain.ts`）。
+
+### 10.2 Epoch 记录只认可信签发者
+
+epoch 记录新增 `created_by`（`gate` | `driver_bootstrap`）：`gate` 类必须由 Gate 身份发出；
+`driver_bootstrap` 类必须由显式 Bootstrap Driver 名单（个人仓库缺省 owner）发出。
+普通用户、乃至 Trusted Agent 的伪造 epoch 均无效；epoch operation id 改为确定性
+（绑定 /ai-plan 命令评论），同 operation 冲突 fail closed，绝不"取最新"。
+
+### 10.3 迁移记录与 receipt 语义
+
+Gate 对每次 T1–T6 迁移先发 `gate_transition` 记录再换标签（record-first）。Driver receipt 的
+`accepted` **必须**匹配迁移记录（source_comment_id + epoch + dispatch + transition 四元绑定）；
+裸 `ai:done` 标签观察不再是接受凭证。旧输出在新轮次下自动 `obsolete`。
+
+### 10.4 Executor Lock：不再按固定时间自动抢占
+
+桌面 Agent 的存活可能远超 Driver 进程：Driver 崩溃 ≠ Agent 停止。V1.1 起 executor 锁
+**没有时间上限抢占**、**不因 pid 死亡被自动偷取**：
+
+- 持有者存活 → busy（排队）；
+- 持有者不可证明存活 → `workspace-executor-conflict`（fail safe，绝不自动抢占）；
+- 唯二释放路径：同进程正常释放（terminal receipt），或人工确认旧客户端已停止后的显式命令
+  `gateflow driver unlock <dispatch_id>`。
+
+driver.lock 仍是运行时锁（pid + heartbeat + 年龄上限自动接管）。
+
+### 10.5 三种安全语义（文档口径，冻结）
+
+| 模式 | 提供什么 | 不提供什么 |
+| --- | --- | --- |
+| **Personal Mode**（默认） | Workspace 通信隔离；凭证不下传；Driver 私有状态；授权链/epoch 信任/迁移记录的全部协议校验 | 无 OS 级隔离；Human/Agent 身份**允许**重叠（同一自然人身兼两角） |
+| **Secure Identity Mode**（宣称前提） | Human / Driver / Gate 使用独立受控身份；Identity Resolver 强制 Human ∩ Agent = ∅ | 仍无 OS 隔离——同机 Agent 仍可读凭证文件 |
+| **Hardened Runtime**（未来，不在 V1.1 范围） | OS/容器隔离、凭证隔离、每 dispatch 一个 git worktree | —— |
+
+### 10.6 Cancel 的确切含义
+
+`/cancel` = **停止接受旧 Dispatch 的输出**：Issue 移除 ai:* 标签 → preflight 立即把旧 dispatch
+判定为 obsolete → 其 outbox 内容被拒绝同步。它**不等于**保证终止外部桌面 Agent——已启动的
+ChatGPT/ZCode 会话无法被远程杀死（Manual Activation 的固有边界）；Agent 侧依据 Skill 约定在
+dispatch 失效后停止工作。本地残留影响由 executor 锁与 obsolete receipt 兜底。

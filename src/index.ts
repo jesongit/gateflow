@@ -13,19 +13,23 @@ import * as core from '@actions/core';
 import { context, getOctokit } from '@actions/github';
 import { runGate, type GateInput, type GateLogger } from './gate/gate';
 import { createGitHubClient, type GitHubClient } from './gate/github';
+import { GATE_VERSION } from './gate/version';
+import { gateInputFromPayload } from './gate/input';
 
-export const GATE_VERSION = '1.0.0';
+export { GATE_VERSION };
 
 /** Action inputs, read once per call. */
 function readInputs(): {
   trustedHumans: string;
   trustedAgents: string;
+  bootstrapDrivers: string;
   requireExplicitHumans: string;
   token: string;
 } {
   return {
     trustedHumans: core.getInput('trusted-humans'),
     trustedAgents: core.getInput('trusted-agents'),
+    bootstrapDrivers: core.getInput('bootstrap-drivers'),
     requireExplicitHumans: core.getInput('require-explicit-humans') || 'true',
     token: core.getInput('github-token', { required: true }),
   };
@@ -37,47 +41,27 @@ function readInputs(): {
  * e.g. a misconfigured workflow trigger — that is config noise, not a failure.
  */
 export function readGateInput(): GateInput | null {
-  const payload = context.payload as {
-    action?: string;
-    repository?: { id?: number };
-    issue?: { number?: number; body?: string; user?: { login?: string; id?: number } };
-    comment?: { id?: number; user?: { login?: string; id?: number }; body?: string };
-    sender?: { login?: string; id?: number };
-  };
-
-  const issueNumber = payload.issue?.number;
-  if (typeof issueNumber !== 'number') {
+  const inputs = readInputs();
+  const extracted = gateInputFromPayload(
+    context.eventName,
+    context.payload as unknown as Parameters<typeof gateInputFromPayload>[1],
+    {
+    actor: undefined,
+    repoOwner: context.repo.owner,
+    repo: context.repo.repo,
+    trustedHumansInput: inputs.trustedHumans,
+    trustedAgentsInput: inputs.trustedAgents,
+    bootstrapDriversInput: inputs.bootstrapDrivers,
+    requireExplicitHumansInput: inputs.requireExplicitHumans,
+    },
+  );
+  if (extracted === null) {
     core.warning(
       `Event ${context.eventName} carries no issue payload; nothing to do. ` +
         'Check the workflow "on:" configuration.',
     );
-    return null;
   }
-
-  const commentUser = payload.comment?.user;
-  const actor =
-    commentUser?.login ?? payload.sender?.login ?? payload.issue?.user?.login ?? '';
-  const actorId = commentUser?.id ?? payload.sender?.id ?? payload.issue?.user?.id;
-  const inputs = readInputs();
-
-  return {
-    eventName: context.eventName,
-    eventAction: payload.action,
-    actor,
-    actorId,
-    repositoryId: payload.repository?.id ?? 0,
-    repoOwner: context.repo.owner,
-    repo: context.repo.repo,
-    issueNumber,
-    commentId: payload.comment?.id,
-    commentBody: payload.comment?.body,
-    // Observability only: the gate parses this for the Producer schema block
-    // (issues.opened); it never derives state or permissions from it.
-    issueBody: payload.issue?.body,
-    trustedHumansInput: inputs.trustedHumans,
-    trustedAgentsInput: inputs.trustedAgents,
-    requireExplicitHumansInput: inputs.requireExplicitHumans,
-  };
+  return extracted;
 }
 
 /** The logger the gate uses inside Actions (GitHub Actions log). */

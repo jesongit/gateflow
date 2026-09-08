@@ -28,13 +28,11 @@
 import type { CommentDetail, IssueDetail } from '../github/client';
 import {
   acceptedFeedbackEvents,
-  approvalRecordAnchorFailure,
   findPlanComments,
-  readIssueRecords,
+  readIssueRecordsForIssue,
   type IssueRecordView,
 } from '../github/issue-sync';
-import { planSha256 } from '../protocol/plan';
-import { approvalRecordsConflict } from '../protocol/records';
+import { validateApprovalBinding } from '../protocol/workflow-chain';
 import type { Role } from '../workspace/protocol';
 import type { HumanFeedbackEntry } from '../github/issue-sync';
 
@@ -46,6 +44,11 @@ export interface IntentContext {
   trustedHumans: ReadonlySet<string>;
   /** Driver-side allowlist of Gate record identities. */
   gateLogins: ReadonlySet<string>;
+  /**
+   * V1.1 Phase 2: explicit allowlist for `driver_bootstrap` epoch records
+   * (config default: the owner of a personal repository).
+   */
+  bootstrapIssuers: ReadonlySet<string>;
 }
 
 /** One to-be-dispatched unit of work derived from canonical GitHub state. */
@@ -104,7 +107,12 @@ export function deriveIntents(
   const state = labels[0];
   if (state === undefined) return []; // unreachable given length check; keeps noUncheckedIndexedAccess honest
 
-  const view: IssueRecordView = readIssueRecords(comments, ctx.gateLogins);
+  const view: IssueRecordView = readIssueRecordsForIssue(comments, {
+    repositoryId: ctx.repositoryId,
+    issueNumber: issue.number,
+    gateLogins: ctx.gateLogins,
+    bootstrapIssuers: ctx.bootstrapIssuers,
+  });
   // Fail closed: any record with a broken body or an untrusted author means
   // someone may be forging authorization facts on this issue.
   if (view.suspect.length > 0) return [];
@@ -151,35 +159,30 @@ export function deriveIntents(
       ];
     }
     case 'ai:ready': {
-      const plans = findPlanComments(comments);
-      const plan = plans[plans.length - 1];
-      if (plan === undefined) return [];
-      // Approval record binding: epoch + plan id + exact plan content hash,
-      // PLUS the human anchor — the record must reference a still-existing
-      // anchored /approve by a trusted human matching the recorded approver.
-      const candidates = view.approvals.filter(
-        (entry) =>
-          entry.record.workflow_epoch === epoch &&
-          entry.record.plan_comment_id === plan.id &&
-          entry.record.plan_sha256 === planSha256(plan.body) &&
-          approvalRecordAnchorFailure(entry.record, comments, ctx.trustedHumans, ctx.repoOwner) ===
-            null,
-      );
-      if (candidates.length === 0) return [];
-      const conflict = approvalRecordsConflict(candidates);
-      if (conflict.conflict) return []; // fail closed on divergent records
-      const approval = candidates[candidates.length - 1];
-      if (approval === undefined) return [];
+      // V1.1: the executor intent exists only when the SHARED approval
+      // binding holds — current plan + a Gate-issued approval record binding
+      // (epoch, plan id, exact plan hash) with an intact human anchor and no
+      // record conflict (src/protocol/workflow-chain.ts, Phase 1 §4.6).
+      const binding = validateApprovalBinding({
+        epoch,
+        repositoryId: ctx.repositoryId,
+        issueNumber: issue.number,
+        comments,
+        gateIssuers: ctx.gateLogins,
+        trustedHumans: ctx.trustedHumans,
+        repoOwner: ctx.repoOwner,
+      });
+      if (!binding.ok) return [];
       return [
         {
           role: 'executor',
           issueNumber: issue.number,
           reason: 'approved_plan',
-          revision: `p${plan.id}`,
+          revision: `p${binding.planCommentId}`,
           epoch,
-          planCommentId: plan.id,
-          approvalCommentId: approval.commentId,
-          planSha256: approval.record.plan_sha256,
+          planCommentId: binding.planCommentId,
+          approvalCommentId: binding.approvalCommentId,
+          planSha256: binding.planSha256,
         },
       ];
     }

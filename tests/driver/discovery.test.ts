@@ -103,17 +103,29 @@ describe('discoverIssue', () => {
   it('a planning issue without an epoch record gets a Driver-bootstrapped epoch comment', async () => {
     const client = new FakeDriverClient();
     const issue = client.addIssue(7, { labels: ['ai:planning'] });
+    // V1.1 Phase 2: only an explicit Bootstrap Driver identity may bootstrap.
+    const config = testConfig({ bootstrapDrivers: ['gateflow-driver[bot]'] });
 
-    const discovery = await discoverIssue(client, 'octo/repo', issue, testConfig(), client.repository);
+    const discovery = await discoverIssue(client, 'octo/repo', issue, config, client.repository);
     // Bootstrap happened exactly once: a fresh workflow_epoch record comment.
     expect(client.commentCount(7)).toBe(1);
     const bootstrapped = client.issues.get(7)!.comments[0]!;
     expect(bootstrapped.user).toBe(client.botUser); // issued by the DRIVER identity
     expect(bootstrapped.body).toContain('gateflow:workflow:v2');
+    expect(bootstrapped.body).toContain('"created_by": "driver_bootstrap"');
+    expect(bootstrapped.body).toContain(`"operation_id": "epoch:123:7:bootstrap"`);
     expect(discovery.comments).toHaveLength(1);
-    // NOTE: intents stay empty until src/protocol/records.ts injects `schema`
-    // into buildRecordBody output (reported src gap): the bootstrap record
-    // currently fails parseRecord and the issue fails closed for this cycle.
+    // The bootstrapped epoch authorizes this cycle's consumer intent.
+    expect(discovery.intents).toHaveLength(1);
+  });
+
+  it('V1.1: an unconfigured Driver identity never bootstraps (fail closed)', async () => {
+    const client = new FakeDriverClient();
+    const issue = client.addIssue(7, { labels: ['ai:planning'] });
+    // Default config: the personal-repo owner ('octo') is the bootstrap
+    // driver, but this fake Driver publishes as 'gateflow-driver[bot]'.
+    await discoverIssue(client, 'octo/repo', issue, testConfig(), client.repository);
+    expect(client.commentCount(7)).toBe(0);
   });
 
   it('does NOT bootstrap for non-planning issues or issues that already have an epoch', async () => {

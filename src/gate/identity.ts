@@ -1,8 +1,8 @@
 /**
  * Identity-config validation for the gate (hardening GF-H10, docs/plans/
- * v1_hardening_decisions.md §8): Organization repositories must have an
- * explicit Trusted Human allowlist, and the Human / Agent identities must
- * never overlap.
+ * v1_hardening_decisions.md §8; V1.1 Phase 9 delegates the resolution to the
+ * SHARED resolver in src/protocol/identity.ts so the Gate, the Driver and
+ * the epoch bootstrap all answer identity questions identically).
  *
  * The owner TYPE is verified against the GitHub API (repos.get → owner.type),
  * never against the event payload: an attacker who can shape event payloads
@@ -12,6 +12,7 @@
  * AT ALL (the caller sets the action failed) — a misconfigured identity model
  * must never silently fall back to "owner login counts as a Human".
  */
+import { resolveIdentities } from '../protocol/identity';
 
 export interface IdentityConfigInput {
   /** Owner login as verified via the API. */
@@ -23,6 +24,12 @@ export interface IdentityConfigInput {
   /** Parsed `trusted-agents` allowlist. */
   trustedAgents: readonly string[];
   /**
+   * Parsed `bootstrap-drivers` allowlist (V1.1 Phase 2: identities allowed to
+   * issue `driver_bootstrap` epoch records). Empty = default rule (the owner
+   * of a personal repository).
+   */
+  bootstrapDrivers?: readonly string[];
+  /**
    * `require-explicit-humans` action input (default true): an Organization
    * (any owner type other than "User") with an empty allowlist is a hard
    * configuration error.
@@ -32,44 +39,24 @@ export interface IdentityConfigInput {
 
 export type IdentityConfigVerdict = { ok: true } | { ok: false; reason: string };
 
-function loginEquals(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
-}
-
 /**
  * Validates the gate's identity configuration before ANY state mutation.
  * Pure function; the caller logs `reason` and fails the run when not ok.
  */
 export function validateIdentityConfig(input: IdentityConfigInput): IdentityConfigVerdict {
-  const humans = input.trustedHumans.map((h) => h.trim()).filter((h) => h.length > 0);
-  const agents = input.trustedAgents.map((a) => a.trim()).filter((a) => a.length > 0);
-
-  for (const human of humans) {
-    for (const agent of agents) {
-      if (loginEquals(human, agent)) {
-        return {
-          ok: false,
-          reason:
-            `identity overlap: "${human}" is configured as BOTH a Trusted Human and a ` +
-            'Trusted Agent. The two roles are separate concepts and must never share a ' +
-            'login (docs/plans/v1_hardening_decisions.md §3). Fix the gate inputs; refusing to run.',
-        };
-      }
-    }
+  const resolution = resolveIdentities({
+    owner: input.owner,
+    ownerType: input.ownerType,
+    trustedHumans: input.trustedHumans,
+    trustedAgents: input.trustedAgents,
+    bootstrapDrivers: input.bootstrapDrivers,
+    requireExplicitHumans: input.requireExplicitHumans,
+  });
+  if (resolution.ok) {
+    return { ok: true };
   }
-
-  const isPersonalOwner = input.ownerType === 'User';
-  if (!isPersonalOwner && humans.length === 0 && input.requireExplicitHumans) {
-    return {
-      ok: false,
-      reason:
-        `repository owner "${input.owner}" has GitHub type "${input.ownerType}", so the ` +
-        'repo-owner login is NOT accepted as a Trusted Human by default. Configure an ' +
-        'explicit `trusted-humans` allowlist (or set `require-explicit-humans: false` to ' +
-        'accept the risk knowingly). Refusing to run: an Organization repo without an ' +
-        'explicit Human allowlist has no safe identity model.',
-    };
-  }
-
-  return { ok: true };
+  return { ok: false, reason: resolution.reason };
 }
+
+export { resolveIdentities, identitySetHas } from '../protocol/identity';
+export type { EffectiveIdentities, IdentityResolution } from '../protocol/identity';

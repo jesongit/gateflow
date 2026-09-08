@@ -9,7 +9,9 @@ import {
   approvalOperationId,
   approvalRecordsConflict,
   buildRecordBody,
-  epochOperationId,
+  gateEpochOperationId,
+  bootstrapEpochOperationId,
+  transitionOperationId,
   feedbackOperationId,
   findSourceIdInBody,
   parseRecord,
@@ -34,9 +36,10 @@ function anEpochRecord(epoch = newWorkflowEpoch(), over: Partial<WorkflowEpochRe
     repository_id: REPO,
     issue_number: ISSUE,
     workflow_epoch: epoch,
+    created_by: 'gate',
     created_at: '2026-09-07T09:00:00Z',
     issued_by: 'github-actions[bot]',
-    operation_id: epochOperationId(REPO, ISSUE, epoch),
+    operation_id: gateEpochOperationId(REPO, ISSUE, 42),
     ...over,
   };
 }
@@ -226,7 +229,8 @@ describe('approvalRecordsConflict', () => {
 describe('operation id grammar', () => {
   it('binds every authorization object to content/task identity', () => {
     const epoch = newWorkflowEpoch();
-    expect(epochOperationId(REPO, ISSUE, epoch)).toBe(`epoch:${REPO}:${ISSUE}:${epoch}`);
+    expect(gateEpochOperationId(REPO, ISSUE, 42)).toBe(`epoch:${REPO}:${ISSUE}:c42`);
+    expect(bootstrapEpochOperationId(REPO, ISSUE)).toBe(`epoch:${REPO}:${ISSUE}:bootstrap`);
     expect(approvalOperationId(REPO, ISSUE, epoch, 100)).toBe(
       `approval:${REPO}:${ISSUE}:${epoch}:p100`,
     );

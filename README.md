@@ -120,6 +120,17 @@ tests/                         # vitest（gate / workspace / driver / github / a
 
 （目录结构以 [docs/architecture-v1.md](docs/architecture-v1.md) §5 为准。）
 
+## V1.1 Correctness Hardening 摘要
+
+V1.1（计划全文见 [gateflow_v1_1_correctness_hardening_plan.md](gateflow_v1_1_correctness_hardening_plan.md)）不加新架构层，只把授权链闭环——Gate 不只验证"谁发了一个合法格式对象"，而要验证"这个对象是否属于当前被授权的执行链"：
+
+- **Gate Dispatch Authorization（P0）**：全部 marker 迁移（T1/T3/T4/T5/T6）绑定当前 epoch、当前 Plan、有效 approval 记录与 dispatch 归属（Gate 与 Driver 共享同一实现 `src/protocol/workflow-chain.ts`，各自独立校验）。
+- **Epoch Record Trust**：epoch 记录带 `created_by`（`gate` / `driver_bootstrap`），签发者类别强校验；operation id 确定性化（绑定 /ai-plan 命令评论），重试 search-adopt，冲突 fail closed；T0 改为 record-first——无 epoch 记录绝不进入 PLANNING。
+- **gate_transition 记录**：每次 T1–T6 迁移先发记录再换标签；Driver receipt 的 `accepted` 必须四元绑定迁移记录（source_comment_id + epoch + dispatch + transition），裸 `ai:done` 标签不再是接受凭证。
+- **Executor Lock**：无时间上限抢占、不因 pid 死亡自动偷取；`gateflow driver unlock <dispatch-id>` 显式人工释放。
+- **共享协议层**：命令语法（`src/protocol/commands.ts`）、身份解析（`src/protocol/identity.ts`）唯一实现，Gate / Driver / Bootstrap 三方共用。
+- **测试**：录制 webhook fixture 的事件层测试（`tests/events/`）、对抗式执行链安全套件（`tests/security/dispatch-chain.test.ts`）、opt-in 的真实 GitHub E2E（`tests/e2e/`，见 [docs/e2e.md](docs/e2e.md)）。
+
 ## 快速开始（六步）
 
 > 逐步详细操作见 [docs/integration.md](docs/integration.md)；Driver 细节见 [docs/driver.md](docs/driver.md)。

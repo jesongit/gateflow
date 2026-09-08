@@ -362,7 +362,11 @@ export function buildDiscovery(
   comments: CommentDetail[],
   trustedHumans: ReadonlySet<string>,
   repoOwner: string,
-  options: { gateLogins?: ReadonlySet<string>; repositoryId?: number } = {},
+  options: {
+    gateLogins?: ReadonlySet<string>;
+    bootstrapIssuers?: ReadonlySet<string>;
+    repositoryId?: number;
+  } = {},
 ): Discovery {
   const gateLogins = options.gateLogins ?? new Set(['github-actions[bot]']);
   const records = readIssueRecords(comments, gateLogins);
@@ -375,6 +379,7 @@ export function buildDiscovery(
       repoOwner,
       trustedHumans,
       gateLogins,
+      bootstrapIssuers: options.bootstrapIssuers ?? new Set<string>(),
     }),
     feedback: acceptedFeedbackEvents(records, comments, trustedHumans, repoOwner),
   };

@@ -42,8 +42,10 @@ import { planSha256 } from '../../src/protocol/plan';
 import {
   approvalOperationId,
   feedbackOperationId,
+  transitionOperationId,
   parseRecord,
   type GateRecord,
+  type TransitionId,
 } from '../../src/protocol/records';
 import type { CommentDetail } from '../../src/github/client';
 import { atomicWriteJson, atomicWriteText } from '../../src/workspace/inbox';
@@ -202,7 +204,7 @@ export class GateSimulator {
           created_at: '2026-09-06T12:00:00Z',
           operation_id: approvalOperationId(this.client.repository.id, issueNumber, epoch, currentPlan.id),
         });
-        this.swapLabel(issueNumber, LABELS.review, LABELS.ready);
+        this.commitTransition(issueNumber, comment, 'T2', LABELS.review, LABELS.ready, epoch, null);
         return;
       }
       case COMMANDS.change:
@@ -260,29 +262,88 @@ export class GateSimulator {
       if (action === 'edited' && (label === LABELS.working || label === LABELS.blocked)) {
         const inspection = parseTrackerStatus(comment.body);
         if (inspection.kind !== 'valid') return; // absent / unknown: logged no-op
+        const epoch = this.currentEpoch(issueNumber);
+        if (epoch === null) return;
         if (inspection.status === 'Blocked' && label === LABELS.working) {
-          this.swapLabel(issueNumber, LABELS.working, LABELS.blocked); // T4
+          this.commitTransition(issueNumber, comment, 'T4', LABELS.working, LABELS.blocked, epoch, this.dispatchOf(comment)); // T4
         } else if (inspection.status === 'In Progress' && label === LABELS.blocked) {
-          this.swapLabel(issueNumber, LABELS.blocked, LABELS.working); // T5
+          this.commitTransition(issueNumber, comment, 'T5', LABELS.blocked, LABELS.working, epoch, this.dispatchOf(comment)); // T5
         }
         // 'Completed' and same-value edits never transition (T6 is marker-only).
         return;
       }
       // Creation (or an edit while READY): the T3 path.
       if (label === LABELS.ready) {
-        this.swapLabel(issueNumber, LABELS.ready, LABELS.working); // T3
+        const epoch = this.currentEpoch(issueNumber);
+        if (epoch === null) return;
+        this.commitTransition(issueNumber, comment, 'T3', LABELS.ready, LABELS.working, epoch, this.dispatchOf(comment));
       }
       return;
     }
     if (marker === MARKERS.plan && label === LABELS.planning) {
-      this.swapLabel(issueNumber, LABELS.planning, LABELS.review); // T1
+      const epoch = this.currentEpoch(issueNumber);
+      if (epoch === null) return;
+      this.commitTransition(issueNumber, comment, 'T1', LABELS.planning, LABELS.review, epoch, this.dispatchOf(comment)); // T1
       return;
     }
     if (marker === MARKERS.completionReport && label === LABELS.working) {
-      this.swapLabel(issueNumber, LABELS.working, LABELS.done); // T6
+      const epoch = this.currentEpoch(issueNumber);
+      if (epoch === null) return;
+      this.commitTransition(issueNumber, comment, 'T6', LABELS.working, LABELS.done, epoch, this.dispatchOf(comment)); // T6
       return;
     }
     // append marker, and markers arriving in a non-matching state: no-op.
+  }
+
+  /** The dispatch id embedded in a protocol comment; null when absent. */
+  private dispatchOf(comment: CommentDetail): string | null {
+    return /<!-- gateflow:dispatch-id: (\S+) -->/.exec(comment.body)?.[1] ?? null;
+  }
+
+  /**
+   * V1.1 Phase 4 (mirrors gate.ts commitTransition): persist the
+   * gate_transition record for the migration FIRST, then swap the label.
+   * Idempotent per operation id (replayed edits must not duplicate records).
+   */
+  private commitTransition(
+    issueNumber: number,
+    comment: CommentDetail,
+    transition: TransitionId,
+    from: Label,
+    to: Label,
+    epoch: string,
+    dispatchId: string | null,
+  ): void {
+    const issue = this.client.issues.get(issueNumber);
+    if (issue === undefined) return;
+    const operationId = transitionOperationId(
+      this.client.repository.id,
+      issueNumber,
+      epoch,
+      transition,
+      comment.id,
+    );
+    const existing = issue.comments.some((c) => c.body.includes(`"operation_id": "${operationId}"`));
+    if (!existing) {
+      this.publishRecord(issueNumber, {
+        schema: 2,
+        kind: 'gate_transition',
+        repository_id: this.client.repository.id,
+        issue_number: issueNumber,
+        workflow_epoch: epoch,
+        dispatch_id: dispatchId,
+        transition,
+        from_label: from,
+        to_label: to,
+        source_comment_id: comment.id,
+        gate_login: this.gateLogin,
+        gate_user_id: 41898282,
+        gate_version: '1.1.0',
+        created_at: '2026-09-06T12:30:00Z',
+        operation_id: operationId,
+      });
+    }
+    this.swapLabel(issueNumber, from, to);
   }
 
   /** add-then-remove label swap, mirroring gate.ts ordering. */

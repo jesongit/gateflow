@@ -11,9 +11,10 @@ import { LABELS } from '../../src/gate/protocol';
 import {
   approvalOperationId,
   buildRecordBody,
-  epochOperationId,
   feedbackOperationId,
+  gateEpochOperationId,
   RECORD_SCHEMA_VERSION,
+  transitionOperationId,
 } from '../../src/protocol/records';
 import { planSha256 } from '../../src/protocol/plan';
 
@@ -70,7 +71,14 @@ function seedBody(kind: GateRecordLike['kind'], fields: Record<string, unknown>)
   } as unknown as GateRecordLike);
 }
 
-/** A valid workflow_epoch record comment (schema 2) as a trusted runtime publishes it. */
+/**
+ * The deterministic epoch operation id of the fixture issue's round
+ * (V1.1 Phase 3: `epoch:<repo>:<issue>:c<command>` — the /ai-plan command
+ * comment this round was created from).
+ */
+const EPOCH_OP_ID = gateEpochOperationId(123, 7, 42);
+
+/** A valid workflow_epoch record comment (schema 2, V1.1 trust fields). */
 function epochRecordComment(id = 45, epoch = WORKFLOW_EPOCH): GateComment {
   return {
     id,
@@ -79,9 +87,10 @@ function epochRecordComment(id = 45, epoch = WORKFLOW_EPOCH): GateComment {
       repository_id: 123,
       issue_number: 7,
       workflow_epoch: epoch,
+      created_by: 'gate',
       created_at: '2026-09-06T10:00:00Z',
       issued_by: GATE_IDENTITY.login,
-      operation_id: epochOperationId(123, 7, epoch),
+      operation_id: EPOCH_OP_ID,
     }),
   };
 }
@@ -322,18 +331,21 @@ describe('Case 1: owner /approve 123 on REVIEW transitions REVIEW -> READY', () 
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
-    // Crash recovery: the record already exists — no duplicate authorization object.
-    expect(h.calls.addComment).toEqual([]);
+    // Crash recovery: the APPROVAL record already exists — no duplicate
+    // authorization object. V1.1: the T2 gate_transition record is new for
+    // this source command and IS persisted (before the label swap).
+    expect(h.calls.addComment).toHaveLength(1);
+    expect(h.calls.addComment[0]?.body).toContain('<!-- gateflow:transition:v2 -->');
     expect(log.warnings).toEqual([]);
     expect(
       log.infos.some((m) => m.includes('T2 on #7') && m.includes('approving plan comment 123')),
     ).toBe(true);
   });
 
-  it('adds the new label before removing the old one', async () => {
+  it('persists the T2 transition record before the label swap (V1.1 record-first)', async () => {
     const h = makeHarness({ labels: [LABELS.review], comments: recoveryComments() });
     await runGate(makeInput(), h.client, makeLogger());
-    expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
+    expect(h.calls.order).toEqual(['addComment', 'addLabels', 'removeLabel']);
   });
 
   it('reacts with ✅ on the accepted /approve (Phase 2 feedback, best-effort only)', async () => {
@@ -466,7 +478,8 @@ describe('Case 4: concurrency — every migration re-reads labels from the API',
       { labels: [LABELS.ready] },
     ]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
-    expect(h.calls.addComment).toHaveLength(1); // only run 1's epoch record
+    // Run 1's epoch record + run 2's T2 transition record (V1.1 Phase 4).
+    expect(h.calls.addComment).toHaveLength(2);
   });
 
   it('duplicate /approve delivery: second run re-reads READY and no-ops', async () => {
@@ -490,6 +503,9 @@ describe('Case 5: /ai-plan', () => {
 
     await runGate(makeInput({ commentBody: '/ai-plan' }), h.client, log);
 
+    // V1.1 Phase 3 record-first: the epoch record is written BEFORE the
+    // PLANNING label — no epoch record means NO migration.
+    expect(h.calls.order).toEqual(['addComment', 'addLabels']);
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.planning] }]);
     expect(h.calls.removeLabel).toEqual([]);
     // T0 accepted (✅).
@@ -498,12 +514,14 @@ describe('Case 5: /ai-plan', () => {
     expect(h.calls.addComment).toHaveLength(1);
     const body = h.calls.addComment[0]?.body ?? '';
     expect(body).toContain('<!-- gateflow:workflow:v2 -->');
+    expect(body).toContain('"created_by": "gate"');
+    expect(body).toContain(`"operation_id": "${gateEpochOperationId(123, 7, 9001)}"`);
     expect(body).toContain('"schema": 2');
     expect(body).toContain('"kind": "workflow_epoch"');
     expect(body).toContain('"repository_id": 123');
     expect(body).toContain('"issue_number": 7');
     expect(body).toMatch(/"workflow_epoch": "wf_[0-9a-z]{12}"/);
-    expect(body).toMatch(/"operation_id": "epoch:123:7:wf_[0-9a-z]{12}"/);
+    expect(body).toContain('"operation_id": "epoch:123:7:c9001"');
     expect(body).toContain(`"issued_by": "${GATE_IDENTITY.login}"`);
     // The record publish is verified against its own parse — no warnings.
     expect(log.warnings).toEqual([]);
@@ -869,30 +887,85 @@ describe('Phase 2: every command from a non-Trusted-Human gets exactly one 👎'
 
 /* -------------------------------------------------------- Phase 2: markers */
 
-describe('Phase 2: marker-triggered transitions (T1 / T3 / T6, Trusted Human ∪ Trusted Agent)', () => {
-  const PLAN_BODY = '## Execution Plan\n\n### Objective\n\nDo the thing.\n\n<!-- ai-workflow:plan:v1 -->';
-  const TRACKER_BODY =
-    '## Execution Tracker\n\n**Status:** In Progress\n\n- [x] first\n\n<!-- ai-workflow:execution-tracker:v1 -->';
-  const REPORT_BODY =
-    '## Completion Report\n\n### Result\n\nDone.\n\n<!-- ai-workflow:completion-report:v1 -->';
+describe('Phase 2 + V1.1: marker-triggered transitions (T1 / T3 / T6 with dispatch-chain authorization)', () => {
+  /** The consumer dispatch id of the fixture round (epoch-embedded, frozen grammar). */
+  const CONSUMER_DISPATCH = 'gf_r123_i7_wqrdeh6k30m1z_consumer_01';
+  const EXECUTOR_DISPATCH = 'gf_r123_i7_wqrdeh6k30m1z_executor_p123';
 
-  it('plan marker from the owner at PLANNING triggers T1 (PLANNING -> REVIEW)', async () => {
-    const h = makeHarness({ labels: [LABELS.planning] });
+  /** Plan comment AS THE DRIVER PUBLISHES IT: marker + dispatch-id + content. */
+  const PLAN_BODY_WITH_DISPATCH =
+    '<!-- ai-workflow:plan:v1 -->\n\n' +
+    `<!-- gateflow:dispatch-id: ${CONSUMER_DISPATCH} -->\n\n` +
+    '## Execution Plan\n\n### Objective\n\nDo the thing.\n';
+  const TRACKER_BODY_WITH_DISPATCH =
+    '<!-- ai-workflow:execution-tracker:v1 -->\n\n' +
+    `<!-- gateflow:dispatch-id: ${EXECUTOR_DISPATCH} -->\n\n` +
+    '**Status:** In Progress\n\n- [x] first\n';
+  const REPORT_BODY_WITH_DISPATCH =
+    '<!-- ai-workflow:completion-report:v1 -->\n\n' +
+    `<!-- gateflow:dispatch-id: ${EXECUTOR_DISPATCH} -->\n\n` +
+    '## Completion Report\n\nDone.\n';
+
+  const planComment123: GateComment = {
+    id: 123,
+    user: 'consumer-bot',
+    body: PLAN_BODY_WITH_DISPATCH,
+  };
+  const trackerComment124: GateComment = {
+    id: 124,
+    user: 'executor-bot',
+    body: TRACKER_BODY_WITH_DISPATCH,
+  };
+  /**
+   * The human /approve command comment (the approval record's anchor): the
+   * V1.1 shared chain re-validates that the record still anchors to a real,
+   * trusted-human command comment on the issue.
+   */
+  const approveCommand: GateComment = { id: 9001, user: 'owner-user', body: '/approve 123' };
+  /** Approval record whose hash binds the DISPATCH-CARRYING plan body. */
+  const approvalForDispatchPlan = (): GateComment =>
+    approvalRecordComment({ plan_sha256: planSha256(PLAN_BODY_WITH_DISPATCH) });
+
+  it('plan marker from the owner at PLANNING with a CURRENT consumer dispatch triggers T1 (PLANNING -> REVIEW)', async () => {
+    const h = makeHarness({
+      labels: [LABELS.planning],
+      comments: [planComment123, epochRecordComment()],
+    });
     const log = makeLogger();
 
-    await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, log);
+    await runGate(
+      makeInput({ commentBody: PLAN_BODY_WITH_DISPATCH, commentId: 123 }),
+      h.client,
+      log,
+    );
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.review] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.planning }]);
-    expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
-    expect(h.calls.addReaction).toEqual([]); // markers never react
+    // V1.1: the T1 transition record precedes the label swap.
+    expect(h.calls.order).toEqual(['addComment', 'addLabels', 'removeLabel']);
+    const record = JSON.parse(
+      (h.calls.addComment[0]?.body ?? '').split('```json')[1]?.split('```')[0] ?? '{}',
+    ) as Record<string, unknown>;
+    expect(record['kind']).toBe('gate_transition');
+    expect(record['transition']).toBe('T1');
+    expect(record['source_comment_id']).toBe(123);
+    expect(record['dispatch_id']).toBe(CONSUMER_DISPATCH);
+    expect(record['workflow_epoch']).toBe(WORKFLOW_EPOCH);
     expect(log.warnings).toEqual([]);
   });
 
   it('plan marker from a configured Trusted Agent triggers T1 too (agents may publish)', async () => {
-    const h = makeHarness({ labels: [LABELS.planning] });
+    const h = makeHarness({
+      labels: [LABELS.planning],
+      comments: [planComment123, epochRecordComment()],
+    });
     await runGate(
-      makeInput({ commentBody: PLAN_BODY, actor: 'ai-bot', trustedAgentsInput: 'ai-bot' }),
+      makeInput({
+        commentBody: PLAN_BODY_WITH_DISPATCH,
+        commentId: 123,
+        actor: 'ai-bot',
+        trustedAgentsInput: 'ai-bot',
+      }),
       h.client,
       makeLogger(),
     );
@@ -900,11 +973,47 @@ describe('Phase 2: marker-triggered transitions (T1 / T3 / T6, Trusted Human ∪
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.planning }]);
   });
 
+  it('V1.1: a plan marker WITHOUT a dispatch binding is a logged no-op (fake plan object)', async () => {
+    const h = makeHarness({ labels: [LABELS.planning] });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: PLAN_COMMENT_BODY, commentId: 123 }), h.client, log);
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('no gateflow dispatch-id comment'))).toBe(true);
+  });
+
+  it('V1.1: a plan marker whose dispatch binds an OLD epoch cannot trigger T1', async () => {
+    const oldEpochPlan: GateComment = {
+      id: 123,
+      user: 'consumer-bot',
+      body: PLAN_BODY_WITH_DISPATCH.replace('wqrdeh6k30m1z', 'waaaaabbbbbcc'),
+    };
+    const h = makeHarness({
+      labels: [LABELS.planning],
+      comments: [oldEpochPlan, epochRecordComment()],
+    });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ commentBody: oldEpochPlan.body, commentId: 123 }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('is not the current epoch'))).toBe(true);
+  });
+
   it('plan marker from an unknown actor is plain text: no transition, no writes, no API reads', async () => {
     const h = makeHarness({ labels: [LABELS.planning] });
     const log = makeLogger();
 
-    await runGate(makeInput({ commentBody: PLAN_BODY, actor: 'external-user' }), h.client, log);
+    await runGate(
+      makeInput({ commentBody: PLAN_BODY_WITH_DISPATCH, actor: 'external-user' }),
+      h.client,
+      log,
+    );
 
     expect(writeCount(h)).toBe(0);
     expect(h.calls.getIssue).toBe(0);
@@ -922,45 +1031,167 @@ describe('Phase 2: marker-triggered transitions (T1 / T3 / T6, Trusted Human ∪
       [LABELS.planning, LABELS.done],
     ]) {
       const h = makeHarness({ labels });
-      await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, makeLogger());
+      await runGate(makeInput({ commentBody: PLAN_BODY_WITH_DISPATCH }), h.client, makeLogger());
       expect(writeCount(h)).toBe(0);
     }
   });
 
-  it('execution-tracker marker from the owner at READY triggers T3 (READY -> WORKING)', async () => {
-    const h = makeHarness({ labels: [LABELS.ready] });
+  it('V1.1: execution-tracker marker at READY with the CURRENT executor chain triggers T3 (READY -> WORKING)', async () => {
+    const h = makeHarness({
+      labels: [LABELS.ready],
+      comments: [
+        planComment123,
+        epochRecordComment(),
+        approveCommand,
+        approvalForDispatchPlan(),
+        trackerComment124,
+      ],
+    });
     const log = makeLogger();
 
-    await runGate(makeInput({ commentBody: TRACKER_BODY }), h.client, log);
+    await runGate(
+      makeInput({ commentBody: TRACKER_BODY_WITH_DISPATCH, commentId: 124 }),
+      h.client,
+      log,
+    );
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.working] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.ready }]);
+    expect(h.calls.order).toEqual(['addComment', 'addLabels', 'removeLabel']);
+    const record = JSON.parse(
+      (h.calls.addComment[0]?.body ?? '').split('```json')[1]?.split('```')[0] ?? '{}',
+    ) as Record<string, unknown>;
+    expect(record['transition']).toBe('T3');
+    expect(record['dispatch_id']).toBe(EXECUTOR_DISPATCH);
     expect(log.warnings).toEqual([]);
+  });
+
+  it('V1.1: a tracker WITHOUT a valid approval record cannot trigger T3 (no approval, no WORKING)', async () => {
+    const h = makeHarness({
+      labels: [LABELS.ready],
+      comments: [planComment123, epochRecordComment(), trackerComment124],
+    });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ commentBody: TRACKER_BODY_WITH_DISPATCH, commentId: 124 }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(
+      log.warnings.some((m) => m.includes('no valid Gate-issued approval record binds')),
+    ).toBe(true);
+  });
+
+  it('V1.1: a tracker whose dispatch binds an OLD round (superseded epoch) cannot trigger T3', async () => {
+    const oldTracker: GateComment = {
+      ...trackerComment124,
+      body: TRACKER_BODY_WITH_DISPATCH.replace('wqrdeh6k30m1z', 'waaaaabbbbbcc'),
+    };
+    const h = makeHarness({
+      labels: [LABELS.ready],
+      comments: [
+        planComment123,
+        epochRecordComment(),
+        approveCommand,
+        approvalForDispatchPlan(),
+        oldTracker,
+      ],
+    });
+    const log = makeLogger();
+
+    await runGate(makeInput({ commentBody: oldTracker.body, commentId: 124 }), h.client, log);
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('is not the current epoch'))).toBe(true);
   });
 
   it('execution-tracker marker in a wrong state is a no-op', async () => {
     for (const labels of [[LABELS.planning], [LABELS.review], [LABELS.done]]) {
       const h = makeHarness({ labels });
-      await runGate(makeInput({ commentBody: TRACKER_BODY }), h.client, makeLogger());
+      await runGate(
+        makeInput({ commentBody: TRACKER_BODY_WITH_DISPATCH, commentId: 124 }),
+        h.client,
+        makeLogger(),
+      );
       expect(writeCount(h)).toBe(0);
     }
   });
 
-  it('completion-report marker from the owner at WORKING triggers T6 (WORKING -> DONE)', async () => {
-    const h = makeHarness({ labels: [LABELS.working] });
+  it('V1.1: completion-report marker at WORKING with the executor chain AND its tracker triggers T6 (WORKING -> DONE)', async () => {
+    const reportComment: GateComment = {
+      id: 125,
+      user: 'executor-bot',
+      body: REPORT_BODY_WITH_DISPATCH,
+    };
+    const h = makeHarness({
+      labels: [LABELS.working],
+      comments: [
+        planComment123,
+        epochRecordComment(),
+        approveCommand,
+        approvalForDispatchPlan(),
+        trackerComment124,
+        reportComment,
+      ],
+    });
     const log = makeLogger();
 
-    await runGate(makeInput({ commentBody: REPORT_BODY }), h.client, log);
+    await runGate(
+      makeInput({ commentBody: REPORT_BODY_WITH_DISPATCH, commentId: 125 }),
+      h.client,
+      log,
+    );
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.done] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.working }]);
+    const record = JSON.parse(
+      (h.calls.addComment[0]?.body ?? '').split('```json')[1]?.split('```')[0] ?? '{}',
+    ) as Record<string, unknown>;
+    expect(record['transition']).toBe('T6');
+    expect(record['dispatch_id']).toBe(EXECUTOR_DISPATCH);
+    expect(record['source_comment_id']).toBe(125);
     expect(log.warnings).toEqual([]);
+  });
+
+  it('V1.1: an ORPHAN report (no tracker for its dispatch) can never trigger DONE', async () => {
+    const reportComment: GateComment = {
+      id: 125,
+      user: 'executor-bot',
+      body: REPORT_BODY_WITH_DISPATCH,
+    };
+    const h = makeHarness({
+      labels: [LABELS.working],
+      comments: [
+        planComment123,
+        epochRecordComment(),
+        approveCommand,
+        approvalForDispatchPlan(),
+        reportComment,
+      ],
+    });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ commentBody: REPORT_BODY_WITH_DISPATCH, commentId: 125 }),
+      h.client,
+      log,
+    );
+
+    expect(writeCount(h)).toBe(0);
+    expect(log.warnings.some((m) => m.includes('orphan report'))).toBe(true);
   });
 
   it('completion-report marker in a wrong state is a no-op (DONE is terminal, no T6 repeat)', async () => {
     for (const labels of [[LABELS.ready], [LABELS.done], [LABELS.blocked]]) {
       const h = makeHarness({ labels });
-      await runGate(makeInput({ commentBody: REPORT_BODY }), h.client, makeLogger());
+      await runGate(
+        makeInput({ commentBody: REPORT_BODY_WITH_DISPATCH, commentId: 125 }),
+        h.client,
+        makeLogger(),
+      );
       expect(writeCount(h)).toBe(0);
     }
   });
@@ -1016,7 +1247,8 @@ describe('Phase 2: marker-triggered transitions (T1 / T3 / T6, Trusted Human ∪
 
       await runGate(
         makeInput({
-          commentBody: '## AI Discussion Summary\n\nMore context.\n\n<!-- ai-workflow:append:v1 -->',
+          commentBody:
+            '## AI Discussion Summary\n\nMore context.\n\n<!-- ai-workflow:append:v1 -->',
         }),
         h.client,
         log,
@@ -1028,15 +1260,17 @@ describe('Phase 2: marker-triggered transitions (T1 / T3 / T6, Trusted Human ∪
   });
 
   it('duplicate plan marker delivery: second run re-reads REVIEW and no-ops', async () => {
-    const h = makeHarness({ labels: [LABELS.planning] });
+    const h = makeHarness({
+      labels: [LABELS.planning],
+      comments: [planComment123, epochRecordComment()],
+    });
     const log = makeLogger();
 
-    await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, log);
-    await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, log); // same event delivered twice
+    await runGate(makeInput({ commentBody: PLAN_BODY_WITH_DISPATCH, commentId: 123 }), h.client, log);
+    await runGate(makeInput({ commentBody: PLAN_BODY_WITH_DISPATCH, commentId: 123 }), h.client, log);
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.review] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.planning }]);
-    expect(h.calls.getLabels).toBe(2);
     expect(log.warnings.some((m) => m.includes('current state is REVIEW'))).toBe(true);
   });
 
@@ -1044,7 +1278,7 @@ describe('Phase 2: marker-triggered transitions (T1 / T3 / T6, Trusted Human ∪
     const h = makeHarness({ labels: [LABELS.planning], state: 'closed' });
     const log = makeLogger();
 
-    await runGate(makeInput({ commentBody: PLAN_BODY }), h.client, log);
+    await runGate(makeInput({ commentBody: PLAN_BODY_WITH_DISPATCH, commentId: 123 }), h.client, log);
 
     expect(h.calls.getIssue).toBe(1);
     expect(h.calls.getLabels).toBe(0);
@@ -1156,10 +1390,12 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
-    expect(h.calls.order).toEqual(['addLabels', 'removeLabel']);
+    // V1.1: the T2 transition record is persisted before the label swap.
+    expect(h.calls.order).toEqual(['addComment', 'addLabels', 'removeLabel']);
     expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
     expect(h.calls.listComments).toBe(1); // exactly one comment-list read per approve handling
-    expect(h.calls.getComment).toEqual([{ commentId: 123 }]); // fetched with the parsed id
+    // fetched with the parsed id + the V1.1 transition-record verification
+    expect(h.calls.getComment).toEqual([{ commentId: 123 }, { commentId: 10001 }]);
     expect(log.warnings).toEqual([]);
     expect(log.infos.some((m) => m.includes('T2 on #7') && m.includes('approving plan comment 123'))).toBe(
       true,
@@ -1195,7 +1431,7 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
     await runGate(makeInput({ commentBody: '/approve 456' }), h.client, log);
 
     // The approval record is published and bound to plan comment 456 ...
-    expect(h.calls.addComment).toHaveLength(1);
+    expect(h.calls.addComment).toHaveLength(2); // approval record + T2 transition record (V1.1)
     const body = h.calls.addComment[0]?.body ?? '';
     expect(body).toContain('<!-- gateflow:approval:v2 -->');
     expect(body).toContain(`"plan_sha256": "${planSha256(PLAN_COMMENT_BODY)}"`);
@@ -1205,9 +1441,10 @@ describe('V1: /approve is bound to the current plan comment (protocol 3.4)', () 
     expect(body).toContain('"approved_by_login": "owner-user"');
     expect(body).toContain('"approved_by_id": 1001');
     expect(body).toContain(`"gate_login": "${GATE_IDENTITY.login}"`);
-    // ... the record is verified in place BEFORE any label write, then T2
-    // completes with the ✅ reaction.
-    expect(h.calls.order).toEqual(['addComment', 'addLabels', 'removeLabel']);
+    // ... the records are verified in place BEFORE any label write, then T2
+    // completes with the ✅ reaction (V1.1: approval record first, then the
+    // gate_transition record, then the label swap).
+    expect(h.calls.order).toEqual(['addComment', 'addComment', 'addLabels', 'removeLabel']);
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
     expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
@@ -1327,13 +1564,36 @@ describe('Schema 2: identity configuration is validated first, fail closed (GF-H
     const log = makeLogger();
 
     await runGate(
-      makeInput({ commentBody: '/ai-plan', requireExplicitHumansInput: 'false' }),
+      makeInput({
+        commentBody: '/ai-plan',
+        requireExplicitHumansInput: 'false',
+        // V1.1 (Phase 9): an Organization owner is NEVER an Effective Trusted
+        // Human by default — only an explicitly allowlisted human may command.
+        actor: 'maintainer-1',
+        trustedHumansInput: 'maintainer-1',
+      }),
       h.client,
       log,
     );
 
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.planning] }]);
     expect(log.warnings.some((m) => m.includes('identity configuration rejected'))).toBe(false);
+  });
+
+  it('an Organization owner is NOT a Trusted Human by default (V1.1 shared resolver)', async () => {
+    const h = makeHarness({ labels: [], ownerType: 'Organization' });
+    const log = makeLogger();
+
+    await runGate(
+      makeInput({ commentBody: '/ai-plan', requireExplicitHumansInput: 'false' }),
+      h.client,
+      log,
+    );
+
+    expect(h.calls.addLabels).toEqual([]);
+    expect(h.calls.removeLabel).toEqual([]);
+    expect(h.calls.addComment).toEqual([]);
+    expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '-1' }]);
   });
 
   it('an Organization repository with an explicit humans allowlist approves through a valid record', async () => {
@@ -1384,18 +1644,18 @@ describe('Schema 2: /approve publishes the approval record BEFORE any label writ
     await runGate(makeInput({ commentBody: '/approve 123' }), h.client, log);
 
     // The record comment WAS created, bound to repo/issue/epoch/plan/command.
-    expect(h.calls.addComment).toHaveLength(1);
+    expect(h.calls.addComment).toHaveLength(2); // approval record + T2 transition record (V1.1)
     const body = h.calls.addComment[0]?.body ?? '';
     expect(body).toContain('<!-- gateflow:approval:v2 -->');
     expect(body).toContain('"schema": 2');
     expect(body).toContain(`"plan_sha256": "${planSha256(PLAN_COMMENT_BODY)}"`);
     expect(body).toContain('"plan_comment_id": 123');
     expect(body).toContain(`"operation_id": "${approvalOperationId(123, 7, WORKFLOW_EPOCH, 123)}"`);
-    // Record verified in place → the authorization is granted: the label
-    // migration runs AFTER the record, then the ✅ reaction.
+    // Records verified in place → the authorization is granted: the label
+    // migration runs AFTER the records, then the ✅ reaction.
     expect(h.calls.addLabels).toEqual([{ labels: [LABELS.ready] }]);
     expect(h.calls.removeLabel).toEqual([{ label: LABELS.review }]);
-    expect(h.calls.order).toEqual(['addComment', 'addLabels', 'removeLabel']);
+    expect(h.calls.order).toEqual(['addComment', 'addComment', 'addLabels', 'removeLabel']);
     expect(h.calls.addReaction).toEqual([{ commentId: 9001, content: '+1' }]);
     expect(log.warnings).toEqual([]);
   });

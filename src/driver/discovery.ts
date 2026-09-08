@@ -9,25 +9,31 @@
  * feedback projection so a cycle is consistently snapshot-based.
  *
  * Schema 2 (hardening): discovery also
- *  - reads the issue's Gate-issued records ONCE per cycle and fails the
- *    issue closed on suspect records (unparsable / untrusted author);
+ *  - reads the issue's Gate-issued records ONCE per cycle through the SHARED
+ *    issue-bound record view (V1.1 Phase 1 §4.6) and fails the issue closed
+ *    on suspect records (unparsable / untrusted author / forged epoch);
  *  - bootstraps a workflow_epoch record for planning issues that lack one
- *    (Driver-issued epoch, docs/plans/v1_hardening_decisions.md §4.1) so
- *    Producer-submitted issues and post-T0 record failures self-heal.
+ *    (V1.1 Phase 2: `created_by: "driver_bootstrap"`, ONLY when the Driver
+ *    identity is an explicit bootstrap issuer) so Producer-submitted issues
+ *    and post-T0 record failures self-heal. Bootstrapping is idempotent via
+ *    the deterministic `epoch:<repo>:<issue>:bootstrap` operation id: a
+ *    timeout after create is resolved by search-and-adopt on the next cycle
+ *    (Phase 3/6), never by minting a second epoch.
  */
 import type { CommentDetail, DriverGitHubClient, IssueDetail, RepositoryInfo } from '../github/client';
 import {
   acceptedFeedbackEvents,
-  findHumanFeedbackCommands,
-  readIssueRecords,
+  readIssueRecordsForIssue,
   type IssueRecordView,
   type HumanFeedbackEntry,
 } from '../github/issue-sync';
 import {
   buildRecordBody,
-  epochOperationId,
+  bootstrapEpochOperationId,
   type WorkflowEpochRecord,
 } from '../protocol/records';
+import { findEpochRecordByOperationId } from '../protocol/workflow-chain';
+import { bootstrapDriverSetOf } from '../protocol/identity';
 import { newWorkflowEpoch } from '../protocol/epoch';
 import type { DriverConfig } from './config';
 import { aiLabels, deriveIntents } from './intent';
@@ -45,7 +51,7 @@ export interface Discovery {
   intents: DispatchIntent[];
   /** ACCEPTED feedback events of the current epoch, ascending by comment id. */
   feedback: HumanFeedbackEntry[];
-  /** Record view (epoch, approvals, feedback, suspect) for this cycle. */
+  /** Record view (epoch, approvals, feedback, transitions, suspect) for this cycle. */
   records: IssueRecordView;
 }
 
@@ -60,12 +66,28 @@ export function parseRepositorySlug(repository: string): { owner: string; name: 
 }
 
 /**
- * Driver-side epoch bootstrap (schema 2): a planning issue WITHOUT any epoch
- * record gets one issued by the Driver identity (Producer-submitted issues,
- * or a gate T0 whose record write failed). Bootstrapping is idempotent and
- * never touches issues with suspect epoch records — those fail closed.
- * Returns the fresh comment snapshot after a successful bootstrap, or null
- * when no bootstrap happened.
+ * The Bootstrap Driver issuer set of one repository (V1.1 Phase 2): explicit
+ * `bootstrap_drivers` config; default = the owner of a personal (User-type,
+ * API-verified) repository; empty for anything else (fail closed).
+ */
+export function bootstrapIssuersFor(
+  config: DriverConfig,
+  repositoryInfo: Pick<RepositoryInfo, 'owner' | 'ownerType'>,
+): ReadonlySet<string> {
+  return bootstrapDriverSetOf({
+    owner: repositoryInfo.owner,
+    ownerType: repositoryInfo.ownerType,
+    bootstrapDrivers: config.bootstrapDrivers,
+  });
+}
+
+/**
+ * Driver-side epoch bootstrap (schema 2 + V1.1 Phase 2/3): a planning issue
+ * WITHOUT any epoch record gets one issued by an explicit Bootstrap Driver
+ * identity (Producer-submitted issues, or a gate T0 whose record write
+ * failed). Bootstrapping NEVER touches issues with suspect epoch records —
+ * those fail closed — and never runs when the Driver identity itself is not
+ * an allowed bootstrap issuer.
  */
 async function bootstrapEpochIfNeeded(
   client: DriverGitHubClient,
@@ -73,25 +95,40 @@ async function bootstrapEpochIfNeeded(
   repositoryInfo: RepositoryInfo,
   issue: IssueDetail,
   records: IssueRecordView,
+  comments: ReadonlyArray<CommentDetail>,
+  bootstrapIssuers: ReadonlySet<string>,
 ): Promise<CommentDetail[] | null> {
   const labels = aiLabels(issue.labels);
   if (!(labels.length === 1 && labels[0] === 'ai:planning')) return null;
   if (records.epoch !== null) return null;
-  if (records.suspect.some((entry) => entry.reason.includes('workflow_epoch'))) return null;
+  // Fail closed on suspect records: never bootstrap over possible tampering.
+  if (records.suspect.length > 0) return null;
   const identity = await client.getAuthenticatedUser();
-  const epoch = newWorkflowEpoch();
-  const record: WorkflowEpochRecord = {
-    schema: 2,
-    kind: 'workflow_epoch',
-    repository_id: repositoryInfo.id,
-    issue_number: issue.number,
-    workflow_epoch: epoch,
-    created_at: new Date().toISOString(),
-    issued_by: identity.login,
-    operation_id: epochOperationId(repositoryInfo.id, issue.number, epoch),
-  };
-  await client.addIssueComment(ref, buildRecordBody(record));
-  // Re-read so this cycle's intents already carry the new epoch.
+  if (!bootstrapIssuers.has(identity.login.trim().toLowerCase())) {
+    return null; // not an allowed bootstrap issuer: the gate must issue the epoch
+  }
+  const operationId = bootstrapEpochOperationId(repositoryInfo.id, issue.number);
+  // Search-then-adopt (Phase 6): a previous attempt may have persisted the
+  // record but lost the response — adopt instead of minting a second epoch.
+  const existing = findEpochRecordByOperationId(comments, operationId);
+  if (!existing.found && existing.conflict) {
+    return null; // conflicting bootstrap epochs: fail closed, gate/operator decides
+  }
+  if (!existing.found) {
+    const record: WorkflowEpochRecord = {
+      schema: 2,
+      kind: 'workflow_epoch',
+      repository_id: repositoryInfo.id,
+      issue_number: issue.number,
+      workflow_epoch: newWorkflowEpoch(),
+      created_by: 'driver_bootstrap',
+      created_at: new Date().toISOString(),
+      issued_by: identity.login,
+      operation_id: operationId,
+    };
+    await client.addIssueComment(ref, buildRecordBody(record));
+  }
+  // Re-read so this cycle's intents already carry the (new or adopted) epoch.
   return client.listComments(ref);
 }
 
@@ -114,13 +151,32 @@ export async function discoverIssue(
   }
   const ref = { owner: slug.owner, repo: slug.name, issueNumber: issue.number };
   let comments: CommentDetail[] = await client.listComments(ref);
-  const gateLogins = new Set(config.gateLogins.map((login) => login.toLowerCase()));
-  let records = readIssueRecords(comments, gateLogins);
+  const gateLogins = new Set(config.gateLogins.map((login) => login.trim().toLowerCase()));
+  const bootstrapIssuers = bootstrapIssuersFor(config, repositoryInfo);
+  let records = readIssueRecordsForIssue(comments, {
+    repositoryId: repositoryInfo.id,
+    issueNumber: issue.number,
+    gateLogins,
+    bootstrapIssuers,
+  });
 
-  const bootstrapped = await bootstrapEpochIfNeeded(client, ref, repositoryInfo, issue, records);
+  const bootstrapped = await bootstrapEpochIfNeeded(
+    client,
+    ref,
+    repositoryInfo,
+    issue,
+    records,
+    comments,
+    bootstrapIssuers,
+  );
   if (bootstrapped !== null) {
     comments = bootstrapped;
-    records = readIssueRecords(comments, gateLogins);
+    records = readIssueRecordsForIssue(comments, {
+      repositoryId: repositoryInfo.id,
+      issueNumber: issue.number,
+      gateLogins,
+      bootstrapIssuers,
+    });
   }
 
   const ctx: IntentContext = {
@@ -128,6 +184,7 @@ export async function discoverIssue(
     repoOwner: slug.owner,
     trustedHumans: new Set([slug.owner.toLowerCase(), ...config.trustedHumans.map((h) => h.toLowerCase())]),
     gateLogins,
+    bootstrapIssuers,
   };
 
   return {

@@ -48,7 +48,9 @@ async function setup(): Promise<{
 }> {
   const client = new SubmitFakeClient();
   const fixture = await makeWorkspace();
-  const deps = makeDeps(client, testConfig(), fixture);
+  // V1.1: the fake Driver identity must be an explicit bootstrap driver
+  // for the created planning issue to receive its epoch in the same cycle.
+  const deps = makeDeps(client, testConfig({ bootstrapDrivers: ['gateflow-driver[bot]'] }), fixture);
   return { client, deps, paths: resolveWorkspace(fixture.projectRoot), cleanup: fixture.cleanup };
 }
 

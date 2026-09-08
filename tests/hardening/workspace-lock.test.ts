@@ -16,6 +16,11 @@ async function lockFile(): Promise<{ file: string; cleanup: () => Promise<void> 
   return { file: nodePath.join(dir, 'test.lock'), cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
+/** Fresh temp dir for one lock file (V1.1 suite). */
+async function lockDir(): Promise<string> {
+  return mkdtemp(nodePath.join(tmpdir(), 'gateflow-locks-'));
+}
+
 const T0 = new Date('2026-09-07T09:00:00Z');
 
 describe('acquireLock / releaseLock', () => {
@@ -123,5 +128,91 @@ describe('acquireLock / releaseLock', () => {
     } finally {
       await cleanup();
     }
+  });
+});
+
+/* -------------------------------------------------- V1.1 Phase 7 semantics */
+
+describe('V1.1 Phase 7: executor locks never auto-expire (fail-safe)', () => {
+  it('a DEAD holder pid yields workspace-conflict — the lock is NOT stolen', async () => {
+    const file = `${await lockDir()}/executor-v11-dead.lock`;
+    const dead = 999999;
+    await writeFile(
+      file,
+      JSON.stringify({
+        pid: dead,
+        holder: 'gateflow-driver',
+        kind: 'executor',
+        acquired_at: new Date().toISOString(),
+        dispatch_id: 'gf_r1_i2_w000000000003_executor_p1',
+      }),
+      'utf8',
+    );
+    const result = await acquireLock(file, 'gateflow-driver', { kind: 'executor' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failure).toBe('workspace-conflict');
+      expect(result.reason).toContain('may still be running');
+    }
+    // The lock file survived (nothing was preempted).
+    const raw = JSON.parse(await readFile(file, 'utf8'));
+    expect(raw.dispatch_id).toBe('gf_r1_i2_w000000000003_executor_p1');
+  });
+
+  it('an executor lock is NEVER stolen past MAX_LOCK_AGE_MS (no time-based preemption)', async () => {
+    const { acquireLock } = await import('../../src/driver/workspace-lock');
+    const { MAX_LOCK_AGE_MS } = await import('../../src/driver/workspace-lock');
+    const file = `${await lockDir()}/executor-v11-age.lock`;
+    await writeFile(
+      file,
+      JSON.stringify({
+        pid: process.pid, // live holder
+        holder: 'gateflow-driver',
+        kind: 'executor',
+        acquired_at: new Date(Date.now() - MAX_LOCK_AGE_MS * 10).toISOString(),
+        dispatch_id: 'gf_r1_i2_w000000000003_executor_p1',
+      }),
+      'utf8',
+    );
+    const result = await acquireLock(file, 'gateflow-driver', { kind: 'executor' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.failure).toBe('busy');
+  });
+
+  it('forceReleaseExecutorLock removes ONLY the matching dispatch (explicit human unlock)', async () => {
+    const { forceReleaseExecutorLock } = await import('../../src/driver/workspace-lock');
+    const file = `${await lockDir()}/executor-v11-force.lock`;
+    await writeFile(
+      file,
+      JSON.stringify({
+        pid: 12345,
+        holder: 'gateflow-driver',
+        kind: 'executor',
+        acquired_at: new Date().toISOString(),
+        dispatch_id: 'gf_r1_i2_w000000000003_executor_p1',
+      }),
+      'utf8',
+    );
+    // A different dispatch id is refused.
+    const wrong = await forceReleaseExecutorLock(file, 'gf_r1_i2_w000000000003_executor_p9');
+    expect(wrong.ok).toBe(false);
+    // The exact dispatch id releases — this is the human-confirmed path.
+    const ok = await forceReleaseExecutorLock(file, 'gf_r1_i2_w000000000003_executor_p1');
+    expect(ok.ok).toBe(true);
+    // The lock file is already gone; a second release reports absence.
+    const again = await forceReleaseExecutorLock(file, 'gf_r1_i2_w000000000003_executor_p1');
+    expect(again.ok).toBe(false);
+  });
+
+  it('refreshLock updates the heartbeat (driver runtime keep-alive)', async () => {
+    const { refreshLock } = await import('../../src/driver/workspace-lock');
+    const file = `${await lockDir()}/driver-v11-heartbeat.lock`;
+    const { acquireLock } = await import('../../src/driver/workspace-lock');
+    expect((await acquireLock(file, 'gateflow-driver', { kind: 'driver' })).ok).toBe(true);
+    const before = JSON.parse(await readFile(file, 'utf8'));
+    await refreshLock(file, () => new Date(Date.parse(before.acquired_at) + 60_000));
+    const after = JSON.parse(await readFile(file, 'utf8'));
+    expect(after.heartbeat_at).not.toBe(before.heartbeat_at);
+    expect(after.kind).toBe('driver');
   });
 });

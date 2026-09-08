@@ -24,7 +24,7 @@ import { processSubmit } from './submit';
 import type { SubmitOutcome } from './submit';
 import { syncAll, syncDispatch } from './sync';
 import type { SyncOutcome } from './sync';
-import { acquireLock, releaseLock, driverLockFile, DRIVER_LOCK_HOLDER } from './workspace-lock';
+import { acquireLock, refreshLock, releaseLock, driverLockFile, DRIVER_LOCK_HOLDER } from './workspace-lock';
 
 /** Minimal logging seam the CLI and tests inject. */
 export interface DriverLogger {
@@ -130,7 +130,12 @@ export async function startDriver(deps: DriverDeps): Promise<void> {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
   const now = deps.now ?? (() => new Date());
-  const lock = await acquireLock(driverLockFile(paths), DRIVER_LOCK_HOLDER, undefined, now);
+  const lock = await acquireLock(
+    driverLockFile(paths),
+    DRIVER_LOCK_HOLDER,
+    { kind: 'driver' },
+    now,
+  );
   if (!lock.ok) {
     throw new Error(
       'another GateFlow driver instance appears to be running for this workspace ' +
@@ -218,6 +223,9 @@ export async function startDriver(deps: DriverDeps): Promise<void> {
       }
       cycling = false;
       await drain();
+      // Driver-runtime heartbeat (V1.1 Phase 7): refreshes acquired_at /
+      // heartbeat_at so a long-running healthy driver never ages out.
+      await refreshLock(driverLockFile(paths), now).catch(() => {});
       await sleep(pollMs);
     }
   } finally {

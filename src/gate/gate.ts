@@ -12,38 +12,44 @@
  *    (effect performed, or legal hand-off to the Consumer) gets the ✅
  *    reaction. Reactions are best-effort feedback: never permission, never
  *    load-bearing; their failure is logged and ignored.
- *  - Markers are structural hints, never permission. A marker-triggered
- *    transition (T1 / T3 / T6) requires ALL of: a valid marker (unique,
- *    owning its line), a publisher in Trusted Human ∪ Trusted Agent, and a
- *    re-read state matching the transition's `from`. Invalid marker comments,
- *    markers from unknown actors, the append marker and the issue-body schema
- *    block never trigger anything.
- *  - An EDIT of the tracker marker comment while the issue sits in WORKING /
- *    BLOCKED is the T4 / T5 channel: the gate deterministically parses the
- *    tracker's `**Status:**` machine value (Blocked -> ai:blocked, In
- *    Progress -> ai:working). "Completed" never transitions: completion goes
- *    exclusively through the completion-report marker (T6). Non-machine
- *    values and missing values are logged no-ops.
+ *  - Markers are structural hints, never permission. SINCE V1.1 (hardening
+ *    plan Phase 1) a marker-triggered transition (T1 / T3 / T6) requires ALL
+ *    of: a valid marker (unique, owning its line), a publisher in Trusted
+ *    Human ∪ Trusted Agent, a re-read state matching the transition's `from`,
+ *    AND a valid DISPATCH AUTHORIZATION CHAIN (src/gate/authorization.ts +
+ *    src/protocol/workflow-chain.ts): the source comment must belong to the
+ *    current epoch's authorized dispatch chain — current consumer dispatch
+ *    for plans, current executor dispatch + sha256-bound approval record for
+ *    trackers and reports. Fake markers, old-round comments and orphan
+ *    reports are logged no-ops.
  *  - SCHEMA 2 AUTHORIZATION (docs/plans/v1_hardening_decisions.md §4): the
  *    durable authorization facts are GATE-ISSUED RECORDS, never the human's
  *    command comments alone:
- *      /ai-plan (T0)        -> workflow_epoch record (reusing a Driver-
- *                              bootstrapped epoch when one already exists);
+ *      /ai-plan (T0)        -> workflow_epoch record (created_by: gate),
+ *                              written BEFORE the PLANNING label (V1.1
+ *                              Phase 3: record-first, adopt by deterministic
+ *                              operation id, no epoch -> no migration);
  *      /approve <plan-id>   -> approval record binding repo/issue/epoch/
  *                              plan-comment-id/plan-sha256/approver, written
  *                              AND verified BEFORE the T2 label swap;
  *      /choose, /change     -> feedback_accepted record (idempotent by
  *                              operation id) — the Consumer-revision source.
- *    The Driver independently re-validates these records before dispatch and
- *    sync. A record write failure is a logged no-op WITHOUT a reaction and
- *    WITHOUT any label migration; a record write that succeeded while the
- *    label swap failed recovers through the record (re-running the command
- *    reuses the existing record by operation id).
- *  - Identity config is validated against the API before ANY transition:
- *    owner type via repos.get (never the event payload), Organization repos
- *    require an explicit trusted-humans allowlist, Human/Agent allowlists
- *    must never overlap (src/gate/identity.ts, GF-H10). Failure fails the
- *    run (fail closed).
+ *  - V1.1 TRANSITION RECORDS (hardening plan Phase 4): every accepted T1..T6
+ *    migration is persisted as a gate_transition record BEFORE the label
+ *    swap (record-first, same fail-closed convention): epoch, dispatch,
+ *    source_comment_id, from/to. These records — not the bare label state —
+ *    are what a Driver receipt's `accepted` must bind to (Phase 5).
+ *  - V1.1 EPOCH TRUST (Phase 2): the current epoch resolves ONLY through
+ *    workflow-chain.resolveCurrentEpoch: strict parsing, repository/issue
+ *    binding, issuer class checks (created_by gate|driver_bootstrap) and
+ *    operation-id conflict detection. Forged or transplanted epoch records
+ *    fail the whole event closed.
+ *  - An EDIT of the tracker marker comment while the issue sits in WORKING /
+ *    BLOCKED is the T4 / T5 channel — now also dispatch-chain-bound (V1.1
+ *    §4.4): only the tracker of the CURRENT executor chain can move states.
+ *  - Identity config is resolved through the SHARED resolver
+ *    (src/protocol/identity.ts, Phase 9) and validated against the API
+ *    before ANY transition; failure fails the run (fail closed, GF-H10).
  *  - The current state is derived from labels re-read via the GitHub API
  *    immediately before every migration; the event payload snapshot is never
  *    trusted (protocol section 7).
@@ -59,31 +65,45 @@ import {
   STATE_TO_LABEL,
   type State,
 } from './protocol';
-import {
-  parseCommand,
-  type ApproveArgs,
-  type ChangeArgs,
-  type ChooseArgs,
-  type ParsedCommand,
-} from './commands';
+import { parseCommand, type ApproveArgs, type ChangeArgs, type ChooseArgs, type ParsedCommand } from '../protocol/commands';
 import { validatePlanCommentForApproval } from './approvals';
 import { detectCommentMarker, inspectCommentMarkers, parseIssueSchemaBlock } from './markers';
 import { isLegalTransition, readSnapshot, type WorkflowSnapshot } from './states';
 import { parseTrackerStatus } from './tracker';
-import { isTrustedAgent, isTrustedHuman, parseLoginList } from './permissions';
-import { validateIdentityConfig } from './identity';
+import { parseLoginList } from './permissions';
+import { resolveIdentities, identitySetHas, type EffectiveIdentities } from '../protocol/identity';
+import {
+  resolveAuthorizationContext,
+  validateConsumerSource,
+  validateExecutorSource,
+  type WorkflowAuthorizationContext,
+} from './authorization';
+import { GATE_VERSION } from './version';
 import {
   approvalOperationId,
   approvalRecordsConflict,
   buildRecordBody,
-  epochOperationId,
+  bootstrapEpochOperationId,
+  extractEpochCommandCommentId,
   feedbackOperationId,
+  gateEpochOperationId,
   parseRecord,
   parseRecords,
+  transitionOperationId,
   type ApprovalRecord as ApprovalRecordPayload,
   type FeedbackAcceptedRecord as FeedbackAcceptedRecordPayload,
+  type GateRecord,
+  type GateTransitionRecord,
+  type TransitionId,
   type WorkflowEpochRecord,
 } from '../protocol/records';
+import {
+  currentPlanOf,
+  dispatchIdOf,
+  findEpochRecordByOperationId,
+  hasTrackerForDispatch,
+  parseTransitionRecords,
+} from '../protocol/workflow-chain';
 import { newWorkflowEpoch } from '../protocol/epoch';
 import { planSha256 } from '../protocol/plan';
 import type { GitHubClient, IssueRef } from './github';
@@ -128,6 +148,12 @@ export interface GateInput {
   /** Raw `trusted-agents` action input (V0 default: empty). */
   trustedAgentsInput: string;
   /**
+   * Raw `bootstrap-drivers` action input (V1.1 Phase 2): explicit allowlist
+   * of identities allowed to issue `driver_bootstrap` epoch records. Empty
+   * = default rule (the owner of a personal repository).
+   */
+  bootstrapDriversInput?: string;
+  /**
    * Raw `require-explicit-humans` action input ("true"/"false"; default
    * true). When true, an Organization-owned repository without an explicit
    * trusted-humans allowlist fails the run (GF-H10).
@@ -138,6 +164,15 @@ export interface GateInput {
 /** Comment actions that carry a command or marker. */
 const COMMAND_ACTIONS: ReadonlySet<string> = new Set(['created', 'edited']);
 
+/** Issuer sets the whole gate run resolves once and shares. */
+interface GateIdentityScope {
+  identities: EffectiveIdentities;
+  gateIssuers: ReadonlySet<string>;
+  bootstrapIssuers: ReadonlySet<string>;
+  gateLogin: string;
+  gateUserId: number;
+}
+
 /** Runs the gate for one event. Resolves normally unless infrastructure fails. */
 export async function runGate(
   input: GateInput,
@@ -145,18 +180,20 @@ export async function runGate(
   log: GateLogger,
 ): Promise<void> {
   // Identity-config validation comes FIRST and is fail-closed (GF-H10): the
-  // owner type is verified against the API, never against the event payload.
+  // owner type is verified against the API, never against the event payload,
+  // and the effective identity sets come from the SHARED resolver (Phase 9).
   const identity = await client.getRepoIdentity({ owner: input.repoOwner, repo: input.repo });
-  const verdict = validateIdentityConfig({
+  const resolution = resolveIdentities({
     owner: identity.owner,
     ownerType: identity.ownerType,
     trustedHumans: parseLoginList(input.trustedHumansInput),
     trustedAgents: parseLoginList(input.trustedAgentsInput),
+    bootstrapDrivers: parseLoginList(input.bootstrapDriversInput ?? ''),
     requireExplicitHumans: input.requireExplicitHumansInput !== 'false',
   });
-  if (!verdict.ok) {
-    log.warning(verdict.reason);
-    throw new Error(`gate identity configuration rejected: ${verdict.reason}`);
+  if (!resolution.ok) {
+    log.warning(resolution.reason);
+    throw new Error(`gate identity configuration rejected: ${resolution.reason}`);
   }
 
   if (input.eventName === 'issue_comment') {
@@ -164,7 +201,15 @@ export async function runGate(
       log.info(`issue_comment.${input.eventAction ?? 'unknown'}: nothing to do.`);
       return;
     }
-    await handleComment(input, client, log);
+    const gateIdentity = await client.getAuthenticatedUser();
+    const scope: GateIdentityScope = {
+      identities: resolution.identities,
+      gateIssuers: new Set([gateIdentity.login.trim().toLowerCase()]),
+      bootstrapIssuers: resolution.identities.bootstrapDrivers,
+      gateLogin: gateIdentity.login,
+      gateUserId: gateIdentity.id,
+    };
+    await handleComment(input, client, log, scope);
     return;
   }
 
@@ -242,6 +287,7 @@ async function handleComment(
   input: GateInput,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<void> {
   const ref = issueRef(input);
 
@@ -249,10 +295,10 @@ async function handleComment(
   //    marker detection; neither path touches the API until a rule matches.
   const parsed = parseCommand(input.commentBody);
   if (parsed !== null) {
-    await handleCommand(parsed, input, ref, client, log);
+    await handleCommand(parsed, input, ref, client, log, scope);
     return;
   }
-  await handleMarkerComment(input, ref, client, log);
+  await handleMarkerComment(input, ref, client, log, scope);
 }
 
 /** A parsed command: permission -> closed check -> re-read state -> apply. */
@@ -262,12 +308,13 @@ async function handleCommand(
   ref: IssueRef,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<void> {
   // 2) Permission BEFORE any API read: commands are a Trusted Human monopoly.
   //    Everyone else (including Trusted Agents) gets the 👎 feedback and is
   //    otherwise ignored (protocol section 2.3, Phase 2 feedback channel).
-  if (!isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput)) {
-    const kind = isTrustedAgent(input.actor, input.trustedAgentsInput) ? 'trusted agent' : 'actor';
+  if (!identitySetHas(scope.identities.humans, input.actor)) {
+    const kind = identitySetHas(scope.identities.agents, input.actor) ? 'trusted agent' : 'actor';
     log.info(
       `Command ${parsed.command} from non-Trusted-Human ${kind} "${input.actor}" on ` +
         `#${ref.issueNumber}: rejected (invalid owner command), silently ignored.`,
@@ -294,16 +341,16 @@ async function handleCommand(
   let accepted = false;
   switch (parsed.command) {
     case COMMANDS.aiPlan:
-      accepted = await applyAiPlan(ref, snapshot, input, client, log);
+      accepted = await applyAiPlan(ref, snapshot, input, client, log, scope);
       break;
     case COMMANDS.approve:
-      accepted = await applyApprove(ref, snapshot, parsed.args, input, client, log);
+      accepted = await applyApprove(ref, snapshot, parsed.args, input, client, log, scope);
       break;
     case COMMANDS.choose:
-      accepted = await applyChoose(ref, snapshot, parsed.args, input, client, log);
+      accepted = await applyChoose(ref, snapshot, parsed.args, input, client, log, scope);
       break;
     case COMMANDS.change:
-      accepted = await applyChange(ref, snapshot, parsed.args, input, client, log);
+      accepted = await applyChange(ref, snapshot, parsed.args, input, client, log, scope);
       break;
     case COMMANDS.cancel:
       accepted = await applyCancel(ref, snapshot, client, log);
@@ -316,14 +363,16 @@ async function handleCommand(
 
 /**
  * Marker path of a comment. A marker can trigger T1 / T3 / T6, but only when
- * marker validity, publisher identity and the re-read state ALL check out;
- * markers alone never prove anything (protocol section 4).
+ * marker validity, publisher identity, the re-read state AND the dispatch
+ * authorization chain ALL check out; markers alone never prove anything
+ * (protocol section 4, V1.1 Phase 1).
  */
 async function handleMarkerComment(
   input: GateInput,
   ref: IssueRef,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<void> {
   const inspection = inspectCommentMarkers(input.commentBody);
   if (inspection.kind === 'none') {
@@ -354,8 +403,8 @@ async function handleMarkerComment(
   // Publisher must be Trusted Human ∪ Trusted Agent (protocol 4.3). Everyone
   // else's markers are plain text: markers are never permission. Trusted
   // Human and Trusted Agent stay separate checks; either may publish.
-  const isHuman = isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput);
-  const isAgent = isTrustedAgent(input.actor, input.trustedAgentsInput);
+  const isHuman = identitySetHas(scope.identities.humans, input.actor);
+  const isAgent = identitySetHas(scope.identities.agents, input.actor);
   if (!isHuman && !isAgent) {
     log.warning(
       `Marker ${marker} on #${ref.issueNumber} by unknown actor "${input.actor}": markers are ` +
@@ -378,18 +427,7 @@ async function handleMarkerComment(
 
   switch (marker) {
     case MARKERS.plan:
-      await applyMarkerTransition(
-        ref,
-        snapshot,
-        STATES.planning,
-        STATES.review,
-        'T1',
-        'plan published',
-        publisher,
-        input.actor,
-        client,
-        log,
-      );
+      await applyPlanMarker(ref, snapshot, input, publisher, client, log, scope);
       return;
     case MARKERS.executionTracker: {
       // A tracker comment EDIT while the issue sits in WORKING / BLOCKED is
@@ -404,54 +442,439 @@ async function handleMarkerComment(
         await applyTrackerStatusEdit(
           ref,
           snapshot,
-          input.commentBody ?? '',
+          input,
           publisher,
-          input.actor,
           client,
           log,
+          scope,
         );
         return;
       }
-      await applyMarkerTransition(
-        ref,
-        snapshot,
-        STATES.ready,
-        STATES.working,
-        'T3',
-        'execution tracker created',
-        publisher,
-        input.actor,
-        client,
-        log,
-      );
+      await applyTrackerCreateMarker(ref, snapshot, input, publisher, client, log, scope);
       return;
     }
     case MARKERS.completionReport:
-      await applyMarkerTransition(
-        ref,
-        snapshot,
-        STATES.working,
-        STATES.done,
-        'T6',
-        'completion report published',
-        publisher,
-        input.actor,
-        client,
-        log,
-      );
+      await applyCompletionMarker(ref, snapshot, input, publisher, client, log, scope);
       return;
   }
 }
 
 /**
- * T0: outside -> PLANNING by adding ai:planning, then persisting the round's
- * workflow_epoch record (schema 2, docs/plans/v1_hardening_decisions.md
- * §4.1). The epoch is fresh CSPRNG randomness — never derived from
- * timestamps, comment counts or labels. This path only fires for genuinely
- * NEW rounds (the issue was outside the workflow), so any existing epoch
- * record belongs to an earlier round and is never reused; Producer-submitted
- * issues get their epoch from the Driver's bootstrap instead (the issue then
- * carries ai:planning from creation and never reaches T0).
+ * Shared marker-path precondition: the issue must hold exactly one ai:*
+ * label in the transition's `from` state. Returns false (with a logged
+ * reason) when the state precondition fails.
+ */
+function markerStatePrecondition(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  transitionId: string,
+  description: string,
+  publisherKind: string,
+  actor: string,
+  fromState: State,
+  log: GateLogger,
+): boolean {
+  if (snapshot.status !== 'in-workflow') {
+    log.warning(
+      `Invalid ${transitionId} marker on #${ref.issueNumber}: issue is not in the workflow ` +
+        '(no ai:* label); no transition.',
+    );
+    return false;
+  }
+  if (snapshot.state !== fromState) {
+    log.warning(
+      `Invalid ${transitionId} marker on #${ref.issueNumber} (${description} by ${publisherKind} ` +
+        `"${actor}"): requires state ${fromState}, current state is ${snapshot.state} ` +
+        `(${snapshot.label}); no transition.`,
+    );
+    return false;
+  }
+  if (!isLegalTransition(fromState, transitionTargetOf(transitionId, fromState))) {
+    log.warning(`Frozen transition table rejects ${transitionId}; no transition.`);
+    return false;
+  }
+  return true;
+}
+
+/** T1 / T3 / T6 target of the frozen transition table. */
+function transitionTargetOf(transitionId: string, from: State): State {
+  switch (transitionId) {
+    case 'T1':
+      return STATES.review;
+    case 'T3':
+      return STATES.working;
+    case 'T6':
+      return STATES.done;
+    case 'T4':
+      return STATES.blocked;
+    case 'T5':
+      return STATES.working;
+    case 'T2':
+      return STATES.ready;
+    default:
+      return from;
+  }
+}
+
+/**
+ * T1 (Plan → REVIEW), V1.1: the plan comment must belong to a CURRENT
+ * consumer dispatch of the current epoch (dispatch binding, epoch match,
+ * revision == the epoch's current consumer round). The transition record is
+ * persisted BEFORE the label swap (record-first, fail closed).
+ */
+async function applyPlanMarker(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  input: GateInput,
+  publisher: string,
+  client: GitHubClient,
+  log: GateLogger,
+  scope: GateIdentityScope,
+): Promise<void> {
+  if (
+    !markerStatePrecondition(
+      ref, snapshot, 'T1', 'plan published', publisher, input.actor, STATES.planning, log,
+    )
+  ) {
+    return;
+  }
+  if (snapshot.status !== 'in-workflow') {
+    return; // markerStatePrecondition guarantees this; keeps narrowing honest
+  }
+  if (input.commentId === undefined) {
+    log.warning('T1: event carries no comment id; the source object cannot be anchored — no transition.');
+    return;
+  }
+  const comments = await client.listComments(ref);
+  const contextResolution = resolveAuthorizationContext({
+    comments,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    gateIssuers: scope.gateIssuers,
+    bootstrapIssuers: scope.bootstrapIssuers,
+  });
+  if (!contextResolution.ok) {
+    log.warning(`Invalid T1 on #${ref.issueNumber}: ${contextResolution.reason}; no transition.`);
+    return;
+  }
+  const context = contextResolution.context;
+  const planComment = currentPlanOf(comments);
+  if (planComment === null || planComment.id !== input.commentId) {
+    log.warning(
+      `Invalid T1 on #${ref.issueNumber}: the commented plan is not the current plan comment; ` +
+        'no transition.',
+    );
+    return;
+  }
+  const chain = validateConsumerSource({
+    context,
+    planComment,
+    comments,
+    trustedHumans: scope.identities.humans,
+  });
+  if (!chain.ok) {
+    log.warning(
+      `Invalid T1 on #${ref.issueNumber} (plan published by ${publisher} "${input.actor}"): ` +
+        `${chain.reason}; no transition.`,
+    );
+    return;
+  }
+  await commitTransition(
+    ref,
+    {
+      repositoryId: input.repositoryId,
+      issueNumber: ref.issueNumber,
+      epoch: context.epoch,
+      dispatchId: dispatchIdOf(planComment),
+      transition: 'T1',
+      fromLabel: LABELS.planning,
+      toLabel: LABELS.review,
+      sourceCommentId: input.commentId,
+    },
+    comments,
+    snapshot.label,
+    client,
+    log,
+    scope,
+    `plan accepted (dispatch ${dispatchIdOf(planComment) ?? '?'}, plan comment ${planComment.id})`,
+  );
+}
+
+/**
+ * T3 (Tracker → WORKING), V1.1: the tracker must belong to the CURRENT
+ * executor chain (dispatch binding + current plan + sha256-bound approval).
+ */
+async function applyTrackerCreateMarker(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  input: GateInput,
+  publisher: string,
+  client: GitHubClient,
+  log: GateLogger,
+  scope: GateIdentityScope,
+): Promise<void> {
+  if (
+    !markerStatePrecondition(
+      ref, snapshot, 'T3', 'execution tracker created', publisher, input.actor, STATES.ready, log,
+    )
+  ) {
+    return;
+  }
+  if (input.commentId === undefined) {
+    log.warning('T3: event carries no comment id; the source object cannot be anchored — no transition.');
+    return;
+  }
+  await authorizeExecutorTransition(
+    ref,
+    snapshot,
+    input,
+    publisher,
+    'T3',
+    LABELS.ready,
+    LABELS.working,
+    'execution tracker created',
+    { requireTracker: false },
+    client,
+    log,
+    scope,
+  );
+}
+
+/**
+ * T6 (Report → DONE), V1.1: the report must belong to the CURRENT executor
+ * chain AND its own dispatch must have produced the tracker (no orphan
+ * reports; plan §4.5 "Report.tracker_comment_id" binding via dispatch).
+ */
+async function applyCompletionMarker(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  input: GateInput,
+  publisher: string,
+  client: GitHubClient,
+  log: GateLogger,
+  scope: GateIdentityScope,
+): Promise<void> {
+  if (
+    !markerStatePrecondition(
+      ref, snapshot, 'T6', 'completion report published', publisher, input.actor, STATES.working, log,
+    )
+  ) {
+    return;
+  }
+  if (input.commentId === undefined) {
+    log.warning('T6: event carries no comment id; the source object cannot be anchored — no transition.');
+    return;
+  }
+  await authorizeExecutorTransition(
+    ref,
+    snapshot,
+    input,
+    publisher,
+    'T6',
+    LABELS.working,
+    LABELS.done,
+    'completion report published',
+    { requireTracker: true },
+    client,
+    log,
+    scope,
+  );
+}
+
+/**
+ * Shared T3 / T6 machinery: resolve authorization context, run the executor
+ * chain validation on the source comment, optionally require the dispatch's
+ * tracker (T6), then persist the transition record and swap labels.
+ */
+async function authorizeExecutorTransition(
+  ref: IssueRef,
+  snapshot: WorkflowSnapshot,
+  input: GateInput,
+  publisher: string,
+  transitionId: TransitionId,
+  fromLabel: string,
+  toLabel: string,
+  description: string,
+  opts: { requireTracker: boolean },
+  client: GitHubClient,
+  log: GateLogger,
+  scope: GateIdentityScope,
+): Promise<void> {
+  if (input.commentId === undefined || snapshot.status !== 'in-workflow') {
+    return; // guarded by the caller (markerStatePrecondition); keeps TS honest
+  }
+  const comments = await client.listComments(ref);
+  const contextResolution = resolveAuthorizationContext({
+    comments,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    gateIssuers: scope.gateIssuers,
+    bootstrapIssuers: scope.bootstrapIssuers,
+  });
+  if (!contextResolution.ok) {
+    log.warning(`Invalid ${transitionId} on #${ref.issueNumber}: ${contextResolution.reason}; no transition.`);
+    return;
+  }
+  const context: WorkflowAuthorizationContext = contextResolution.context;
+  const sourceComment = comments.find((comment) => comment.id === input.commentId);
+  if (sourceComment === undefined) {
+    log.warning(
+      `Invalid ${transitionId} on #${ref.issueNumber}: source comment ${input.commentId} not found ` +
+        'on the issue; no transition.',
+    );
+    return;
+  }
+  const chain = validateExecutorSource({
+    context,
+    sourceComment,
+    comments,
+    trustedHumans: scope.identities.humans,
+    repoOwner: input.repoOwner,
+    gateIssuers: scope.gateIssuers,
+  });
+  if (!chain.ok) {
+    log.warning(
+      `Invalid ${transitionId} on #${ref.issueNumber} (${description} by ${publisher} ` +
+        `"${input.actor}"): ${chain.reason}; no transition.`,
+    );
+    return;
+  }
+  if (opts.requireTracker && !hasTrackerForDispatch(comments, chain.dispatchId)) {
+    log.warning(
+      `Invalid ${transitionId} on #${ref.issueNumber}: no execution tracker exists for dispatch ` +
+        `${chain.dispatchId} (orphan report); no transition.`,
+    );
+    return;
+  }
+  await commitTransition(
+    ref,
+    {
+      repositoryId: input.repositoryId,
+      issueNumber: ref.issueNumber,
+      epoch: context.epoch,
+      dispatchId: chain.dispatchId,
+      transition: transitionId,
+      fromLabel,
+      toLabel,
+      sourceCommentId: input.commentId,
+    },
+    comments,
+    snapshot.label,
+    client,
+    log,
+    scope,
+    `${description} (dispatch ${chain.dispatchId}, plan ${chain.planCommentId}, ` +
+      `approval #${chain.approvalCommentId})`,
+  );
+}
+
+/**
+ * V1.1 Phase 4: persist (or adopt) the gate_transition record for an
+ * authorized migration, THEN swap the labels (record-first: a failed record
+ * write means NO migration — exactly the T2 approval-record convention).
+ * A transition record that already exists for the same operation id is
+ * adopted (crash between record and label); a CONFLICTING one fails closed.
+ * Returns false (with a logged reason) when the migration must NOT happen.
+ */
+async function commitTransition(
+  ref: IssueRef,
+  spec: {
+    repositoryId: number;
+    issueNumber: number;
+    epoch: string;
+    dispatchId: string | null;
+    transition: TransitionId;
+    fromLabel: string;
+    toLabel: string;
+    sourceCommentId: number;
+  },
+  comments: ReadonlyArray<{ id: number; user: string; body: string }>,
+  currentLabel: string,
+  client: GitHubClient,
+  log: GateLogger,
+  scope: GateIdentityScope,
+  description: string,
+): Promise<boolean> {
+  const record: GateTransitionRecord = {
+    schema: 2,
+    kind: 'gate_transition',
+    repository_id: spec.repositoryId,
+    issue_number: spec.issueNumber,
+    workflow_epoch: spec.epoch,
+    dispatch_id: spec.dispatchId,
+    transition: spec.transition,
+    from_label: spec.fromLabel,
+    to_label: spec.toLabel,
+    source_comment_id: spec.sourceCommentId,
+    gate_login: scope.gateLogin,
+    gate_user_id: scope.gateUserId,
+    gate_version: GATE_VERSION,
+    created_at: new Date().toISOString(),
+    operation_id: transitionOperationId(
+      spec.repositoryId,
+      spec.issueNumber,
+      spec.epoch,
+      spec.transition,
+      spec.sourceCommentId,
+    ),
+  };
+  const { records: existingTransitions } = parseTransitionRecords(comments);
+  const sameOperation = existingTransitions.filter(
+    (entry) => entry.record.operation_id === record.operation_id,
+  );
+  if (sameOperation.length > 0) {
+    const first = sameOperation[0];
+    const divergent = sameOperation.find(
+      (entry) =>
+        entry.record.workflow_epoch !== record.workflow_epoch ||
+        entry.record.dispatch_id !== record.dispatch_id ||
+        entry.record.transition !== record.transition ||
+        entry.record.from_label !== record.from_label ||
+        entry.record.to_label !== record.to_label ||
+        entry.record.source_comment_id !== record.source_comment_id,
+    );
+    if (first === undefined || divergent !== undefined) {
+      log.warning(
+        `Invalid ${spec.transition} on #${ref.issueNumber}: conflicting gate_transition ` +
+          'record(s) for the same operation id — failing closed, no transition.',
+      );
+      return false;
+    }
+    log.info(
+      `Transition record #${first.commentId} already exists for ${record.operation_id}; ` +
+        'adopting it (crash recovery: record persisted, label swap did not complete).',
+    );
+  } else {
+    const published = await publishRecord(client, ref, record, log);
+    if (!published.ok) {
+      log.warning(
+        `Invalid ${spec.transition} on #${ref.issueNumber}: transition record publish failed ` +
+          `(${published.reason}); the migration is NOT performed (record-first, fail closed).`,
+      );
+      return false;
+    }
+    log.info(`Transition record #${published.commentId} persisted for ${record.operation_id}.`);
+  }
+
+  await client.addLabels(ref, [spec.toLabel]);
+  await client.removeLabel(ref, currentLabel);
+  log.info(
+    `${spec.transition} on #${ref.issueNumber}: ${currentLabel} -> ${spec.toLabel} ` +
+      `(${spec.fromLabel} -> ${spec.toLabel}, ${description}).`,
+  );
+  return true;
+}
+
+/**
+ * T0: outside -> PLANNING — V1.1 Phase 3 record-first ordering: the round's
+ * workflow_epoch record (created_by: gate) is created (or adopted by its
+ * deterministic operation id `epoch:<repo>:<issue>:c<command>`) BEFORE the
+ * ai:planning label is applied. No epoch record → NO PLANNING (fail closed):
+ * a new round can never run without its epoch, and can never inherit the
+ * previous round's epoch. A redelivered /ai-plan event re-derives the same
+ * operation id and adopts the existing record (no second epoch, Phase 3
+ * acceptance); an epoch record that conflicts under the same operation id
+ * fails closed (Phase 2 §5.4).
  */
 async function applyAiPlan(
   ref: IssueRef,
@@ -459,6 +882,7 @@ async function applyAiPlan(
   input: GateInput,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<boolean> {
   if (snapshot.status === 'ambiguous') {
     log.warning(
@@ -478,44 +902,72 @@ async function applyAiPlan(
     log.warning('Frozen transition table rejects T0; no transition.');
     return false;
   }
-  await client.addLabels(ref, [LABELS.planning]);
-  log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
+  if (input.commentId === undefined) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: event carries no comment id, so the epoch ` +
+        'operation cannot be anchored deterministically; no record, no transition.',
+    );
+    return false;
+  }
 
-  // Schema 2: persist the new round's epoch. The label is already applied, so
-  // a failed record write is recoverable: the Driver bootstraps any planning
-  // issue that lacks an epoch record (docs/plans/v1_hardening_decisions.md
-  // §4.1). The command is still "accepted" (T0 happened).
+  // Record-first: resolve-or-mint the round epoch.
+  const operationId = gateEpochOperationId(input.repositoryId, ref.issueNumber, input.commentId);
+  let comments: Array<{ id: number; user: string; body: string }>;
   try {
-    const identity = await client.getAuthenticatedUser();
-    const epoch = newWorkflowEpoch();
+    comments = await client.listComments(ref);
+  } catch (err) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: cannot read comments for the epoch lookup ` +
+        `(fail closed): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+  const existingEpoch = findEpochRecordByOperationId(comments, operationId);
+  if (!existingEpoch.found && existingEpoch.conflict) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: CONFLICTING workflow_epoch records for ` +
+        `${operationId} (fail closed); no transition.`,
+    );
+    return false;
+  }
+  let epoch: string;
+  if (existingEpoch.found) {
+    epoch = existingEpoch.record.workflow_epoch;
+    log.info(
+      `Epoch record #${existingEpoch.commentId} already exists for ${operationId}; adopting ` +
+        `epoch ${epoch} (idempotent T0 recovery).`,
+    );
+  } else {
     const record: WorkflowEpochRecord = {
       schema: 2,
       kind: 'workflow_epoch',
       repository_id: input.repositoryId,
       issue_number: ref.issueNumber,
-      workflow_epoch: epoch,
+      workflow_epoch: newWorkflowEpoch(),
+      created_by: 'gate',
       created_at: new Date().toISOString(),
-      issued_by: identity.login,
-      operation_id: epochOperationId(input.repositoryId, ref.issueNumber, epoch),
+      issued_by: scope.gateLogin,
+      operation_id: operationId,
     };
     const published = await publishRecord(client, ref, record, log);
-    if (published.ok) {
-      log.info(
-        `Epoch ${epoch} persisted as record comment #${published.commentId} ` +
-          `(issued by ${identity.login}).`,
-      );
-    } else {
+    if (!published.ok) {
       log.warning(
-        `Epoch record publish failed after T0 on #${ref.issueNumber}; the Driver bootstrap ` +
-          `will reconcile a planning issue without an epoch record. Reason: ${published.reason}`,
+        `Invalid /ai-plan on #${ref.issueNumber}: epoch record publish failed ` +
+          `(${published.reason}). NO epoch → NO PLANNING (fail closed, V1.1 Phase 3): ` +
+          're-run /ai-plan to retry the record write.',
       );
+      return false;
     }
-  } catch (err) {
-    log.warning(
-      `Epoch bootstrap failed after T0 on #${ref.issueNumber} (Driver will reconcile): ` +
-        (err instanceof Error ? err.message : String(err)),
+    epoch = record.workflow_epoch;
+    log.info(
+      `Epoch ${epoch} persisted as record comment #${published.commentId} ` +
+        `(created_by gate, issued by ${scope.gateLogin}).`,
     );
   }
+
+  // Only now the label migration.
+  await client.addLabels(ref, [LABELS.planning]);
+  log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING), epoch ${epoch}.`);
   return true;
 }
 
@@ -526,12 +978,12 @@ async function applyAiPlan(
  * caller can no-op without a reaction and without any label migration.
  * If the comment WAS created but the response was lost (timeout after POST),
  * re-running the command reuses the record by operation id — the recovery
- * path never duplicates authorization objects.
+ * path never duplicates authorization objects (Phase 6).
  */
 async function publishRecord(
   client: GitHubClient,
   ref: IssueRef,
-  record: WorkflowEpochRecord | ApprovalRecordPayload | FeedbackAcceptedRecordPayload,
+  record: GateRecord,
   log: GateLogger,
 ): Promise<{ ok: true; commentId: number } | { ok: false; reason: string }> {
   const body = buildRecordBody(record);
@@ -564,47 +1016,6 @@ async function publishRecord(
 }
 
 /**
- * Current epoch of an issue = the workflow_epoch record with the highest
- * comment id. ANY unparsable epoch record fails closed (append-only records:
- * an unparsable one signals tampering). Optionally reuses a prefetched
- * comment list to avoid a second round-trip.
- */
-async function readCurrentEpoch(
-  client: GitHubClient,
-  ref: IssueRef,
-  prefetchedComments?: Array<{ id: number; body: string }>,
-): Promise<
-  | { ok: true; record: WorkflowEpochRecord; commentId: number }
-  | { ok: false; reason: string }
-> {
-  let comments = prefetchedComments;
-  if (comments === undefined) {
-    try {
-      comments = await client.listComments(ref);
-    } catch (err) {
-      return {
-        ok: false,
-        reason: `cannot list comments for the epoch lookup: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-  }
-  const { records, invalid } = parseRecords('workflow_epoch', comments);
-  if (invalid.length > 0) {
-    return {
-      ok: false,
-      reason:
-        `unparsable workflow_epoch record(s) on #${ref.issueNumber} (fail closed): ` +
-        invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(', '),
-    };
-  }
-  const latest = records[records.length - 1];
-  if (latest === undefined) {
-    return { ok: false, reason: `no workflow_epoch record on #${ref.issueNumber}` };
-  }
-  return { ok: true, record: latest.record, commentId: latest.commentId };
-}
-
-/**
  * T2: REVIEW -> READY by persisting a Gate-issued APPROVAL RECORD and only
  * then swapping labels (schema 2, docs/plans/v1_hardening_decisions.md §4.2).
  *
@@ -614,17 +1025,19 @@ async function readCurrentEpoch(
  *  2. validate the referenced plan comment (exists / valid marker / CURRENT
  *     plan — approvals.ts);
  *  3. compute `plan_sha256` with the FROZEN canonicalization;
- *  4. read the current epoch (any unparsable epoch record fails closed);
+ *  4. read the current epoch through the V1.1 trusted resolution
+ *     (resolveCurrentEpoch: issuer classes, repo/issue binding, conflicts);
  *  5. build the approval record (repo/issue/epoch/plan/hash/approver/gate);
  *  6. reuse-or-conflict check over existing records with the same operation
  *     id: identical content -> reuse (crash recovery), divergent content
  *     (e.g. the plan was edited after an earlier approval) -> FAIL CLOSED;
  *  7. publish + verify the record;
- *  8. only now perform the add-then-remove label swap.
+ *  8. persist the T2 gate_transition record (V1.1 Phase 4, record-first);
+ *  9. only now perform the add-then-remove label swap.
  *
- * A failure in steps 4–7 is a logged no-op WITHOUT a reaction and WITHOUT any
+ * A failure in steps 4–8 is a logged no-op WITHOUT a reaction and WITHOUT any
  * label migration. A record that persisted while the label swap failed
- * recovers by re-running the command (step 6 reuses the record).
+ * recovers by re-running the command (steps 6/8 adopt the records).
  */
 async function applyApprove(
   ref: IssueRef,
@@ -633,6 +1046,7 @@ async function applyApprove(
   input: GateInput,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<boolean> {
   if (snapshot.status === 'ambiguous') {
     log.warning(
@@ -689,7 +1103,8 @@ async function applyApprove(
   }
 
   // Schema 2: bind repo/issue/epoch/plan/hash into a Gate-issued record.
-  const epoch = await readCurrentEpoch(client, ref, allComments);
+  // V1.1: full trust resolution (issuer classes, conflicts).
+  const epoch = await readCurrentEpoch(ref, input, allComments, scope, log);
   if (!epoch.ok) {
     log.warning(`Invalid /approve on #${ref.issueNumber}: ${epoch.reason}; no record, no transition.`);
     return false;
@@ -706,25 +1121,24 @@ async function applyApprove(
       `/approve on #${ref.issueNumber}: payload carries no actor id; recording approved_by_id 0.`,
     );
   }
-  const identity = await client.getAuthenticatedUser();
   const record: ApprovalRecordPayload = {
     schema: 2,
     kind: 'approval',
     repository_id: input.repositoryId,
     issue_number: ref.issueNumber,
-    workflow_epoch: epoch.record.workflow_epoch,
+    workflow_epoch: epoch.epoch,
     plan_comment_id: args.planCommentId,
     plan_sha256: planSha256(referencedComment.body),
     approval_command_comment_id: input.commentId,
     approved_by_id: input.actorId ?? 0,
     approved_by_login: input.actor,
-    gate_login: identity.login,
-    gate_user_id: identity.id,
+    gate_login: scope.gateLogin,
+    gate_user_id: scope.gateUserId,
     created_at: new Date().toISOString(),
     operation_id: approvalOperationId(
       input.repositoryId,
       ref.issueNumber,
-      epoch.record.workflow_epoch,
+      epoch.epoch,
       args.planCommentId,
     ),
   };
@@ -780,16 +1194,67 @@ async function applyApprove(
     );
   }
 
-  // Add-then-remove keeps the issue holding exactly one ai:* label even if a
-  // reader observes it between the two calls. Only NOW is T2 performed.
-  await client.addLabels(ref, [LABELS.ready]);
-  await client.removeLabel(ref, LABELS.review);
+  // V1.1 Phase 4: persist the T2 transition record BEFORE the label swap.
+  const transition = await commitTransition(
+    ref,
+    {
+      repositoryId: input.repositoryId,
+      issueNumber: ref.issueNumber,
+      epoch: epoch.epoch,
+      dispatchId: null,
+      transition: 'T2',
+      fromLabel: LABELS.review,
+      toLabel: LABELS.ready,
+      sourceCommentId: input.commentId,
+    },
+    allComments,
+    snapshot.label,
+    client,
+    log,
+    scope,
+    `approval accepted (plan ${inspection.planCommentId}, approved by ${input.actor})`,
+  );
+  if (!transition) {
+    return false;
+  }
+  // commitTransition performed the add-then-remove label swap (add first, so
+  // a concurrent reader always sees exactly one ai:* label). Only NOW is T2
+  // accepted with its reaction.
   log.info(
     `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} ` +
       `(REVIEW -> READY approving plan comment ${inspection.planCommentId}, ` +
       `sha256-bound approval record).`,
   );
   return true;
+}
+
+/**
+ * Current epoch of an issue through the V1.1 trusted resolution (Phase 2):
+ * strict parsing, repository/issue binding, created_by issuer class checks
+ * and operation-id conflict detection. ANY violation fails closed.
+ */
+async function readCurrentEpoch(
+  ref: IssueRef,
+  input: GateInput,
+  prefetchedComments: ReadonlyArray<{ id: number; user: string; body: string }>,
+  scope: GateIdentityScope,
+  log: GateLogger,
+): Promise<{ ok: true; epoch: string; commentId: number } | { ok: false; reason: string }> {
+  const resolution = resolveAuthorizationContext({
+    comments: prefetchedComments,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    gateIssuers: scope.gateIssuers,
+    bootstrapIssuers: scope.bootstrapIssuers,
+  });
+  if (!resolution.ok) {
+    return { ok: false, reason: resolution.reason };
+  }
+  return {
+    ok: true,
+    epoch: resolution.context.epoch,
+    commentId: resolution.context.epochRecordCommentId,
+  };
 }
 
 /**
@@ -807,6 +1272,7 @@ async function acceptFeedbackEvent(
   input: GateInput,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<boolean> {
   if (input.commentId === undefined) {
     log.warning(
@@ -815,7 +1281,8 @@ async function acceptFeedbackEvent(
     );
     return false;
   }
-  const epoch = await readCurrentEpoch(client, ref);
+  const allComments = await client.listComments(ref);
+  const epoch = await readCurrentEpoch(ref, input, allComments, scope, log);
   if (!epoch.ok) {
     log.warning(`/${feedbackKind} on #${ref.issueNumber}: ${epoch.reason}; no record, no reaction.`);
     return false;
@@ -823,11 +1290,10 @@ async function acceptFeedbackEvent(
   const operationId = feedbackOperationId(
     input.repositoryId,
     ref.issueNumber,
-    epoch.record.workflow_epoch,
+    epoch.epoch,
     input.commentId,
   );
-  const comments = await client.listComments(ref);
-  const { records, invalid } = parseRecords('feedback_accepted', comments);
+  const { records, invalid } = parseRecords('feedback_accepted', allComments);
   if (invalid.length > 0) {
     log.warning(
       `/${feedbackKind} on #${ref.issueNumber}: unparsable feedback record(s) present ` +
@@ -841,18 +1307,17 @@ async function acceptFeedbackEvent(
     );
     return true;
   }
-  const identity = await client.getAuthenticatedUser();
   const record: FeedbackAcceptedRecordPayload = {
     schema: 2,
     kind: 'feedback_accepted',
     repository_id: input.repositoryId,
     issue_number: ref.issueNumber,
-    workflow_epoch: epoch.record.workflow_epoch,
+    workflow_epoch: epoch.epoch,
     event_id: `fe${input.commentId}`,
     feedback_comment_id: input.commentId,
     feedback_kind: feedbackKind,
-    gate_login: identity.login,
-    gate_user_id: identity.id,
+    gate_login: scope.gateLogin,
+    gate_user_id: scope.gateUserId,
     created_at: new Date().toISOString(),
     operation_id: operationId,
   };
@@ -866,7 +1331,7 @@ async function acceptFeedbackEvent(
   }
   log.info(
     `Feedback event accepted (record #${published.commentId}, ${feedbackKind} on comment ` +
-      `${input.commentId}, epoch ${epoch.record.workflow_epoch}).`,
+      `${input.commentId}, epoch ${epoch.epoch}).`,
   );
   return true;
 }
@@ -885,6 +1350,7 @@ async function applyChoose(
   input: GateInput,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<boolean> {
   if (snapshot.status === 'ambiguous') {
     log.warning(
@@ -901,7 +1367,7 @@ async function applyChoose(
     );
     return false;
   }
-  const accepted = await acceptFeedbackEvent(ref, 'choose', input, client, log);
+  const accepted = await acceptFeedbackEvent(ref, 'choose', input, client, log, scope);
   if (accepted) {
     log.info(
       `/choose on #${ref.issueNumber} accepted (REVIEW): question "${args.questionId}", ` +
@@ -923,6 +1389,7 @@ async function applyChange(
   input: GateInput,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<boolean> {
   if (snapshot.status === 'ambiguous') {
     log.warning(
@@ -939,7 +1406,7 @@ async function applyChange(
     );
     return false;
   }
-  const accepted = await acceptFeedbackEvent(ref, 'change', input, client, log);
+  const accepted = await acceptFeedbackEvent(ref, 'change', input, client, log, scope);
   if (accepted) {
     log.info(
       `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the ` +
@@ -980,55 +1447,12 @@ async function applyCancel(
 }
 
 /**
- * Shared T1 / T3 / T6 machinery: validates the re-read state against the
- * marker's required `from` state, checks the frozen transition table and
- * swaps the ai:* label (add first, then remove — same ordering as T2 so a
- * concurrent reader always sees at least the old or the new single label).
- */
-async function applyMarkerTransition(
-  ref: IssueRef,
-  snapshot: WorkflowSnapshot,
-  fromState: State,
-  toState: State,
-  transitionId: string,
-  description: string,
-  publisherKind: string,
-  actor: string,
-  client: GitHubClient,
-  log: GateLogger,
-): Promise<void> {
-  if (snapshot.status !== 'in-workflow') {
-    log.warning(
-      `Invalid ${transitionId} marker on #${ref.issueNumber}: issue is not in the workflow ` +
-        '(no ai:* label); no transition.',
-    );
-    return;
-  }
-  if (snapshot.state !== fromState) {
-    log.warning(
-      `Invalid ${transitionId} marker on #${ref.issueNumber} (${description} by ${publisherKind} ` +
-        `"${actor}"): requires state ${fromState}, current state is ${snapshot.state} ` +
-        `(${snapshot.label}); no transition.`,
-    );
-    return;
-  }
-  if (!isLegalTransition(fromState, toState)) {
-    log.warning(`Frozen transition table rejects ${transitionId}; no transition.`);
-    return;
-  }
-  const toLabel = STATE_TO_LABEL[toState];
-  await client.addLabels(ref, [toLabel]);
-  await client.removeLabel(ref, snapshot.label);
-  log.info(
-    `${transitionId} on #${ref.issueNumber}: ${snapshot.label} -> ${toLabel} ` +
-      `(${fromState} -> ${toState}, ${description} by ${publisherKind} "${actor}").`,
-  );
-}
-
-/**
  * T4 / T5: a tracker comment edit while the issue sits in WORKING / BLOCKED.
- * The gate deterministically parses the tracker's `**Status:**` machine value
- * (protocol section 2.1; parsing rules in tracker.ts / 实现备注):
+ * V1.1 (plan §4.4): the edited tracker must belong to the CURRENT executor
+ * chain (dispatch binding + epoch + current plan + valid approval) — an old
+ * round's tracker can never influence the new round. After the chain check,
+ * the gate deterministically parses the tracker's `**Status:**` machine value
+ * (protocol section 2.1; parsing rules in tracker.ts):
  *   WORKING  + "Blocked"     -> T4: ai:working  -> ai:blocked
  *   BLOCKED  + "In Progress" -> T5: ai:blocked -> ai:working
  * Everything else is a logged no-op, in particular:
@@ -1037,17 +1461,15 @@ async function applyMarkerTransition(
  *  - same-value edits ("In Progress" while WORKING, "Blocked" while BLOCKED)
  *    make duplicate event deliveries idempotent;
  *  - a missing or non-machine Status value is never guessed at.
- * The caller guarantees a trusted publisher and a fresh re-read (the same
- * checks T1 / T3 / T6 go through); the label swap re-reads nothing again.
  */
 async function applyTrackerStatusEdit(
   ref: IssueRef,
   snapshot: WorkflowSnapshot,
-  body: string,
+  input: GateInput,
   publisherKind: string,
-  actor: string,
   client: GitHubClient,
   log: GateLogger,
+  scope: GateIdentityScope,
 ): Promise<void> {
   if (snapshot.status !== 'in-workflow') {
     log.warning(
@@ -1056,11 +1478,55 @@ async function applyTrackerStatusEdit(
     );
     return;
   }
+  const body = input.commentBody ?? '';
+  if (input.commentId === undefined) {
+    log.warning('Tracker edit: event carries no comment id; the source cannot be anchored.');
+    return;
+  }
+
+  const comments = await client.listComments(ref);
+  const contextResolution = resolveAuthorizationContext({
+    comments,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    gateIssuers: scope.gateIssuers,
+    bootstrapIssuers: scope.bootstrapIssuers,
+  });
+  if (!contextResolution.ok) {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${input.actor}": ` +
+        `${contextResolution.reason}; no transition.`,
+    );
+    return;
+  }
+  const sourceComment = comments.find((comment) => comment.id === input.commentId);
+  if (sourceComment === undefined) {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber}: source comment ${input.commentId} not found on the ` +
+        'issue; no transition.',
+    );
+    return;
+  }
+  const chain = validateExecutorSource({
+    context: contextResolution.context,
+    sourceComment,
+    comments,
+    trustedHumans: scope.identities.humans,
+    repoOwner: input.repoOwner,
+    gateIssuers: scope.gateIssuers,
+  });
+  if (!chain.ok) {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${input.actor}" rejected ` +
+        `(not the current executor chain): ${chain.reason}; no transition.`,
+    );
+    return;
+  }
 
   const inspection = parseTrackerStatus(body);
   if (inspection.kind === 'absent') {
     log.warning(
-      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": no parsable ` +
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actorName(input)}": no parsable ` +
         '**Status:** line; T4 / T5 need the exact machine value (In Progress / Blocked / ' +
         'Completed); no transition.',
     );
@@ -1068,7 +1534,7 @@ async function applyTrackerStatusEdit(
   }
   if (inspection.kind === 'unknown') {
     log.warning(
-      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status ` +
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actorName(input)}": Status ` +
         `"${inspection.raw}" is not a machine value (In Progress / Blocked / Completed); ` +
         'no transition.',
     );
@@ -1078,9 +1544,9 @@ async function applyTrackerStatusEdit(
 
   if (status === 'Completed') {
     log.info(
-      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "Completed" ` +
-        'never triggers a transition; completion goes exclusively through the completion-report ' +
-        'marker (T6).',
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actorName(input)}": Status ` +
+        '"Completed" never triggers a transition; completion goes exclusively through the ' +
+        'completion-report marker (T6).',
     );
     return;
   }
@@ -1090,12 +1556,24 @@ async function applyTrackerStatusEdit(
       log.warning('Frozen transition table rejects T4; no transition.');
       return;
     }
-    // Add-then-remove ordering, same as every other label swap.
-    await client.addLabels(ref, [LABELS.blocked]);
-    await client.removeLabel(ref, snapshot.label);
-    log.info(
-      `T4 on #${ref.issueNumber}: ${snapshot.label} -> ${LABELS.blocked} ` +
-        `(WORKING -> BLOCKED, tracker Status "Blocked" edited by ${publisherKind} "${actor}").`,
+    await commitTransition(
+      ref,
+      {
+        repositoryId: input.repositoryId,
+        issueNumber: ref.issueNumber,
+        epoch: contextResolution.context.epoch,
+        dispatchId: chain.dispatchId,
+        transition: 'T4',
+        fromLabel: LABELS.working,
+        toLabel: LABELS.blocked,
+        sourceCommentId: input.commentId,
+      },
+      comments,
+      snapshot.label,
+      client,
+      log,
+      scope,
+      `tracker Status "Blocked" edited by ${publisherKind} "${actorName(input)}"`,
     );
     return;
   }
@@ -1105,11 +1583,24 @@ async function applyTrackerStatusEdit(
       log.warning('Frozen transition table rejects T5; no transition.');
       return;
     }
-    await client.addLabels(ref, [LABELS.working]);
-    await client.removeLabel(ref, snapshot.label);
-    log.info(
-      `T5 on #${ref.issueNumber}: ${snapshot.label} -> ${LABELS.working} ` +
-        `(BLOCKED -> WORKING, tracker Status "In Progress" edited by ${publisherKind} "${actor}").`,
+    await commitTransition(
+      ref,
+      {
+        repositoryId: input.repositoryId,
+        issueNumber: ref.issueNumber,
+        epoch: contextResolution.context.epoch,
+        dispatchId: chain.dispatchId,
+        transition: 'T5',
+        fromLabel: LABELS.blocked,
+        toLabel: LABELS.working,
+        sourceCommentId: input.commentId,
+      },
+      comments,
+      snapshot.label,
+      client,
+      log,
+      scope,
+      `tracker Status "In Progress" edited by ${publisherKind} "${actorName(input)}"`,
     );
     return;
   }
@@ -1117,9 +1608,14 @@ async function applyTrackerStatusEdit(
   // Same-value edits: the event is a duplicate delivery or a routine progress
   // update that already matches the current state.
   log.info(
-    `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "${status}" ` +
-      `already matches the current state ${snapshot.state} (${snapshot.label}); no transition.`,
+    `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actorName(input)}": Status ` +
+      `"${status}" already matches the current state ${snapshot.state} (${snapshot.label}); ` +
+      'no transition.',
   );
+}
+
+function actorName(input: GateInput): string {
+  return input.actor;
 }
 
 /**

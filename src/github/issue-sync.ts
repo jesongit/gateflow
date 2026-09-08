@@ -9,14 +9,15 @@
  *    fences never count — exactly the semantics the gate itself applies.
  *  - Authorization facts come from Gate-issued RECORDS (schema 2, shared
  *    parser in ../protocol/records): readIssueRecords is the ONE place the
- *    Driver interprets them. No second copy of the record grammar exists.
+ *    Driver interprets them, and SINCE V1.1 the current epoch resolves ONLY
+ *    through the SHARED workflow chain (src/protocol/workflow-chain.ts,
+ *    hardening Phase 1 §4.6): issuer classes, repository/issue binding and
+ *    operation-id conflicts are validated identically on both sides.
  *  - Human command matching for the FEEDBACK.md projection (/choose,
- *    /change) is REIMPLEMENTED here with the same anchored, case-sensitive,
- *    whole-trimmed-body rules as the gate (src/gate/commands.ts,
- *    docs/protocol.md section 3.1). We deliberately do NOT import
- *    gate/commands.ts; if the frozen protocol ever changes, mirror the
- *    change in both places. Acceptance (revision counting) is decided by
- *    Gate-issued feedback records, never by the raw comment count.
+ *    /change) uses the SHARED command grammar (src/protocol/commands.ts,
+ *    hardening Phase 8 — no driver-local regex table anymore). Acceptance
+ *    (revision counting) is decided by Gate-issued feedback records, never
+ *    by the raw comment count.
  *
  * Publishing (side-effectful): the Driver publishes protocol comments and
  * edits ONLY its own tracker comment. Labels, issue fields, and other
@@ -25,15 +26,21 @@
  */
 import { detectCommentMarker } from '../gate/markers';
 import { MARKERS } from '../gate/protocol';
+import { isFeedbackCommand } from '../protocol/commands';
 import {
   parseRecords,
   type ApprovalRecord,
   type FeedbackAcceptedRecord,
+  type GateTransitionRecord,
   type WorkflowEpochRecord,
 } from '../protocol/records';
+import {
+  acceptedFeedbackOfEpoch,
+  approvalAnchorFailure,
+  resolveCurrentEpoch,
+} from '../protocol/workflow-chain';
 import type { CommentDetail, DriverGitHubClient, IssueRef } from './client';
 import {
-  STATUS_LINE_PATTERN,
   buildCompletionReportBody,
   buildPlanCommentBody,
   buildTrackerCommentBody,
@@ -103,48 +110,39 @@ export function findCompletionReportComments(
   return reports;
 }
 
-// Anchored patterns over the TRIMMED body (docs/protocol.md section 3.1):
-// the whole comment must be the command. `.` never matches a newline, so
-// multi-line bodies can never match; the trailing `$` forbids trailing
-// content. Matching is case-sensitive on purpose ("/CHANGE" is not a
-// command). Used ONLY for the FEEDBACK.md projection and for cross-checking
-// that an accepted-feedback record still anchors to a real human command —
-// acceptance itself is decided by Gate-issued records (schema 2).
-const CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
-const CHANGE_PATTERN = /^\/change (.+)$/;
-
 /** A trusted-human feedback command comment. */
 export interface HumanFeedbackEntry {
   comment: CommentDetail;
   kind: 'change' | 'choose';
 }
 
+/** Case-insensitive membership test against a login allowlist. */
+export function isKnownLogin(login: string, allowlist: ReadonlySet<string>): boolean {
+  return allowlist.has(login.trim().toLowerCase());
+}
+
 /**
  * Trusted-author check: login compare is case-insensitive; the repo owner
  * is always trusted (docs/architecture-v1.md section 4).
  */
-function isTrustedAuthor(
-  comment: CommentDetail,
+export function isTrustedAuthor(
+  comment: { user: string },
   trustedHumans: ReadonlySet<string>,
   repoOwner: string,
 ): boolean {
-  const login = comment.user.toLowerCase();
-  if (login === repoOwner.toLowerCase()) {
+  const login = comment.user.trim().toLowerCase();
+  if (login === repoOwner.trim().toLowerCase()) {
     return true;
   }
-  for (const human of trustedHumans) {
-    if (human.toLowerCase() === login) {
-      return true;
-    }
-  }
-  return false;
+  return trustedHumans.has(login);
 }
 
 /**
  * Candidate human feedback commands (/choose, /change) for FEEDBACK.md
- * projection: whole-comment, anchored matches by trusted humans. These are
- * CANDIDATES only — discovery intersects them with Gate-issued
- * feedback_accepted records before counting revisions or projecting.
+ * projection: whole-comment, anchored matches by trusted humans, using the
+ * SHARED grammar (Phase 8). These are CANDIDATES only — discovery
+ * intersects them with Gate-issued feedback_accepted records before counting
+ * revisions or projecting.
  */
 export function findHumanFeedbackCommands(
   comments: CommentDetail[],
@@ -157,34 +155,22 @@ export function findHumanFeedbackCommands(
       continue;
     }
     const trimmed = comment.body.trim();
-    if (CHOOSE_PATTERN.exec(trimmed) !== null) {
+    if (isFeedbackCommand(trimmed, 'choose')) {
       entries.push({ comment, kind: 'choose' });
       continue;
     }
-    if (CHANGE_PATTERN.exec(trimmed) !== null) {
+    if (isFeedbackCommand(trimmed, 'change')) {
       entries.push({ comment, kind: 'change' });
     }
   }
   return entries;
 }
 
-/** Case-insensitive membership test against a login allowlist. */
-export function isKnownLogin(login: string, allowlist: ReadonlySet<string>): boolean {
-  return allowlist.has(login.toLowerCase());
-}
-
-// V1: /approve takes the plan COMMENT id it approves (architecture 3.3).
-const APPROVE_PATTERN = /^\/approve (\d+)$/;
-
 /**
  * Independent re-validation of an approval RECORD's human anchor (schema 2,
- * docs/plans/v1_hardening_decisions.md §4.2): the record's
- * `approval_command_comment_id` must reference a comment that STILL EXISTS on
- * the issue, is an anchored `/approve <plan_comment_id>` by a TRUSTED HUMAN,
- * and whose author matches the record's `approved_by_login`. This binds every
- * record to a real, revocable human command — deleting or replacing the
- * command comment invalidates the record even though the record itself still
- * parses. Returns the reason when the anchor fails; null when it holds.
+ * docs/plans/v1_hardening_decisions.md §4.2; implementation lives ONCE in
+ * src/protocol/workflow-chain.ts since V1.1 — Gate and Driver share it).
+ * Returns the reason when the anchor fails; null when it holds.
  */
 export function approvalRecordAnchorFailure(
   record: ApprovalRecord,
@@ -192,76 +178,86 @@ export function approvalRecordAnchorFailure(
   trustedHumans: ReadonlySet<string>,
   repoOwner: string,
 ): string | null {
-  const command = comments.find((entry) => entry.id === record.approval_command_comment_id);
-  if (command === undefined) {
-    return `approval command comment ${record.approval_command_comment_id} no longer exists`;
-  }
-  const match = APPROVE_PATTERN.exec(command.body.trim());
-  if (match === null || Number.parseInt(match[1] ?? '', 10) !== record.plan_comment_id) {
-    return `approval command comment ${command.id} is not an anchored "/approve ${record.plan_comment_id}"`;
-  }
-  if (!isTrustedAuthor(command, trustedHumans, repoOwner)) {
-    return `approval command comment ${command.id} author "${command.user}" is not a trusted human`;
-  }
-  if (command.user.toLowerCase() !== record.approved_by_login.toLowerCase()) {
-    return `approval record approver "${record.approved_by_login}" does not match command author "${command.user}"`;
-  }
-  return null;
+  return approvalAnchorFailure(record, comments, trustedHumans, repoOwner);
 }
 
 /** Everything the Driver knows about one issue's Gate-issued records. */
 export interface IssueRecordView {
-  /** Current epoch = the highest-comment-id epoch record; null when absent. */
-  epoch: { record: WorkflowEpochRecordData; commentId: number } | null;
-  /** Approval records authored by a trusted Gate identity (id-ascending). */
-  approvals: Array<{ commentId: number; record: ApprovalRecordData }>;
-  /** feedback_accepted records authored by a trusted Gate identity. */
-  feedback: Array<{ commentId: number; record: FeedbackAcceptedRecordData }>;
   /**
-   * Records that carry a record marker but fail strict parsing, or whose
-   * author is NOT in the Gate allowlist. Any entry here means potential
-   * tampering: callers fail closed on the affected kind.
+   * Current epoch — resolved through the SHARED chain validator when the
+   * issue identity is known (readIssueRecordsForIssue, V1.1 Phase 2). Null
+   * when absent or UNRESOLVABLE (resolution failures also appear in
+   * `suspect` so callers fail closed).
+   */
+  epoch: { record: WorkflowEpochRecord; commentId: number } | null;
+  /** Approval records authored by a trusted Gate identity (id-ascending). */
+  approvals: Array<{ commentId: number; record: ApprovalRecord }>;
+  /** feedback_accepted records authored by a trusted Gate identity. */
+  feedback: Array<{ commentId: number; record: FeedbackAcceptedRecord }>;
+  /**
+   * Gate-issued gate_transition records authored by a trusted Gate identity
+   * (V1.1 Phase 4; id-ascending). The receipt-acceptance evidence.
+   */
+  transitions: Array<{ commentId: number; record: GateTransitionRecord }>;
+  /**
+   * Records that carry a record marker but fail strict parsing, whose author
+   * is NOT in the Gate allowlist, or whose epoch resolution failed (conflict,
+   * forged issuer, transplanted repo/issue binding). Any entry here means
+   * potential tampering: callers fail closed on the affected kind.
    */
   suspect: Array<{ commentId: number; reason: string }>;
 }
-
-type WorkflowEpochRecordData = WorkflowEpochRecord;
-type ApprovalRecordData = ApprovalRecord;
-type FeedbackAcceptedRecordData = FeedbackAcceptedRecord;
 
 /**
  * Parse + authorize the Gate records of one issue comment list (schema 2,
  * docs/plans/v1_hardening_decisions.md §4). `gateLogins` is the Driver-side
  * allowlist of identities allowed to have authored approval / feedback /
- * epoch records (the Driver bootstrap may ADDITIONALLY issue epoch records,
- * so epoch records may also carry the Driver's own login — the caller adds
- * it to the set for the epoch kind only).
+ * transition / gate-epoch records. `bootstrapIssuers` (V1.1 Phase 2) is the
+ * explicit allowlist for `driver_bootstrap` epoch records — when omitted,
+ * bootstrap records are NOT trusted (fail closed).
+ *
+ * This list-only variant cannot validate the epoch record's
+ * repository/issue binding (it does not know the issue identity); the
+ * issue-bound variant below (`readIssueRecordsForIssue`) is the strict
+ * entry point new driver code must use.
  */
 export function readIssueRecords(
   comments: CommentDetail[],
   gateLogins: ReadonlySet<string>,
+  bootstrapIssuers: ReadonlySet<string> = new Set(),
 ): IssueRecordView {
+  const suspect: Array<{ commentId: number; reason: string }> = [];
+
   const epoch = parseRecords('workflow_epoch', comments);
   const approvals = parseRecords('approval', comments);
   const feedback = parseRecords('feedback_accepted', comments);
-  const suspect: Array<{ commentId: number; reason: string }> = [];
-  for (const invalid of [...epoch.invalid, ...approvals.invalid, ...feedback.invalid]) {
+  const transitions = parseRecords('gate_transition', comments);
+  for (const invalid of [
+    ...epoch.invalid,
+    ...approvals.invalid,
+    ...feedback.invalid,
+    ...transitions.invalid,
+  ]) {
     suspect.push({ commentId: invalid.commentId, reason: invalid.reason });
   }
 
-  const latestEpochRecord = epoch.records[epoch.records.length - 1] ?? null;
+  const trusted = (entry: { comment: { user: string } }): boolean =>
+    isKnownLogin(entry.comment.user, gateLogins);
 
   const trustedApprovals = approvals.records
-    .filter((entry) => isKnownLogin(entry.comment.user, gateLogins))
+    .filter(trusted)
     .map((entry) => ({ commentId: entry.commentId, record: entry.record }));
   const trustedFeedback = feedback.records
-    .filter((entry) => isKnownLogin(entry.comment.user, gateLogins))
+    .filter(trusted)
+    .map((entry) => ({ commentId: entry.commentId, record: entry.record }));
+  const trustedTransitions = transitions.records
+    .filter(trusted)
     .map((entry) => ({ commentId: entry.commentId, record: entry.record }));
 
   // Records with a VALID body but an UNTRUSTED author are forgeries: they
   // are excluded above AND flagged so callers can fail closed.
   for (const entry of approvals.records) {
-    if (!isKnownLogin(entry.comment.user, gateLogins)) {
+    if (!trusted(entry)) {
       suspect.push({
         commentId: entry.commentId,
         reason: `approval record authored by untrusted identity "${entry.comment.user}"`,
@@ -269,13 +265,42 @@ export function readIssueRecords(
     }
   }
   for (const entry of feedback.records) {
-    if (!isKnownLogin(entry.comment.user, gateLogins)) {
+    if (!trusted(entry)) {
       suspect.push({
         commentId: entry.commentId,
         reason: `feedback record authored by untrusted identity "${entry.comment.user}"`,
       });
     }
   }
+  for (const entry of transitions.records) {
+    if (!trusted(entry)) {
+      suspect.push({
+        commentId: entry.commentId,
+        reason: `gate_transition record authored by untrusted identity "${entry.comment.user}"`,
+      });
+    }
+  }
+
+  // Epoch issuer classes (V1.1 Phase 2): `gate` records must come from the
+  // gate allowlist, `driver_bootstrap` records from the bootstrap allowlist.
+  // Violations are forgeries: flagged AND excluded from the epoch resolution.
+  const epochCandidates = epoch.records.filter((entry) => {
+    const allowed =
+      entry.record.created_by === 'gate'
+        ? isKnownLogin(entry.comment.user, gateLogins)
+        : isKnownLogin(entry.comment.user, bootstrapIssuers);
+    if (!allowed) {
+      suspect.push({
+        commentId: entry.commentId,
+        reason:
+          `workflow_epoch record (created_by ${entry.record.created_by}) authored by ` +
+          `"${entry.comment.user}", who is not an allowed issuer for that class`,
+      });
+    }
+    return allowed;
+  });
+
+  const latestEpochRecord = epochCandidates[epochCandidates.length - 1] ?? null;
 
   return {
     epoch:
@@ -284,15 +309,63 @@ export function readIssueRecords(
         : { record: latestEpochRecord.record, commentId: latestEpochRecord.commentId },
     approvals: trustedApprovals,
     feedback: trustedFeedback,
+    transitions: trustedTransitions,
     suspect,
   };
+}
+
+/**
+ * Strict issue-bound variant of readIssueRecords (V1.1): additionally runs
+ * the SHARED resolveCurrentEpoch so a record transplanted from another
+ * repository/issue, a forged issuer class or a conflicting operation id
+ * fails the whole view closed (suspect entries + epoch null). New driver
+ * code (preflight / discovery / intents) uses THIS entry point.
+ */
+export function readIssueRecordsForIssue(
+  comments: CommentDetail[],
+  opts: {
+    repositoryId: number;
+    issueNumber: number;
+    gateLogins: ReadonlySet<string>;
+    bootstrapIssuers: ReadonlySet<string>;
+  },
+): IssueRecordView {
+  const view = readIssueRecords(comments, opts.gateLogins, opts.bootstrapIssuers);
+  const resolution = resolveCurrentEpoch({
+    comments,
+    repositoryId: opts.repositoryId,
+    issueNumber: opts.issueNumber,
+    gateIssuers: opts.gateLogins,
+    bootstrapIssuers: opts.bootstrapIssuers,
+  });
+  if (!resolution.ok) {
+    // "No epoch record at all" is a NORMAL pre-bootstrap state (Producer
+    // submissions, post-T0 record loss) — not tampering. Every OTHER
+    // resolution failure (unparsable, forged issuer, transplanted binding,
+    // operation-id conflict) IS suspect and fails the issue closed.
+    const plainAbsence = resolution.reason.startsWith('no workflow_epoch record');
+    return {
+      epoch: null,
+      approvals: [],
+      feedback: [],
+      transitions: [],
+      suspect: plainAbsence
+        ? view.suspect
+        : [
+            ...view.suspect,
+            { commentId: -1, reason: `workflow_epoch resolution failed: ${resolution.reason}` },
+          ],
+    };
+  }
+  return { ...view, epoch: { record: resolution.record, commentId: resolution.commentId } };
 }
 
 /**
  * Accepted feedback events of the CURRENT epoch: gate-issued records whose
  * referenced command comment still exists as an anchored /choose or /change
  * by a trusted human. Rejected, duplicated (no record), old-epoch and
- * edited-away commands never count (hardening Phase 3.2).
+ * edited-away commands never count (hardening Phase 3.2; SHARED
+ * implementation in workflow-chain since V1.1).
  */
 export function acceptedFeedbackEvents(
   view: IssueRecordView,
@@ -301,20 +374,17 @@ export function acceptedFeedbackEvents(
   repoOwner: string,
 ): HumanFeedbackEntry[] {
   if (view.epoch === null) return [];
-  const epoch = view.epoch.record.workflow_epoch;
-  const byId = new Map(comments.map((comment) => [comment.id, comment]));
-  const accepted: HumanFeedbackEntry[] = [];
-  for (const { record } of view.feedback) {
-    if (record.workflow_epoch !== epoch) continue;
-    const comment = byId.get(record.feedback_comment_id);
-    if (comment === undefined) continue;
-    if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) continue;
-    const trimmed = comment.body.trim();
-    if (record.feedback_kind === 'choose' && CHOOSE_PATTERN.exec(trimmed) === null) continue;
-    if (record.feedback_kind === 'change' && CHANGE_PATTERN.exec(trimmed) === null) continue;
-    accepted.push({ comment, kind: record.feedback_kind });
-  }
-  return accepted;
+  const humansWithOwner = new Set(trustedHumans);
+  humansWithOwner.add(repoOwner.trim().toLowerCase());
+  const accepted = acceptedFeedbackOfEpoch({
+    comments,
+    epoch: view.epoch.record.workflow_epoch,
+    trustedHumans: humansWithOwner,
+  });
+  return accepted.map((entry) => ({
+    comment: entry.comment as CommentDetail,
+    kind: entry.record.feedback_kind,
+  }));
 }
 
 /** Publishes a Plan comment (marker T1 trigger); resolves to its comment id. */
@@ -378,7 +448,7 @@ function extractProgressTail(body: string): string {
     if (insideFence) {
       continue;
     }
-    if (STATUS_LINE_PATTERN.test(trimmed)) {
+    if (trimmed.startsWith('**Status:**')) {
       return lines.slice(i + 1).join('\n');
     }
   }
@@ -390,12 +460,11 @@ function extractProgressTail(body: string): string {
  * marker + dispatch-id comment + `**Status:** <resolved>` + progress.
  * Marker, dispatch-id and Status lines always remain intact.
  *
- *  - status: opts.status, else the body's current machine status, else
- *    'In Progress'. ('Completed' is not Driver-writable and falls back to
- *    'In Progress' — the gate only reacts to tracker edits while the issue
- *    sits in WORKING / BLOCKED, so this fallback cannot cause a transition.)
- *  - progress: opts.progressMarkdown (an explicit '' clears it), else the
- *    existing tail after the current Status line, else ''.
+ * NOTE (V1.1): the fallback for a body whose current status cannot be parsed
+ * is 'In Progress'; the gate only reacts to tracker edits while the issue
+ * sits in WORKING / BLOCKED and never transitions on an unchanged value, so
+ * this fallback cannot cause a transition. 'Completed' is never
+ * Driver-writable.
  *
  * Throws when the current body carries no dispatch-id comment: rebuilding
  * without it would silently detach the tracker from its dispatch.

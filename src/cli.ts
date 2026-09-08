@@ -7,6 +7,7 @@
  *   gateflow driver start [--root <dir>] [--config <file>]
  *   gateflow driver status [--root <dir>] [--config <file>]
  *   gateflow driver retry <dispatchId> [--root <dir>] [--config <file>]
+ *   gateflow driver unlock <dispatchId> [--root <dir>] [--config <file>]
  *
  * - `--root` defaults to the current working directory; `--config` defaults
  *   to `gateflow.config.yml` inside the root.
@@ -33,6 +34,7 @@ import { ConfigError, loadConfig, resolveRepository } from './driver/config';
 import { startDriver, runOnce } from './driver/driver';
 import type { DriverDeps, DriverLogger } from './driver/driver';
 import { retryDispatch } from './driver/retry';
+import { executorLockFile, forceReleaseExecutorLock } from './driver/workspace-lock';
 import { readCurrent } from './workspace/inbox';
 import { listOutboxDispatchIds, listReceipts } from './workspace/outbox';
 import { resolveWorkspace } from './workspace/paths';
@@ -47,13 +49,14 @@ Usage:
   gateflow driver start  [--root <dir>] [--config <file>]   poll + watch until interrupted
   gateflow driver status [--root <dir>] [--config <file>]   show local workspace state (offline)
   gateflow driver retry <dispatchId> [--root <dir>]         clear a receipt so the next cycle re-dispatches
+  gateflow driver unlock <dispatchId> [--root <dir>]        release a conflicted executor lock (V1.1 Phase 7)
 
 Environment:
   GITHUB_TOKEN          required for once/start; never written to disk
   GATEFLOW_REPOSITORY   optional owner/name fallback for repository resolution`;
 
 interface CliArgs {
-  command: 'once' | 'start' | 'status' | 'retry';
+  command: 'once' | 'start' | 'status' | 'retry' | 'unlock';
   dispatchId: string | null;
   root: string;
   config: string;
@@ -93,12 +96,12 @@ function parseArgs(argv: string[]): { ok: true; args: CliArgs } | { ok: false; e
   // Tolerate `gateflow driver once` and a bare `gateflow once` alike.
   if (positionals[0] === 'driver') positionals.shift();
   const command = positionals[0];
-  if (command !== 'once' && command !== 'start' && command !== 'status' && command !== 'retry') {
+  if (command !== 'once' && command !== 'start' && command !== 'status' && command !== 'retry' && command !== 'unlock') {
     return { ok: false, error: `unknown command "${command ?? ''}"` };
   }
   const dispatchId = positionals[1] ?? null;
-  if (command === 'retry' && dispatchId === null) {
-    return { ok: false, error: 'retry requires a <dispatchId> argument' };
+  if ((command === 'retry' || command === 'unlock') && dispatchId === null) {
+    return { ok: false, error: `${command} requires a <dispatchId> argument` };
   }
   return { ok: true, args: { command, dispatchId, root, config } };
 }
@@ -254,6 +257,38 @@ async function runRetry(args: CliArgs): Promise<number> {
   return 0;
 }
 
+/**
+ * Explicit human release of a conflicted executor lock (V1.1 Phase 7):
+ * `gateflow driver unlock <dispatch_id>`. INVOKING this command IS the human
+ * confirmation that the old desktop client has stopped — the lock is never
+ * released automatically by time or by a dead Driver pid.
+ */
+async function runUnlock(args: CliArgs): Promise<number> {
+  const dispatchId = args.dispatchId ?? '';
+  if (!DISPATCH_DIR_PATTERN.test(dispatchId)) {
+    console.error(
+      `invalid dispatch id: ${JSON.stringify(dispatchId)} ` +
+        '(expected gf_r<id>_i<issue>_w<epoch-code>_<role>_<revision>)',
+    );
+    return 1;
+  }
+  const config = await loadConfig(args.root, args.config);
+  const paths = resolveWorkspace(args.root, config.driver.workspaceDir);
+  const result = await forceReleaseExecutorLock(executorLockFile(paths), dispatchId);
+  if (result.ok) {
+    console.log(
+      `executor lock released for ${dispatchId} ` +
+        `(was held by ${result.holder.holder} pid ${result.holder.pid}, ` +
+        `acquired ${result.holder.acquired_at}).`,
+    );
+    console.log('Make sure the old agent client is really stopped before re-dispatching.');
+  } else {
+    console.error(`unlock failed: ${result.reason}`);
+    return 1;
+  }
+  return 0;
+}
+
 /** CLI entry point; returns the process exit code. */
 export async function main(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv);
@@ -270,6 +305,8 @@ export async function main(argv: string[]): Promise<number> {
         return await runStatus(parsed.args);
       case 'retry':
         return await runRetry(parsed.args);
+      case 'unlock':
+        return await runUnlock(parsed.args);
     }
   } catch (err) {
     if (err instanceof ConfigError) {

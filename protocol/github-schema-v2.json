@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://gateflow.dev/schemas/github-schema-v2.json",
   "title": "GateFlow GitHub Protocol schema 2 (hardening)",
-  "description": "Documentation-only mirror of the schema-2 GitHub-side protocol that the Gate (GitHub Action) enforces: the five comment commands (exact and anchored shapes), the frozen label state machine, workflow markers, and — new in the hardening (docs/plans/v1_hardening_decisions.md) — the Gate-issued RECORD comments (workflow_epoch / approval / feedback_accepted), the Producer source-id anchor, and the fail-closed Organization identity rule. The executable sources of truth are src/gate/* and src/protocol/records.ts.",
+  "description": "Documentation-only mirror of the schema-2 GitHub-side protocol that the Gate (GitHub Action) enforces: the five comment commands (exact and anchored shapes), the frozen label state machine, workflow markers, and — new in the hardening (docs/plans/v1_hardening_decisions.md) — the Gate-issued RECORD comments (workflow_epoch / approval / feedback_accepted), the Producer source-id anchor, the fail-closed Organization identity rule, and the V1.1 additions (hardening plan): workflow-chain dispatch authorization for every marker transition, epoch record trust (created_by issuer classes + deterministic operation ids + record-first T0), and the gate_transition record. The executable sources of truth are src/gate/* and src/protocol/records.ts.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -586,7 +586,7 @@
       "pattern": "^wf_[0-9a-z]{12}$"
     },
     "recordEnvelope": {
-      "description": "A Gate-issued record comment: the record marker line owning its line, a blank line, then a fenced ```json block whose object carries EXACTLY the frozen field set (unknown/missing keys reject the record). Record markers are NOT workflow markers and never trigger transitions. Authorization classes: workflow_epoch may be issued by the Gate OR the Driver (bootstrap); approval and feedback_accepted are Gate-ONLY. Comment-borne records are auditable and revocation-safe (protected identity + fail-closed validation) but NOT strongly tamper-proof.",
+      "description": "A Gate-issued record comment: the record marker line owning its line, a blank line, then a fenced ```json block whose object carries EXACTLY the frozen field set (unknown/missing keys reject the record). Record markers are NOT workflow markers and never trigger transitions. Authorization classes: workflow_epoch is issued by the Gate ('gate') or an explicit Bootstrap Driver ('driver_bootstrap'); approval, feedback_accepted and gate_transition are Gate-ONLY. V1.1 adds gate_transition (Phase 4). Comment-borne records are auditable and revocation-safe (protected identity + fail-closed validation) but NOT strongly tamper-proof.",
       "oneOf": [
         {
           "$ref": "#/$defs/epochRecord"
@@ -600,18 +600,19 @@
       ]
     },
     "epochRecord": {
-      "description": "workflow_epoch record — names ONE formal workflow round of an issue. operation_id: epoch:<repository_id>:<issue_number>:<workflow_epoch>. Current epoch = the record with the highest comment id. A new round (fresh /ai-plan from outside the workflow) always mints a fresh epoch; old-epoch approvals/dispatches are dead.",
+      "description": "workflow_epoch record — names ONE formal workflow round of an issue. V1.1 Phase 3: operation_id is DETERMINISTIC — gate T0: epoch:<repository_id>:<issue_number>:c<command_comment_id>; driver bootstrap: epoch:<repository_id>:<issue_number>:bootstrap. The random epoch VALUE is never part of the id, so a redelivered /ai-plan re-derives the same operation id and ADOPTS the existing record (no second epoch); conflicting epochs under one operation id FAIL CLOSED. Current epoch = the surviving record with the highest comment id. V1.1 ordering: the record is written BEFORE the ai:planning label (record-first: no epoch -> no PLANNING).",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "schema",
-        "kind",
-        "repository_id",
-        "issue_number",
-        "workflow_epoch",
         "created_at",
+        "created_by",
+        "issue_number",
         "issued_by",
-        "operation_id"
+        "kind",
+        "operation_id",
+        "repository_id",
+        "schema",
+        "workflow_epoch"
       ],
       "properties": {
         "schema": {
@@ -640,7 +641,14 @@
         },
         "operation_id": {
           "type": "string",
-          "pattern": "^epoch:[0-9]+:[0-9]+:wf_[0-9a-z]{12}$"
+          "pattern": "^epoch:[0-9]+:[0-9]+:(c[0-9]+|bootstrap)$"
+        },
+        "created_by": {
+          "description": "V1.1 Phase 2 (Epoch Record Trust): WHO issued this epoch. 'gate' = the Gate itself (T0 /ai-plan; the record comment must be authored by a Gate identity). 'driver_bootstrap' = an explicit Bootstrap Driver identity (Producer-submitted planning issues; authored by a configured bootstrap-driver login). The issuer class is re-validated on every read; forged epochs fail closed.",
+          "enum": [
+            "gate",
+            "driver_bootstrap"
+          ]
         }
       }
     },
@@ -789,6 +797,99 @@
       "description": "The `<!-- gateflow:source-id: <operation_id> -->` HTML comment embedded in Producer-submitted issue bodies (operation id `submit:<submission_id>`). Submit reconciliation adopts an existing issue by this anchor after unknown API outcomes instead of re-POSTing; titles are never used for dedup.",
       "type": "string",
       "pattern": "^<!--\\s*gateflow:source-id:\\s*submit:sub_[0-9a-z]{16}\\s*-->$"
+    },
+    "gateTransitionRecord": {
+      "description": "V1.1 Phase 4: gate_transition record — the durable audit fact that the Gate accepted a SPECIFIC source object (source_comment_id: the command or marker comment) and performed the SPECIFIC label migration (transition T1-T6, from_label, to_label), bound to the workflow_epoch and (when present) the dispatch_id. Published BEFORE the label swap (record-first, fail closed); idempotent by operation id transition:<repository_id>:<issue_number>:<workflow_epoch>:<transition>:<source_comment_id>. A Driver receipt's 'accepted' MUST bind to this record (epoch + dispatch + transition + source comment) — a bare label observation never suffices (V1.1 Phase 5). Gate-issued ONLY.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "repository_id",
+        "issue_number",
+        "workflow_epoch",
+        "dispatch_id",
+        "transition",
+        "from_label",
+        "to_label",
+        "source_comment_id",
+        "gate_login",
+        "gate_user_id",
+        "gate_version",
+        "created_at",
+        "operation_id"
+      ],
+      "properties": {
+        "schema": {
+          "const": 2
+        },
+        "kind": {
+          "const": "gate_transition"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "issue_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workflow_epoch": {
+          "type": "string",
+          "pattern": "^wf_[0-9a-z]{12}$"
+        },
+        "dispatch_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^gf_r[0-9]+_i[0-9]+_w[0-9a-z]{12}_(consumer|executor)_(\\d+|p[0-9]+)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transition": {
+          "enum": [
+            "T1",
+            "T2",
+            "T3",
+            "T4",
+            "T5",
+            "T6"
+          ]
+        },
+        "from_label": {
+          "type": "string",
+          "pattern": "^ai:(planning|review|ready|working|blocked|done)$"
+        },
+        "to_label": {
+          "type": "string",
+          "pattern": "^ai:(planning|review|ready|working|blocked|done)$"
+        },
+        "source_comment_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gate_login": {
+          "$ref": "#/$defs/login"
+        },
+        "gate_user_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gate_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "created_at": {
+          "$ref": "#/$defs/isoTimestamp"
+        },
+        "operation_id": {
+          "type": "string",
+          "pattern": "^transition:[0-9]+:[0-9]+:wf_[0-9a-z]{12}:T[1-6]:[0-9]+$"
+        }
+      }
     }
   }
 }

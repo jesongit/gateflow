@@ -116,13 +116,28 @@ export async function dispatchIntent(
     if (existing !== null && existing.dispatch_id === dispatchId) {
       await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
     }
-    const lock = await acquireLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId, now);
+    // V1.1 Phase 7: executor locks carry their dispatch/epoch/workspace and
+    // are NEVER stolen by time or by a dead pid — a dead-holder lock yields
+    // `workspace-executor-conflict` and waits for the explicit human unlock.
+    const lock = await acquireLock(
+      executorLockFile(paths),
+      DRIVER_LOCK_HOLDER,
+      {
+        dispatchId,
+        workflowEpoch: intent.epoch,
+        workspace: paths.root,
+        kind: 'executor',
+      },
+      now,
+    );
     if (!lock.ok) {
+      const reason =
+        lock.failure === 'workspace-conflict' ? 'workspace-executor-conflict' : 'workspace-executor-busy';
       deps.log.warning(
-        `skip ${dispatchId}: workspace-executor-busy ` +
+        `skip ${dispatchId}: ${reason} ` +
           `(holder ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : 'unknown'})`,
       );
-      return { dispatched: false, dispatchId, reason: 'workspace-executor-busy' };
+      return { dispatched: false, dispatchId, reason };
     }
     lockAcquired = true;
   }

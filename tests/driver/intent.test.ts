@@ -32,6 +32,9 @@ const CTX = {
   repoOwner: OWNER,
   trustedHumans: new Set(['alice']),
   gateLogins: new Set([GATE_LOGIN]),
+  // V1.1: no bootstrap driver configured for intent fixtures (epochs are
+  // gate-issued here); bootstrap-class records are therefore untrusted.
+  bootstrapIssuers: new Set<string>(),
 };
 
 function issue(overrides: Partial<IssueDetail> = {}): IssueDetail {

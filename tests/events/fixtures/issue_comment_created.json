@@ -1,0 +1,17 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 7,
+    "title": "Add dark mode",
+    "state": "open",
+    "user": { "login": "owner-user", "id": 1001 },
+    "body": "Please add dark mode."
+  },
+  "comment": {
+    "id": 9001,
+    "user": { "login": "owner-user", "id": 1001 },
+    "body": "/approve 123"
+  },
+  "repository": { "id": 123, "name": "demo", "full_name": "owner-user/demo", "owner": { "login": "owner-user", "type": "User" } },
+  "sender": { "login": "owner-user", "id": 1001 }
+}

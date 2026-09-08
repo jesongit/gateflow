@@ -40,6 +40,16 @@ inputs:
       commands. Default: empty.
     required: false
     default: ''
+  bootstrap-drivers:
+    description: >-
+      V1.1: comma-separated GitHub logins allowed to issue BOOTSTRAP workflow
+      epoch records (created_by: driver_bootstrap) for Producer-submitted
+      planning issues — typically the local Driver's token identity. Empty
+      (default) means: on a personal (User-type) repository the owner; on any
+      other repository NOBODY may bootstrap (the Gate itself issues all
+      epochs).
+    required: false
+    default: ''
   require-explicit-humans:
     description: >-
       Fail the run (fail closed) when the repository owner is an Organization

@@ -1,0 +1,12 @@
+{
+  "action": "closed",
+  "issue": {
+    "number": 7,
+    "title": "Add dark mode",
+    "state": "closed",
+    "user": { "login": "owner-user", "id": 1001 },
+    "body": "Please add dark mode."
+  },
+  "repository": { "id": 123, "name": "demo", "full_name": "owner-user/demo", "owner": { "login": "owner-user", "type": "User" } },
+  "sender": { "login": "owner-user", "id": 1001 }
+}

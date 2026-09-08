@@ -1,0 +1,17 @@
+{
+  "action": "edited",
+  "issue": {
+    "number": 7,
+    "title": "Add dark mode",
+    "state": "open",
+    "user": { "login": "owner-user", "id": 1001 },
+    "body": "Please add dark mode."
+  },
+  "comment": {
+    "id": 700,
+    "user": { "login": "gateflow-driver[bot]", "id": 5001 },
+    "body": "<!-- ai-workflow:execution-tracker:v1 -->\n\n<!-- gateflow:dispatch-id: gf_r123_i7_wqrdeh6k30m1z_executor_p123 -->\n\n**Status:** Blocked\n\nWaiting for upstream API."
+  },
+  "repository": { "id": 123, "name": "demo", "full_name": "owner-user/demo", "owner": { "login": "owner-user", "type": "User" } },
+  "sender": { "login": "gateflow-driver[bot]", "id": 5001 }
+}

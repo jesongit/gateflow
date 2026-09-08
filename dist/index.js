@@ -24367,7 +24367,7 @@ var LABEL_COLORS = {
   [LABELS.done]: "0e8a16"
 };
 
-// src/gate/commands.ts
+// src/protocol/commands.ts
 var EXACT_COMMANDS = /* @__PURE__ */ new Set([
   COMMANDS.aiPlan,
   COMMANDS.cancel
@@ -24406,6 +24406,9 @@ function parseCommand(body) {
     return { command: COMMANDS.change, args: { text } };
   }
   return null;
+}
+function isFeedbackCommand(trimmedBody, kind) {
+  return kind === "choose" ? CHOOSE_PATTERN.exec(trimmedBody) !== null : CHANGE_PATTERN.exec(trimmedBody) !== null;
 }
 
 // src/gate/markers.ts
@@ -24599,54 +24602,95 @@ function parseLoginList(input) {
   }
   return input.split(/[,\s]+/).map((part) => part.trim()).filter((part) => part.length > 0);
 }
-function loginEquals(a, b) {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
-}
-function isTrustedHuman(actor, repoOwner, trustedHumansInput) {
-  if (!actor) {
-    return false;
-  }
-  if (repoOwner && loginEquals(actor, repoOwner)) {
-    return true;
-  }
-  return parseLoginList(trustedHumansInput).some((login) => loginEquals(actor, login));
-}
-function isTrustedAgent(actor, trustedAgentsInput) {
-  if (!actor) {
-    return false;
-  }
-  return parseLoginList(trustedAgentsInput).some((login) => loginEquals(actor, login));
-}
 
-// src/gate/identity.ts
-function loginEquals2(a, b) {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
+// src/protocol/identity.ts
+function normalize(login) {
+  return login.trim().toLowerCase();
 }
-function validateIdentityConfig(input) {
-  const humans = input.trustedHumans.map((h) => h.trim()).filter((h) => h.length > 0);
-  const agents = input.trustedAgents.map((a) => a.trim()).filter((a) => a.length > 0);
-  for (const human of humans) {
-    for (const agent of agents) {
-      if (loginEquals2(human, agent)) {
-        return {
-          ok: false,
-          reason: `identity overlap: "${human}" is configured as BOTH a Trusted Human and a Trusted Agent. The two roles are separate concepts and must never share a login (docs/plans/v1_hardening_decisions.md \xA73). Fix the gate inputs; refusing to run.`
-        };
-      }
-    }
-  }
+function normalizeList(list) {
+  return (list ?? []).map(normalize).filter((login) => login.length > 0);
+}
+function resolveIdentities(input) {
+  const humans = new Set(normalizeList(input.trustedHumans));
+  const agents = new Set(normalizeList(input.trustedAgents));
+  const owner = normalize(input.owner);
   const isPersonalOwner = input.ownerType === "User";
-  if (!isPersonalOwner && humans.length === 0 && input.requireExplicitHumans) {
+  if (isPersonalOwner && owner.length > 0) {
+    humans.add(owner);
+  }
+  const configuredBootstrap = normalizeList(input.bootstrapDrivers);
+  const explicitBootstrap = configuredBootstrap.length > 0;
+  let bootstrapDrivers;
+  if (explicitBootstrap) {
+    bootstrapDrivers = new Set(configuredBootstrap);
+  } else if (isPersonalOwner && owner.length > 0) {
+    bootstrapDrivers = /* @__PURE__ */ new Set([owner]);
+  } else {
+    bootstrapDrivers = /* @__PURE__ */ new Set();
+  }
+  if (!isPersonalOwner && humans.size === 0 && (input.requireExplicitHumans ?? true)) {
     return {
       ok: false,
-      reason: `repository owner "${input.owner}" has GitHub type "${input.ownerType}", so the repo-owner login is NOT accepted as a Trusted Human by default. Configure an explicit \`trusted-humans\` allowlist (or set \`require-explicit-humans: false\` to accept the risk knowingly). Refusing to run: an Organization repo without an explicit Human allowlist has no safe identity model.`
+      reason: `repository owner "${input.owner}" has GitHub type "${input.ownerType}", so the repo-owner login is NOT accepted as a Trusted Human by default. Configure an explicit trusted-humans allowlist (or knowingly disable the explicit-humans requirement). Refusing to run: no safe identity model.`
     };
   }
-  return { ok: true };
+  for (const human of humans) {
+    if (agents.has(human)) {
+      return {
+        ok: false,
+        reason: `identity overlap: "${human}" is configured as BOTH a Trusted Human and a Trusted Agent. The two roles are separate concepts and must never share a login. Fix the configuration; refusing to run.`
+      };
+    }
+  }
+  for (const bootstrap of bootstrapDrivers) {
+    if (!humans.has(bootstrap)) continue;
+    if (isPersonalOwner && bootstrap === owner) continue;
+    return {
+      ok: false,
+      reason: `identity overlap: "${bootstrap}" is a bootstrap driver AND an Effective Trusted Human. Bootstrap drivers publish workflow epoch records and must be machine identities (only exception: the owner of a personal repository). Refusing to run.`
+    };
+  }
+  return {
+    ok: true,
+    identities: {
+      humans,
+      agents,
+      bootstrapDrivers,
+      ownerIsHuman: humans.has(owner)
+    }
+  };
+}
+function identitySetHas(set, login) {
+  if (!login) return false;
+  return set.has(login.trim().toLowerCase());
+}
+
+// src/protocol/plan.ts
+var import_node_crypto = require("node:crypto");
+var DROPPED_LINE_PATTERNS = [
+  /^<!--\s*ai-workflow:[a-z-]+:v\d+\s*-->$/,
+  // workflow markers (plan/tracker/report/append)
+  /^<!--\s*gateflow:dispatch-id:\s*\S+\s*-->$/,
+  // dispatch-id anchor comment
+  /^<!--\s*gateflow:[a-z-]+:v\d+\s*-->$/
+  // gate record markers (workflow/approval/feedback)
+];
+function canonicalPlanContent(planCommentBody) {
+  const kept = planCommentBody.split(/(?:\r\n|\r|\n)/).filter((line) => {
+    const trimmed = line.trim();
+    return !DROPPED_LINE_PATTERNS.some((pattern) => pattern.test(trimmed));
+  }).join("\n");
+  return kept.trim();
+}
+function sha256Hex(content) {
+  return (0, import_node_crypto.createHash)("sha256").update(content, "utf8").digest("hex");
+}
+function planSha256(planCommentBody) {
+  return sha256Hex(canonicalPlanContent(planCommentBody));
 }
 
 // src/protocol/epoch.ts
-var import_node_crypto = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 var EPOCH_BODY_PATTERN = /^wf_[0-9a-z]{12}$/;
 function isWorkflowEpoch(value) {
   return typeof value === "string" && EPOCH_BODY_PATTERN.test(value);
@@ -24655,7 +24699,7 @@ function newWorkflowEpoch() {
   const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
   let epoch = "wf_";
   while (epoch.length < 3 + 12) {
-    const bytes = (0, import_node_crypto.randomBytes)(16);
+    const bytes = (0, import_node_crypto2.randomBytes)(16);
     for (const byte of bytes) {
       if (epoch.length >= 3 + 12) break;
       if (byte >= 252) continue;
@@ -24665,11 +24709,35 @@ function newWorkflowEpoch() {
   return epoch;
 }
 
+// src/workspace/protocol.ts
+var DISPATCH_DIR_PATTERN = /^gf_r(\d+)_i(\d+)_w([0-9a-z]{12})_(consumer|executor)_(\d+|p\d+)$/;
+function parseDispatchId(id) {
+  const match = DISPATCH_DIR_PATTERN.exec(id);
+  if (match === null) return null;
+  const repositoryId = match[1];
+  const issueNumber = match[2];
+  const epochCode = match[3];
+  const role = match[4];
+  const revision = match[5];
+  if (repositoryId === void 0 || issueNumber === void 0 || epochCode === void 0 || role === void 0 || revision === void 0) {
+    return null;
+  }
+  if (role !== "consumer" && role !== "executor") return null;
+  return {
+    repositoryId: Number(repositoryId),
+    issueNumber: Number(issueNumber),
+    epochCode,
+    role,
+    revision
+  };
+}
+
 // src/protocol/records.ts
 var RECORD_SCHEMA_VERSION = 2;
 var EPOCH_RECORD_MARKER = "<!-- gateflow:workflow:v2 -->";
 var APPROVAL_RECORD_MARKER = "<!-- gateflow:approval:v2 -->";
 var FEEDBACK_RECORD_MARKER = "<!-- gateflow:feedback:v2 -->";
+var TRANSITION_RECORD_MARKER = "<!-- gateflow:transition:v2 -->";
 var HEX64 = /^[0-9a-f]{64}$/;
 var ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 var LOGIN = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?!$)){0,37}(\[bot\])?$/;
@@ -24677,14 +24745,33 @@ var OPERATION_ID = /^[a-z]+(:[\w.-]+)+$/;
 function isObj(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function epochOperationId(repositoryId, issueNumber, epoch) {
-  return `epoch:${repositoryId}:${issueNumber}:${epoch}`;
+function gateEpochOperationId(repositoryId, issueNumber, commandCommentId) {
+  return `epoch:${repositoryId}:${issueNumber}:c${commandCommentId}`;
+}
+function bootstrapEpochOperationId(repositoryId, issueNumber) {
+  return `epoch:${repositoryId}:${issueNumber}:bootstrap`;
+}
+function isEpochOperationId(operationId, repositoryId, issueNumber) {
+  if (operationId === bootstrapEpochOperationId(repositoryId, issueNumber)) {
+    return true;
+  }
+  const commandCommentId = extractEpochCommandCommentId(operationId);
+  return commandCommentId !== null && operationId === gateEpochOperationId(repositoryId, issueNumber, commandCommentId);
+}
+function extractEpochCommandCommentId(operationId) {
+  const match = /^epoch:(\d+):(\d+):c(\d+)$/.exec(operationId);
+  if (match === null) return null;
+  const id = Number(match[3]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 function approvalOperationId(repositoryId, issueNumber, epoch, planCommentId) {
   return `approval:${repositoryId}:${issueNumber}:${epoch}:p${planCommentId}`;
 }
 function feedbackOperationId(repositoryId, issueNumber, epoch, feedbackCommentId) {
   return `feedback:${repositoryId}:${issueNumber}:${epoch}:${feedbackCommentId}`;
+}
+function transitionOperationId(repositoryId, issueNumber, epoch, transition, sourceCommentId) {
+  return `transition:${repositoryId}:${issueNumber}:${epoch}:${transition}:${sourceCommentId}`;
 }
 function buildRecordBody(record) {
   return `${recordMarkerFor(record.kind)}
@@ -24702,6 +24789,8 @@ function recordMarkerFor(kind) {
       return APPROVAL_RECORD_MARKER;
     case "feedback_accepted":
       return FEEDBACK_RECORD_MARKER;
+    case "gate_transition":
+      return TRANSITION_RECORD_MARKER;
   }
 }
 function recordKindOf(body) {
@@ -24710,6 +24799,7 @@ function recordKindOf(body) {
     if (trimmed === EPOCH_RECORD_MARKER) return "workflow_epoch";
     if (trimmed === APPROVAL_RECORD_MARKER) return "approval";
     if (trimmed === FEEDBACK_RECORD_MARKER) return "feedback_accepted";
+    if (trimmed === TRANSITION_RECORD_MARKER) return "gate_transition";
   }
   return null;
 }
@@ -24771,6 +24861,8 @@ function parseRecord(commentId, body) {
       return validateApprovalRecord(commentId, raw);
     case "feedback_accepted":
       return validateFeedbackRecord(commentId, raw);
+    case "gate_transition":
+      return validateTransitionRecord(commentId, raw);
   }
 }
 function checkFields(raw, required, what, errors) {
@@ -24809,6 +24901,7 @@ function validateEpochRecord(commentId, raw) {
     "repository_id",
     "issue_number",
     "workflow_epoch",
+    "created_by",
     "created_at",
     "issued_by",
     "operation_id"
@@ -24820,6 +24913,10 @@ function validateEpochRecord(commentId, raw) {
   if (raw["kind"] !== "workflow_epoch") {
     errors.push(`kind: expected "workflow_epoch", got ${JSON.stringify(raw["kind"])}`);
   }
+  const createdBy = raw["created_by"];
+  if (createdBy !== "gate" && createdBy !== "driver_bootstrap") {
+    errors.push(`created_by: expected "gate"|"driver_bootstrap", got ${JSON.stringify(createdBy)}`);
+  }
   const repositoryId = num(raw, "repository_id", errors);
   const issueNumber = num(raw, "issue_number", errors);
   const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
@@ -24830,8 +24927,8 @@ function validateEpochRecord(commentId, raw) {
   if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || createdAt === null || issuedBy === null || operationId === null) {
     return { ok: false, reason: `invalid workflow_epoch record: ${errors.join("; ")}` };
   }
-  if (operationId !== epochOperationId(repositoryId, issueNumber, epoch)) {
-    return { ok: false, reason: `invalid workflow_epoch record: operation_id "${operationId}" does not bind repository/issue/epoch` };
+  if (!isEpochOperationId(operationId, repositoryId, issueNumber)) {
+    return { ok: false, reason: `invalid workflow_epoch record: operation_id "${operationId}" does not bind repository/issue` };
   }
   return {
     ok: true,
@@ -24842,6 +24939,7 @@ function validateEpochRecord(commentId, raw) {
       repository_id: repositoryId,
       issue_number: issueNumber,
       workflow_epoch: epoch,
+      created_by: createdBy,
       created_at: createdAt,
       issued_by: issuedBy,
       operation_id: operationId
@@ -24979,6 +25077,78 @@ function validateFeedbackRecord(commentId, raw) {
     }
   };
 }
+var TRANSITION_IDS = ["T1", "T2", "T3", "T4", "T5", "T6"];
+var LABEL_PATTERN = /^ai:(planning|review|ready|working|blocked|done)$/;
+function validateTransitionRecord(commentId, raw) {
+  const errors = [];
+  const required = [
+    "schema",
+    "kind",
+    "repository_id",
+    "issue_number",
+    "workflow_epoch",
+    "dispatch_id",
+    "transition",
+    "from_label",
+    "to_label",
+    "source_comment_id",
+    "gate_login",
+    "gate_user_id",
+    "gate_version",
+    "created_at",
+    "operation_id"
+  ];
+  checkFields(raw, required, "gate_transition record", errors);
+  if (raw["schema"] !== RECORD_SCHEMA_VERSION) {
+    errors.push(`schema: expected ${RECORD_SCHEMA_VERSION}, got ${JSON.stringify(raw["schema"])}`);
+  }
+  if (raw["kind"] !== "gate_transition") {
+    errors.push(`kind: expected "gate_transition", got ${JSON.stringify(raw["kind"])}`);
+  }
+  const repositoryId = num(raw, "repository_id", errors);
+  const issueNumber = num(raw, "issue_number", errors);
+  const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
+  if (epoch === null) errors.push("workflow_epoch: malformed epoch string");
+  const rawDispatchId = raw["dispatch_id"];
+  const dispatchId = rawDispatchId === null ? null : typeof rawDispatchId === "string" && DISPATCH_DIR_PATTERN.test(rawDispatchId) ? rawDispatchId : (errors.push(`dispatch_id: expected a dispatch id or null, got ${JSON.stringify(rawDispatchId)}`), null);
+  const rawTransition = raw["transition"];
+  const transition = typeof rawTransition === "string" && TRANSITION_IDS.includes(rawTransition) ? rawTransition : (errors.push(`transition: expected one of ${TRANSITION_IDS.join("|")}, got ${JSON.stringify(rawTransition)}`), null);
+  const fromLabel = str(raw, "from_label", LABEL_PATTERN, errors);
+  const toLabel = str(raw, "to_label", LABEL_PATTERN, errors);
+  const sourceCommentId = num(raw, "source_comment_id", errors);
+  const gateLogin = str(raw, "gate_login", LOGIN, errors);
+  const gateUserId = num(raw, "gate_user_id", errors);
+  const gateVersion = str(raw, "gate_version", /^[0-9]+\.[0-9]+\.[0-9]+$/, errors);
+  const createdAt = str(raw, "created_at", ISO_DATE, errors);
+  const operationId = str(raw, "operation_id", OPERATION_ID, errors);
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || transition === null || fromLabel === null || toLabel === null || sourceCommentId === null || gateLogin === null || gateUserId === null || gateVersion === null || createdAt === null || operationId === null) {
+    return { ok: false, reason: `invalid gate_transition record: ${errors.join("; ")}` };
+  }
+  if (operationId !== transitionOperationId(repositoryId, issueNumber, epoch, transition, sourceCommentId)) {
+    return { ok: false, reason: `invalid gate_transition record: operation_id "${operationId}" does not bind repository/issue/epoch/transition/source` };
+  }
+  return {
+    ok: true,
+    commentId,
+    record: {
+      schema: RECORD_SCHEMA_VERSION,
+      kind: "gate_transition",
+      repository_id: repositoryId,
+      issue_number: issueNumber,
+      workflow_epoch: epoch,
+      dispatch_id: dispatchId,
+      transition,
+      from_label: fromLabel,
+      to_label: toLabel,
+      source_comment_id: sourceCommentId,
+      gate_login: gateLogin,
+      gate_user_id: gateUserId,
+      gate_version: gateVersion,
+      created_at: createdAt,
+      operation_id: operationId
+    }
+  };
+}
 function approvalRecordsConflict(records) {
   const byOperation = /* @__PURE__ */ new Map();
   const firstCommentIdByOperation = /* @__PURE__ */ new Map();
@@ -24994,6 +25164,25 @@ function approvalRecordsConflict(records) {
       return {
         conflict: true,
         reason: `conflicting approval records for operation ${record.operation_id}: comment ${firstCommentIdByOperation.get(record.operation_id)} vs ${commentId}`
+      };
+    }
+  }
+  return { conflict: false, reason: null };
+}
+function epochRecordsConflict(records) {
+  const byOperation = /* @__PURE__ */ new Map();
+  const firstCommentIdByOperation = /* @__PURE__ */ new Map();
+  for (const { commentId, record } of records) {
+    const existing = byOperation.get(record.operation_id);
+    if (existing === void 0) {
+      byOperation.set(record.operation_id, record);
+      firstCommentIdByOperation.set(record.operation_id, commentId);
+      continue;
+    }
+    if (existing.workflow_epoch !== record.workflow_epoch || existing.created_by !== record.created_by || existing.issued_by.toLowerCase() !== record.issued_by.toLowerCase()) {
+      return {
+        conflict: true,
+        reason: `conflicting workflow_epoch records for operation ${record.operation_id}: comment ${firstCommentIdByOperation.get(record.operation_id)} vs ${commentId} (epoch ${existing.workflow_epoch} vs ${record.workflow_epoch})`
       };
     }
   }
@@ -25018,51 +25207,355 @@ function parseRecords(kind, comments) {
   return { records, invalid };
 }
 
-// src/protocol/plan.ts
-var import_node_crypto2 = require("node:crypto");
-var DROPPED_LINE_PATTERNS = [
-  /^<!--\s*ai-workflow:[a-z-]+:v\d+\s*-->$/,
-  // workflow markers (plan/tracker/report/append)
-  /^<!--\s*gateflow:dispatch-id:\s*\S+\s*-->$/,
-  // dispatch-id anchor comment
-  /^<!--\s*gateflow:[a-z-]+:v\d+\s*-->$/
-  // gate record markers (workflow/approval/feedback)
-];
-function canonicalPlanContent(planCommentBody) {
-  const kept = planCommentBody.split(/(?:\r\n|\r|\n)/).filter((line) => {
-    const trimmed = line.trim();
-    return !DROPPED_LINE_PATTERNS.some((pattern) => pattern.test(trimmed));
-  }).join("\n");
-  return kept.trim();
+// src/protocol/workflow-chain.ts
+function loginIn(set, login) {
+  return set.has(login.trim().toLowerCase());
 }
-function sha256Hex(content) {
-  return (0, import_node_crypto2.createHash)("sha256").update(content, "utf8").digest("hex");
+function resolveCurrentEpoch(input) {
+  const { records, invalid } = parseRecords("workflow_epoch", input.comments);
+  if (invalid.length > 0) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: `unparsable workflow_epoch record(s) on #${input.issueNumber} (fail closed): ` + invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+    };
+  }
+  const accepted = [];
+  for (const entry of records) {
+    const { record, comment } = entry;
+    if (record.repository_id !== input.repositoryId || record.issue_number !== input.issueNumber) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: `workflow_epoch record #${entry.commentId} binds repository ${record.repository_id} issue #${record.issue_number}, but sits on repository ${input.repositoryId} issue #${input.issueNumber} (transplanted record \u2014 fail closed)`
+      };
+    }
+    const issuerOk = record.created_by === "gate" ? loginIn(input.gateIssuers, comment.user) : loginIn(input.bootstrapIssuers, comment.user);
+    if (!issuerOk) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: `workflow_epoch record #${entry.commentId} (created_by ${record.created_by}) was authored by "${comment.user}", who is not an allowed issuer for that class (forged epoch \u2014 fail closed)`
+      };
+    }
+    accepted.push(entry);
+  }
+  const conflict = epochRecordsConflict(accepted);
+  if (conflict.conflict) {
+    return { ok: false, conflict: true, reason: conflict.reason ?? "conflicting epoch records" };
+  }
+  const latest = accepted[accepted.length - 1];
+  if (latest === void 0) {
+    return { ok: false, conflict: false, reason: `no workflow_epoch record on #${input.issueNumber}` };
+  }
+  return {
+    ok: true,
+    epoch: latest.record.workflow_epoch,
+    commentId: latest.commentId,
+    record: latest.record
+  };
 }
-function planSha256(planCommentBody) {
-  return sha256Hex(canonicalPlanContent(planCommentBody));
+function findEpochRecordByOperationId(comments, operationId, expectedEpoch) {
+  const { records, invalid } = parseRecords("workflow_epoch", comments);
+  if (invalid.length > 0) {
+    return { found: false, conflict: false };
+  }
+  const matches = records.filter((entry) => entry.record.operation_id === operationId);
+  const first = matches[0];
+  if (first === void 0) {
+    return { found: false, conflict: false };
+  }
+  if (matches.some((entry) => entry.record.workflow_epoch !== first.record.workflow_epoch)) {
+    return { found: false, conflict: true };
+  }
+  if (expectedEpoch !== void 0 && first.record.workflow_epoch !== expectedEpoch) {
+    return { found: false, conflict: true };
+  }
+  return { found: true, record: first.record, commentId: first.commentId };
 }
+function currentPlanOf(comments) {
+  for (let i = comments.length - 1; i >= 0; i -= 1) {
+    const comment = comments[i];
+    if (comment !== void 0 && detectCommentMarker(comment.body) === MARKERS.plan) {
+      return comment;
+    }
+  }
+  return null;
+}
+function isTrustedAuthor(comment, trustedHumans) {
+  return trustedHumans.has(comment.user.trim().toLowerCase());
+}
+function acceptedFeedbackOfEpoch(input) {
+  const { records } = parseRecords("feedback_accepted", input.comments);
+  const byId = new Map(input.comments.map((comment) => [comment.id, comment]));
+  const accepted = [];
+  for (const entry of records) {
+    const { record } = entry;
+    if (record.workflow_epoch !== input.epoch) continue;
+    const comment = byId.get(record.feedback_comment_id);
+    if (comment === void 0) continue;
+    if (!isTrustedAuthor(comment, input.trustedHumans)) continue;
+    if (!isFeedbackCommand(comment.body.trim(), record.feedback_kind)) continue;
+    accepted.push({ record, comment });
+  }
+  return accepted;
+}
+function consumerRoundOf(acceptedFeedbackCount) {
+  return String(1 + acceptedFeedbackCount).padStart(2, "0");
+}
+function dispatchBindingOf(comment) {
+  const match = /<!--\s*gateflow:dispatch-id:\s*(\S+)\s*-->/.exec(comment.body);
+  const id = match?.[1];
+  if (id === void 0) return null;
+  return parseDispatchId(id);
+}
+function dispatchIdOf(comment) {
+  const match = /<!--\s*gateflow:dispatch-id:\s*(\S+)\s*-->/.exec(comment.body);
+  return match?.[1] ?? null;
+}
+function dispatchBindingFailures(binding, opts) {
+  if (binding.repositoryId !== opts.repositoryId || binding.issueNumber !== opts.issueNumber) {
+    return `dispatch binding targets repository ${binding.repositoryId} issue #${binding.issueNumber}, not this issue`;
+  }
+  if (binding.role !== opts.role) {
+    return `dispatch binding role is ${binding.role}, expected ${opts.role}`;
+  }
+  if (`wf_${binding.epochCode}` !== opts.epoch) {
+    return `dispatch binding epoch (wf_${binding.epochCode}) is not the current epoch (${opts.epoch})`;
+  }
+  return null;
+}
+function validateConsumerPlanSource(input) {
+  const binding = dispatchBindingOf(input.planComment);
+  if (binding === null) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: "plan comment carries no gateflow dispatch-id comment (no authorized consumer dispatch)"
+    };
+  }
+  const failure = dispatchBindingFailures(binding, {
+    repositoryId: input.repositoryId,
+    issueNumber: input.issueNumber,
+    epoch: input.epoch,
+    role: "consumer"
+  });
+  if (failure !== null) {
+    return { ok: false, conflict: false, reason: failure };
+  }
+  const expectedRevision = consumerRoundOf(input.acceptedFeedbackCount);
+  if (binding.revision !== expectedRevision) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: `plan dispatch revision ${binding.revision} is not the current consumer round ${expectedRevision}`
+    };
+  }
+  return { ok: true };
+}
+function validateApprovalBinding(input) {
+  const plan = currentPlanOf(input.comments);
+  if (plan === null) {
+    return { ok: false, conflict: false, reason: "no plan comment on the issue (no current plan)" };
+  }
+  const hash = planSha256(plan.body);
+  const { records: approvals, invalid } = parseRecords("approval", input.comments);
+  if (invalid.length > 0) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: "unparsable approval record(s) present (fail closed): " + invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+    };
+  }
+  const candidates = approvals.filter((entry) => {
+    const record = entry.record;
+    return loginIn(input.gateIssuers, entry.comment.user) && record.workflow_epoch === input.epoch && record.plan_comment_id === plan.id && record.plan_sha256 === hash && approvalAnchorFailure(record, input.comments, input.trustedHumans, input.repoOwner) === null;
+  });
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: `no valid Gate-issued approval record binds (epoch ${input.epoch}, plan ${plan.id}, sha256)`
+    };
+  }
+  const conflict = approvalRecordsConflict(candidates);
+  if (conflict.conflict) {
+    return { ok: false, conflict: true, reason: conflict.reason ?? "conflicting approval records" };
+  }
+  const approval = candidates[candidates.length - 1];
+  if (approval === void 0) {
+    return { ok: false, conflict: false, reason: "no approval record" };
+  }
+  return {
+    ok: true,
+    planCommentId: plan.id,
+    planSha256: hash,
+    approvalCommentId: approval.commentId
+  };
+}
+function validateExecutorChainSource(input) {
+  const binding = dispatchBindingOf(input.sourceComment);
+  if (binding === null) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: "source comment carries no gateflow dispatch-id comment (no authorized executor dispatch)"
+    };
+  }
+  const bindingFailure = dispatchBindingFailures(binding, {
+    repositoryId: input.repositoryId,
+    issueNumber: input.issueNumber,
+    epoch: input.epoch,
+    role: "executor"
+  });
+  if (bindingFailure !== null) {
+    return { ok: false, conflict: false, reason: bindingFailure };
+  }
+  const approvalBinding = validateApprovalBinding({
+    epoch: input.epoch,
+    repositoryId: input.repositoryId,
+    issueNumber: input.issueNumber,
+    comments: input.comments,
+    gateIssuers: input.gateIssuers,
+    trustedHumans: input.trustedHumans,
+    repoOwner: input.repoOwner
+  });
+  if (!approvalBinding.ok) {
+    return {
+      ok: false,
+      conflict: approvalBinding.conflict,
+      reason: approvalBinding.reason
+    };
+  }
+  if (binding.revision !== `p${approvalBinding.planCommentId}`) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: `dispatch revision ${binding.revision} does not bind the current plan comment ${approvalBinding.planCommentId}`
+    };
+  }
+  const dispatchId = dispatchIdOf(input.sourceComment);
+  if (dispatchId === null) {
+    return { ok: false, conflict: false, reason: "source comment carries no dispatch id" };
+  }
+  return {
+    ok: true,
+    dispatchId,
+    planCommentId: approvalBinding.planCommentId,
+    planSha256: approvalBinding.planSha256,
+    approvalCommentId: approvalBinding.approvalCommentId
+  };
+}
+function hasTrackerForDispatch(comments, dispatchId) {
+  return comments.some(
+    (comment) => detectCommentMarker(comment.body) === MARKERS.executionTracker && dispatchIdOf(comment) === dispatchId
+  );
+}
+function approvalAnchorFailure(record, comments, trustedHumans, repoOwner) {
+  const command = comments.find((entry) => entry.id === record.approval_command_comment_id);
+  if (command === void 0) {
+    return `approval command comment ${record.approval_command_comment_id} no longer exists`;
+  }
+  const match = /^\/approve (\d+)$/.exec(command.body.trim());
+  if (match === null || Number.parseInt(match[1] ?? "", 10) !== record.plan_comment_id) {
+    return `approval command comment ${command.id} is not an anchored "/approve ${record.plan_comment_id}"`;
+  }
+  if (!isTrustedAuthor(command, trustedHumans) && command.user.trim().toLowerCase() !== repoOwner.trim().toLowerCase()) {
+    return `approval command comment ${command.id} author "${command.user}" is not a trusted human`;
+  }
+  if (command.user.trim().toLowerCase() !== record.approved_by_login.trim().toLowerCase()) {
+    return `approval record approver "${record.approved_by_login}" does not match command author "${command.user}"`;
+  }
+  return null;
+}
+function parseTransitionRecords(comments) {
+  return parseRecords("gate_transition", comments);
+}
+
+// src/gate/authorization.ts
+function resolveAuthorizationContext(input) {
+  const epoch = resolveCurrentEpoch({
+    comments: input.comments,
+    repositoryId: input.repositoryId,
+    issueNumber: input.issueNumber,
+    gateIssuers: input.gateIssuers,
+    bootstrapIssuers: input.bootstrapIssuers
+  });
+  if (!epoch.ok) {
+    return { ok: false, reason: epoch.reason, conflict: epoch.conflict };
+  }
+  const plan = currentPlanOf(input.comments);
+  return {
+    ok: true,
+    context: {
+      repositoryId: input.repositoryId,
+      issueNumber: input.issueNumber,
+      epoch: epoch.epoch,
+      epochRecordCommentId: epoch.commentId,
+      planCommentId: plan?.id ?? null
+    }
+  };
+}
+function validateConsumerSource(input) {
+  const accepted = acceptedFeedbackOfEpoch({
+    comments: input.comments,
+    epoch: input.context.epoch,
+    trustedHumans: input.trustedHumans
+  });
+  return validateConsumerPlanSource({
+    planComment: input.planComment,
+    epoch: input.context.epoch,
+    repositoryId: input.context.repositoryId,
+    issueNumber: input.context.issueNumber,
+    acceptedFeedbackCount: accepted.length
+  });
+}
+function validateExecutorSource(input) {
+  return validateExecutorChainSource({
+    sourceComment: input.sourceComment,
+    epoch: input.context.epoch,
+    repositoryId: input.context.repositoryId,
+    issueNumber: input.context.issueNumber,
+    comments: input.comments,
+    gateIssuers: input.gateIssuers,
+    trustedHumans: input.trustedHumans,
+    repoOwner: input.repoOwner
+  });
+}
+
+// src/gate/version.ts
+var GATE_VERSION = "1.1.0";
 
 // src/gate/gate.ts
 var COMMAND_ACTIONS = /* @__PURE__ */ new Set(["created", "edited"]);
 async function runGate(input, client, log) {
   const identity = await client.getRepoIdentity({ owner: input.repoOwner, repo: input.repo });
-  const verdict = validateIdentityConfig({
+  const resolution = resolveIdentities({
     owner: identity.owner,
     ownerType: identity.ownerType,
     trustedHumans: parseLoginList(input.trustedHumansInput),
     trustedAgents: parseLoginList(input.trustedAgentsInput),
+    bootstrapDrivers: parseLoginList(input.bootstrapDriversInput ?? ""),
     requireExplicitHumans: input.requireExplicitHumansInput !== "false"
   });
-  if (!verdict.ok) {
-    log.warning(verdict.reason);
-    throw new Error(`gate identity configuration rejected: ${verdict.reason}`);
+  if (!resolution.ok) {
+    log.warning(resolution.reason);
+    throw new Error(`gate identity configuration rejected: ${resolution.reason}`);
   }
   if (input.eventName === "issue_comment") {
     if (input.eventAction === void 0 || !COMMAND_ACTIONS.has(input.eventAction)) {
       log.info(`issue_comment.${input.eventAction ?? "unknown"}: nothing to do.`);
       return;
     }
-    await handleComment(input, client, log);
+    const gateIdentity = await client.getAuthenticatedUser();
+    const scope = {
+      identities: resolution.identities,
+      gateIssuers: /* @__PURE__ */ new Set([gateIdentity.login.trim().toLowerCase()]),
+      bootstrapIssuers: resolution.identities.bootstrapDrivers,
+      gateLogin: gateIdentity.login,
+      gateUserId: gateIdentity.id
+    };
+    await handleComment(input, client, log, scope);
     return;
   }
   if (input.eventName === "issues") {
@@ -25110,18 +25603,18 @@ async function handleIssueEvent(input, client, log) {
       return;
   }
 }
-async function handleComment(input, client, log) {
+async function handleComment(input, client, log, scope) {
   const ref = issueRef(input);
   const parsed = parseCommand(input.commentBody);
   if (parsed !== null) {
-    await handleCommand(parsed, input, ref, client, log);
+    await handleCommand(parsed, input, ref, client, log, scope);
     return;
   }
-  await handleMarkerComment(input, ref, client, log);
+  await handleMarkerComment(input, ref, client, log, scope);
 }
-async function handleCommand(parsed, input, ref, client, log) {
-  if (!isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput)) {
-    const kind = isTrustedAgent(input.actor, input.trustedAgentsInput) ? "trusted agent" : "actor";
+async function handleCommand(parsed, input, ref, client, log, scope) {
+  if (!identitySetHas(scope.identities.humans, input.actor)) {
+    const kind = identitySetHas(scope.identities.agents, input.actor) ? "trusted agent" : "actor";
     log.info(
       `Command ${parsed.command} from non-Trusted-Human ${kind} "${input.actor}" on #${ref.issueNumber}: rejected (invalid owner command), silently ignored.`
     );
@@ -25140,16 +25633,16 @@ async function handleCommand(parsed, input, ref, client, log) {
   let accepted = false;
   switch (parsed.command) {
     case COMMANDS.aiPlan:
-      accepted = await applyAiPlan(ref, snapshot, input, client, log);
+      accepted = await applyAiPlan(ref, snapshot, input, client, log, scope);
       break;
     case COMMANDS.approve:
-      accepted = await applyApprove(ref, snapshot, parsed.args, input, client, log);
+      accepted = await applyApprove(ref, snapshot, parsed.args, input, client, log, scope);
       break;
     case COMMANDS.choose:
-      accepted = await applyChoose(ref, snapshot, parsed.args, input, client, log);
+      accepted = await applyChoose(ref, snapshot, parsed.args, input, client, log, scope);
       break;
     case COMMANDS.change:
-      accepted = await applyChange(ref, snapshot, parsed.args, input, client, log);
+      accepted = await applyChange(ref, snapshot, parsed.args, input, client, log, scope);
       break;
     case COMMANDS.cancel:
       accepted = await applyCancel(ref, snapshot, client, log);
@@ -25159,7 +25652,7 @@ async function handleCommand(parsed, input, ref, client, log) {
     await react(client, ref, input.commentId, "+1", log);
   }
 }
-async function handleMarkerComment(input, ref, client, log) {
+async function handleMarkerComment(input, ref, client, log, scope) {
   const inspection = inspectCommentMarkers(input.commentBody);
   if (inspection.kind === "none") {
     log.info(
@@ -25180,8 +25673,8 @@ async function handleMarkerComment(input, ref, client, log) {
     );
     return;
   }
-  const isHuman = isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput);
-  const isAgent = isTrustedAgent(input.actor, input.trustedAgentsInput);
+  const isHuman = identitySetHas(scope.identities.humans, input.actor);
+  const isAgent = identitySetHas(scope.identities.agents, input.actor);
   if (!isHuman && !isAgent) {
     log.warning(
       `Marker ${marker} on #${ref.issueNumber} by unknown actor "${input.actor}": markers are structural hints, never permission; treated as plain text, no transition.`
@@ -25200,63 +25693,326 @@ async function handleMarkerComment(input, ref, client, log) {
   const snapshot = readSnapshot(labels);
   switch (marker) {
     case MARKERS.plan:
-      await applyMarkerTransition(
-        ref,
-        snapshot,
-        STATES.planning,
-        STATES.review,
-        "T1",
-        "plan published",
-        publisher,
-        input.actor,
-        client,
-        log
-      );
+      await applyPlanMarker(ref, snapshot, input, publisher, client, log, scope);
       return;
     case MARKERS.executionTracker: {
       if (input.eventAction === "edited" && snapshot.status === "in-workflow" && (snapshot.state === STATES.working || snapshot.state === STATES.blocked)) {
         await applyTrackerStatusEdit(
           ref,
           snapshot,
-          input.commentBody ?? "",
+          input,
           publisher,
-          input.actor,
           client,
-          log
+          log,
+          scope
         );
         return;
       }
-      await applyMarkerTransition(
-        ref,
-        snapshot,
-        STATES.ready,
-        STATES.working,
-        "T3",
-        "execution tracker created",
-        publisher,
-        input.actor,
-        client,
-        log
-      );
+      await applyTrackerCreateMarker(ref, snapshot, input, publisher, client, log, scope);
       return;
     }
     case MARKERS.completionReport:
-      await applyMarkerTransition(
-        ref,
-        snapshot,
-        STATES.working,
-        STATES.done,
-        "T6",
-        "completion report published",
-        publisher,
-        input.actor,
-        client,
-        log
-      );
+      await applyCompletionMarker(ref, snapshot, input, publisher, client, log, scope);
       return;
   }
 }
-async function applyAiPlan(ref, snapshot, input, client, log) {
+function markerStatePrecondition(ref, snapshot, transitionId, description, publisherKind, actor, fromState, log) {
+  if (snapshot.status !== "in-workflow") {
+    log.warning(
+      `Invalid ${transitionId} marker on #${ref.issueNumber}: issue is not in the workflow (no ai:* label); no transition.`
+    );
+    return false;
+  }
+  if (snapshot.state !== fromState) {
+    log.warning(
+      `Invalid ${transitionId} marker on #${ref.issueNumber} (${description} by ${publisherKind} "${actor}"): requires state ${fromState}, current state is ${snapshot.state} (${snapshot.label}); no transition.`
+    );
+    return false;
+  }
+  if (!isLegalTransition(fromState, transitionTargetOf(transitionId, fromState))) {
+    log.warning(`Frozen transition table rejects ${transitionId}; no transition.`);
+    return false;
+  }
+  return true;
+}
+function transitionTargetOf(transitionId, from) {
+  switch (transitionId) {
+    case "T1":
+      return STATES.review;
+    case "T3":
+      return STATES.working;
+    case "T6":
+      return STATES.done;
+    case "T4":
+      return STATES.blocked;
+    case "T5":
+      return STATES.working;
+    case "T2":
+      return STATES.ready;
+    default:
+      return from;
+  }
+}
+async function applyPlanMarker(ref, snapshot, input, publisher, client, log, scope) {
+  if (!markerStatePrecondition(
+    ref,
+    snapshot,
+    "T1",
+    "plan published",
+    publisher,
+    input.actor,
+    STATES.planning,
+    log
+  )) {
+    return;
+  }
+  if (snapshot.status !== "in-workflow") {
+    return;
+  }
+  if (input.commentId === void 0) {
+    log.warning("T1: event carries no comment id; the source object cannot be anchored \u2014 no transition.");
+    return;
+  }
+  const comments = await client.listComments(ref);
+  const contextResolution = resolveAuthorizationContext({
+    comments,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    gateIssuers: scope.gateIssuers,
+    bootstrapIssuers: scope.bootstrapIssuers
+  });
+  if (!contextResolution.ok) {
+    log.warning(`Invalid T1 on #${ref.issueNumber}: ${contextResolution.reason}; no transition.`);
+    return;
+  }
+  const context3 = contextResolution.context;
+  const planComment = currentPlanOf(comments);
+  if (planComment === null || planComment.id !== input.commentId) {
+    log.warning(
+      `Invalid T1 on #${ref.issueNumber}: the commented plan is not the current plan comment; no transition.`
+    );
+    return;
+  }
+  const chain = validateConsumerSource({
+    context: context3,
+    planComment,
+    comments,
+    trustedHumans: scope.identities.humans
+  });
+  if (!chain.ok) {
+    log.warning(
+      `Invalid T1 on #${ref.issueNumber} (plan published by ${publisher} "${input.actor}"): ${chain.reason}; no transition.`
+    );
+    return;
+  }
+  await commitTransition(
+    ref,
+    {
+      repositoryId: input.repositoryId,
+      issueNumber: ref.issueNumber,
+      epoch: context3.epoch,
+      dispatchId: dispatchIdOf(planComment),
+      transition: "T1",
+      fromLabel: LABELS.planning,
+      toLabel: LABELS.review,
+      sourceCommentId: input.commentId
+    },
+    comments,
+    snapshot.label,
+    client,
+    log,
+    scope,
+    `plan accepted (dispatch ${dispatchIdOf(planComment) ?? "?"}, plan comment ${planComment.id})`
+  );
+}
+async function applyTrackerCreateMarker(ref, snapshot, input, publisher, client, log, scope) {
+  if (!markerStatePrecondition(
+    ref,
+    snapshot,
+    "T3",
+    "execution tracker created",
+    publisher,
+    input.actor,
+    STATES.ready,
+    log
+  )) {
+    return;
+  }
+  if (input.commentId === void 0) {
+    log.warning("T3: event carries no comment id; the source object cannot be anchored \u2014 no transition.");
+    return;
+  }
+  await authorizeExecutorTransition(
+    ref,
+    snapshot,
+    input,
+    publisher,
+    "T3",
+    LABELS.ready,
+    LABELS.working,
+    "execution tracker created",
+    { requireTracker: false },
+    client,
+    log,
+    scope
+  );
+}
+async function applyCompletionMarker(ref, snapshot, input, publisher, client, log, scope) {
+  if (!markerStatePrecondition(
+    ref,
+    snapshot,
+    "T6",
+    "completion report published",
+    publisher,
+    input.actor,
+    STATES.working,
+    log
+  )) {
+    return;
+  }
+  if (input.commentId === void 0) {
+    log.warning("T6: event carries no comment id; the source object cannot be anchored \u2014 no transition.");
+    return;
+  }
+  await authorizeExecutorTransition(
+    ref,
+    snapshot,
+    input,
+    publisher,
+    "T6",
+    LABELS.working,
+    LABELS.done,
+    "completion report published",
+    { requireTracker: true },
+    client,
+    log,
+    scope
+  );
+}
+async function authorizeExecutorTransition(ref, snapshot, input, publisher, transitionId, fromLabel, toLabel, description, opts, client, log, scope) {
+  if (input.commentId === void 0 || snapshot.status !== "in-workflow") {
+    return;
+  }
+  const comments = await client.listComments(ref);
+  const contextResolution = resolveAuthorizationContext({
+    comments,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    gateIssuers: scope.gateIssuers,
+    bootstrapIssuers: scope.bootstrapIssuers
+  });
+  if (!contextResolution.ok) {
+    log.warning(`Invalid ${transitionId} on #${ref.issueNumber}: ${contextResolution.reason}; no transition.`);
+    return;
+  }
+  const context3 = contextResolution.context;
+  const sourceComment = comments.find((comment) => comment.id === input.commentId);
+  if (sourceComment === void 0) {
+    log.warning(
+      `Invalid ${transitionId} on #${ref.issueNumber}: source comment ${input.commentId} not found on the issue; no transition.`
+    );
+    return;
+  }
+  const chain = validateExecutorSource({
+    context: context3,
+    sourceComment,
+    comments,
+    trustedHumans: scope.identities.humans,
+    repoOwner: input.repoOwner,
+    gateIssuers: scope.gateIssuers
+  });
+  if (!chain.ok) {
+    log.warning(
+      `Invalid ${transitionId} on #${ref.issueNumber} (${description} by ${publisher} "${input.actor}"): ${chain.reason}; no transition.`
+    );
+    return;
+  }
+  if (opts.requireTracker && !hasTrackerForDispatch(comments, chain.dispatchId)) {
+    log.warning(
+      `Invalid ${transitionId} on #${ref.issueNumber}: no execution tracker exists for dispatch ${chain.dispatchId} (orphan report); no transition.`
+    );
+    return;
+  }
+  await commitTransition(
+    ref,
+    {
+      repositoryId: input.repositoryId,
+      issueNumber: ref.issueNumber,
+      epoch: context3.epoch,
+      dispatchId: chain.dispatchId,
+      transition: transitionId,
+      fromLabel,
+      toLabel,
+      sourceCommentId: input.commentId
+    },
+    comments,
+    snapshot.label,
+    client,
+    log,
+    scope,
+    `${description} (dispatch ${chain.dispatchId}, plan ${chain.planCommentId}, approval #${chain.approvalCommentId})`
+  );
+}
+async function commitTransition(ref, spec, comments, currentLabel, client, log, scope, description) {
+  const record = {
+    schema: 2,
+    kind: "gate_transition",
+    repository_id: spec.repositoryId,
+    issue_number: spec.issueNumber,
+    workflow_epoch: spec.epoch,
+    dispatch_id: spec.dispatchId,
+    transition: spec.transition,
+    from_label: spec.fromLabel,
+    to_label: spec.toLabel,
+    source_comment_id: spec.sourceCommentId,
+    gate_login: scope.gateLogin,
+    gate_user_id: scope.gateUserId,
+    gate_version: GATE_VERSION,
+    created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    operation_id: transitionOperationId(
+      spec.repositoryId,
+      spec.issueNumber,
+      spec.epoch,
+      spec.transition,
+      spec.sourceCommentId
+    )
+  };
+  const { records: existingTransitions } = parseTransitionRecords(comments);
+  const sameOperation = existingTransitions.filter(
+    (entry) => entry.record.operation_id === record.operation_id
+  );
+  if (sameOperation.length > 0) {
+    const first = sameOperation[0];
+    const divergent = sameOperation.find(
+      (entry) => entry.record.workflow_epoch !== record.workflow_epoch || entry.record.dispatch_id !== record.dispatch_id || entry.record.transition !== record.transition || entry.record.from_label !== record.from_label || entry.record.to_label !== record.to_label || entry.record.source_comment_id !== record.source_comment_id
+    );
+    if (first === void 0 || divergent !== void 0) {
+      log.warning(
+        `Invalid ${spec.transition} on #${ref.issueNumber}: conflicting gate_transition record(s) for the same operation id \u2014 failing closed, no transition.`
+      );
+      return false;
+    }
+    log.info(
+      `Transition record #${first.commentId} already exists for ${record.operation_id}; adopting it (crash recovery: record persisted, label swap did not complete).`
+    );
+  } else {
+    const published = await publishRecord(client, ref, record, log);
+    if (!published.ok) {
+      log.warning(
+        `Invalid ${spec.transition} on #${ref.issueNumber}: transition record publish failed (${published.reason}); the migration is NOT performed (record-first, fail closed).`
+      );
+      return false;
+    }
+    log.info(`Transition record #${published.commentId} persisted for ${record.operation_id}.`);
+  }
+  await client.addLabels(ref, [spec.toLabel]);
+  await client.removeLabel(ref, currentLabel);
+  log.info(
+    `${spec.transition} on #${ref.issueNumber}: ${currentLabel} -> ${spec.toLabel} (${spec.fromLabel} -> ${spec.toLabel}, ${description}).`
+  );
+  return true;
+}
+async function applyAiPlan(ref, snapshot, input, client, log, scope) {
   if (snapshot.status === "ambiguous") {
     log.warning(
       `Invalid /ai-plan on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); no transition.`
@@ -25273,36 +26029,61 @@ async function applyAiPlan(ref, snapshot, input, client, log) {
     log.warning("Frozen transition table rejects T0; no transition.");
     return false;
   }
-  await client.addLabels(ref, [LABELS.planning]);
-  log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
+  if (input.commentId === void 0) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: event carries no comment id, so the epoch operation cannot be anchored deterministically; no record, no transition.`
+    );
+    return false;
+  }
+  const operationId = gateEpochOperationId(input.repositoryId, ref.issueNumber, input.commentId);
+  let comments;
   try {
-    const identity = await client.getAuthenticatedUser();
-    const epoch = newWorkflowEpoch();
+    comments = await client.listComments(ref);
+  } catch (err) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: cannot read comments for the epoch lookup (fail closed): ${err instanceof Error ? err.message : String(err)}`
+    );
+    return false;
+  }
+  const existingEpoch = findEpochRecordByOperationId(comments, operationId);
+  if (!existingEpoch.found && existingEpoch.conflict) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: CONFLICTING workflow_epoch records for ${operationId} (fail closed); no transition.`
+    );
+    return false;
+  }
+  let epoch;
+  if (existingEpoch.found) {
+    epoch = existingEpoch.record.workflow_epoch;
+    log.info(
+      `Epoch record #${existingEpoch.commentId} already exists for ${operationId}; adopting epoch ${epoch} (idempotent T0 recovery).`
+    );
+  } else {
     const record = {
       schema: 2,
       kind: "workflow_epoch",
       repository_id: input.repositoryId,
       issue_number: ref.issueNumber,
-      workflow_epoch: epoch,
+      workflow_epoch: newWorkflowEpoch(),
+      created_by: "gate",
       created_at: (/* @__PURE__ */ new Date()).toISOString(),
-      issued_by: identity.login,
-      operation_id: epochOperationId(input.repositoryId, ref.issueNumber, epoch)
+      issued_by: scope.gateLogin,
+      operation_id: operationId
     };
     const published = await publishRecord(client, ref, record, log);
-    if (published.ok) {
-      log.info(
-        `Epoch ${epoch} persisted as record comment #${published.commentId} (issued by ${identity.login}).`
-      );
-    } else {
+    if (!published.ok) {
       log.warning(
-        `Epoch record publish failed after T0 on #${ref.issueNumber}; the Driver bootstrap will reconcile a planning issue without an epoch record. Reason: ${published.reason}`
+        `Invalid /ai-plan on #${ref.issueNumber}: epoch record publish failed (${published.reason}). NO epoch \u2192 NO PLANNING (fail closed, V1.1 Phase 3): re-run /ai-plan to retry the record write.`
       );
+      return false;
     }
-  } catch (err) {
-    log.warning(
-      `Epoch bootstrap failed after T0 on #${ref.issueNumber} (Driver will reconcile): ` + (err instanceof Error ? err.message : String(err))
+    epoch = record.workflow_epoch;
+    log.info(
+      `Epoch ${epoch} persisted as record comment #${published.commentId} (created_by gate, issued by ${scope.gateLogin}).`
     );
   }
+  await client.addLabels(ref, [LABELS.planning]);
+  log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING), epoch ${epoch}.`);
   return true;
 }
 async function publishRecord(client, ref, record, log) {
@@ -25334,32 +26115,7 @@ async function publishRecord(client, ref, record, log) {
   }
   return { ok: true, commentId: createdId };
 }
-async function readCurrentEpoch(client, ref, prefetchedComments) {
-  let comments = prefetchedComments;
-  if (comments === void 0) {
-    try {
-      comments = await client.listComments(ref);
-    } catch (err) {
-      return {
-        ok: false,
-        reason: `cannot list comments for the epoch lookup: ${err instanceof Error ? err.message : String(err)}`
-      };
-    }
-  }
-  const { records, invalid } = parseRecords("workflow_epoch", comments);
-  if (invalid.length > 0) {
-    return {
-      ok: false,
-      reason: `unparsable workflow_epoch record(s) on #${ref.issueNumber} (fail closed): ` + invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
-    };
-  }
-  const latest = records[records.length - 1];
-  if (latest === void 0) {
-    return { ok: false, reason: `no workflow_epoch record on #${ref.issueNumber}` };
-  }
-  return { ok: true, record: latest.record, commentId: latest.commentId };
-}
-async function applyApprove(ref, snapshot, args, input, client, log) {
+async function applyApprove(ref, snapshot, args, input, client, log, scope) {
   if (snapshot.status === "ambiguous") {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); no transition.`
@@ -25401,7 +26157,7 @@ async function applyApprove(ref, snapshot, args, input, client, log) {
   if (referencedComment === null) {
     return false;
   }
-  const epoch = await readCurrentEpoch(client, ref, allComments);
+  const epoch = await readCurrentEpoch(ref, input, allComments, scope, log);
   if (!epoch.ok) {
     log.warning(`Invalid /approve on #${ref.issueNumber}: ${epoch.reason}; no record, no transition.`);
     return false;
@@ -25417,25 +26173,24 @@ async function applyApprove(ref, snapshot, args, input, client, log) {
       `/approve on #${ref.issueNumber}: payload carries no actor id; recording approved_by_id 0.`
     );
   }
-  const identity = await client.getAuthenticatedUser();
   const record = {
     schema: 2,
     kind: "approval",
     repository_id: input.repositoryId,
     issue_number: ref.issueNumber,
-    workflow_epoch: epoch.record.workflow_epoch,
+    workflow_epoch: epoch.epoch,
     plan_comment_id: args.planCommentId,
     plan_sha256: planSha256(referencedComment.body),
     approval_command_comment_id: input.commentId,
     approved_by_id: input.actorId ?? 0,
     approved_by_login: input.actor,
-    gate_login: identity.login,
-    gate_user_id: identity.id,
+    gate_login: scope.gateLogin,
+    gate_user_id: scope.gateUserId,
     created_at: (/* @__PURE__ */ new Date()).toISOString(),
     operation_id: approvalOperationId(
       input.repositoryId,
       ref.issueNumber,
-      epoch.record.workflow_epoch,
+      epoch.epoch,
       args.planCommentId
     )
   };
@@ -25477,21 +26232,59 @@ async function applyApprove(ref, snapshot, args, input, client, log) {
       `Approval record #${published.commentId} persisted for ${record.operation_id} (plan ${args.planCommentId}, sha256 ${record.plan_sha256}, approved by ${input.actor}).`
     );
   }
-  await client.addLabels(ref, [LABELS.ready]);
-  await client.removeLabel(ref, LABELS.review);
+  const transition = await commitTransition(
+    ref,
+    {
+      repositoryId: input.repositoryId,
+      issueNumber: ref.issueNumber,
+      epoch: epoch.epoch,
+      dispatchId: null,
+      transition: "T2",
+      fromLabel: LABELS.review,
+      toLabel: LABELS.ready,
+      sourceCommentId: input.commentId
+    },
+    allComments,
+    snapshot.label,
+    client,
+    log,
+    scope,
+    `approval accepted (plan ${inspection.planCommentId}, approved by ${input.actor})`
+  );
+  if (!transition) {
+    return false;
+  }
   log.info(
     `T2 on #${ref.issueNumber}: ${LABELS.review} -> ${LABELS.ready} (REVIEW -> READY approving plan comment ${inspection.planCommentId}, sha256-bound approval record).`
   );
   return true;
 }
-async function acceptFeedbackEvent(ref, feedbackKind, input, client, log) {
+async function readCurrentEpoch(ref, input, prefetchedComments, scope, log) {
+  const resolution = resolveAuthorizationContext({
+    comments: prefetchedComments,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    gateIssuers: scope.gateIssuers,
+    bootstrapIssuers: scope.bootstrapIssuers
+  });
+  if (!resolution.ok) {
+    return { ok: false, reason: resolution.reason };
+  }
+  return {
+    ok: true,
+    epoch: resolution.context.epoch,
+    commentId: resolution.context.epochRecordCommentId
+  };
+}
+async function acceptFeedbackEvent(ref, feedbackKind, input, client, log, scope) {
   if (input.commentId === void 0) {
     log.warning(
       `/${feedbackKind} on #${ref.issueNumber}: event carries no comment id; the accepted event cannot be anchored \u2014 fail closed, no record, no reaction.`
     );
     return false;
   }
-  const epoch = await readCurrentEpoch(client, ref);
+  const allComments = await client.listComments(ref);
+  const epoch = await readCurrentEpoch(ref, input, allComments, scope, log);
   if (!epoch.ok) {
     log.warning(`/${feedbackKind} on #${ref.issueNumber}: ${epoch.reason}; no record, no reaction.`);
     return false;
@@ -25499,11 +26292,10 @@ async function acceptFeedbackEvent(ref, feedbackKind, input, client, log) {
   const operationId = feedbackOperationId(
     input.repositoryId,
     ref.issueNumber,
-    epoch.record.workflow_epoch,
+    epoch.epoch,
     input.commentId
   );
-  const comments = await client.listComments(ref);
-  const { records, invalid } = parseRecords("feedback_accepted", comments);
+  const { records, invalid } = parseRecords("feedback_accepted", allComments);
   if (invalid.length > 0) {
     log.warning(
       `/${feedbackKind} on #${ref.issueNumber}: unparsable feedback record(s) present (fail closed): ${invalid.map((e) => `#${e.commentId} (${e.reason})`).join(", ")}.`
@@ -25516,18 +26308,17 @@ async function acceptFeedbackEvent(ref, feedbackKind, input, client, log) {
     );
     return true;
   }
-  const identity = await client.getAuthenticatedUser();
   const record = {
     schema: 2,
     kind: "feedback_accepted",
     repository_id: input.repositoryId,
     issue_number: ref.issueNumber,
-    workflow_epoch: epoch.record.workflow_epoch,
+    workflow_epoch: epoch.epoch,
     event_id: `fe${input.commentId}`,
     feedback_comment_id: input.commentId,
     feedback_kind: feedbackKind,
-    gate_login: identity.login,
-    gate_user_id: identity.id,
+    gate_login: scope.gateLogin,
+    gate_user_id: scope.gateUserId,
     created_at: (/* @__PURE__ */ new Date()).toISOString(),
     operation_id: operationId
   };
@@ -25539,11 +26330,11 @@ async function acceptFeedbackEvent(ref, feedbackKind, input, client, log) {
     return false;
   }
   log.info(
-    `Feedback event accepted (record #${published.commentId}, ${feedbackKind} on comment ${input.commentId}, epoch ${epoch.record.workflow_epoch}).`
+    `Feedback event accepted (record #${published.commentId}, ${feedbackKind} on comment ${input.commentId}, epoch ${epoch.epoch}).`
   );
   return true;
 }
-async function applyChoose(ref, snapshot, args, input, client, log) {
+async function applyChoose(ref, snapshot, args, input, client, log, scope) {
   if (snapshot.status === "ambiguous") {
     log.warning(
       `Invalid /choose on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); ignored.`
@@ -25556,7 +26347,7 @@ async function applyChoose(ref, snapshot, args, input, client, log) {
     );
     return false;
   }
-  const accepted = await acceptFeedbackEvent(ref, "choose", input, client, log);
+  const accepted = await acceptFeedbackEvent(ref, "choose", input, client, log, scope);
   if (accepted) {
     log.info(
       `/choose on #${ref.issueNumber} accepted (REVIEW): question "${args.questionId}", choice "${args.choice}" forwarded to the Consumer as untrusted data; no state migration.`
@@ -25564,7 +26355,7 @@ async function applyChoose(ref, snapshot, args, input, client, log) {
   }
   return accepted;
 }
-async function applyChange(ref, snapshot, args, input, client, log) {
+async function applyChange(ref, snapshot, args, input, client, log, scope) {
   if (snapshot.status === "ambiguous") {
     log.warning(
       `Invalid /change on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); ignored.`
@@ -25577,7 +26368,7 @@ async function applyChange(ref, snapshot, args, input, client, log) {
     );
     return false;
   }
-  const accepted = await acceptFeedbackEvent(ref, "change", input, client, log);
+  const accepted = await acceptFeedbackEvent(ref, "change", input, client, log, scope);
   if (accepted) {
     log.info(
       `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the Consumer as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`
@@ -25601,54 +26392,70 @@ async function applyCancel(ref, snapshot, client, log) {
   );
   return true;
 }
-async function applyMarkerTransition(ref, snapshot, fromState, toState, transitionId, description, publisherKind, actor, client, log) {
-  if (snapshot.status !== "in-workflow") {
-    log.warning(
-      `Invalid ${transitionId} marker on #${ref.issueNumber}: issue is not in the workflow (no ai:* label); no transition.`
-    );
-    return;
-  }
-  if (snapshot.state !== fromState) {
-    log.warning(
-      `Invalid ${transitionId} marker on #${ref.issueNumber} (${description} by ${publisherKind} "${actor}"): requires state ${fromState}, current state is ${snapshot.state} (${snapshot.label}); no transition.`
-    );
-    return;
-  }
-  if (!isLegalTransition(fromState, toState)) {
-    log.warning(`Frozen transition table rejects ${transitionId}; no transition.`);
-    return;
-  }
-  const toLabel = STATE_TO_LABEL[toState];
-  await client.addLabels(ref, [toLabel]);
-  await client.removeLabel(ref, snapshot.label);
-  log.info(
-    `${transitionId} on #${ref.issueNumber}: ${snapshot.label} -> ${toLabel} (${fromState} -> ${toState}, ${description} by ${publisherKind} "${actor}").`
-  );
-}
-async function applyTrackerStatusEdit(ref, snapshot, body, publisherKind, actor, client, log) {
+async function applyTrackerStatusEdit(ref, snapshot, input, publisherKind, client, log, scope) {
   if (snapshot.status !== "in-workflow") {
     log.warning(
       `Tracker status edit on #${ref.issueNumber}: issue state is ${describeSnapshot(snapshot)}; no transition.`
     );
     return;
   }
+  const body = input.commentBody ?? "";
+  if (input.commentId === void 0) {
+    log.warning("Tracker edit: event carries no comment id; the source cannot be anchored.");
+    return;
+  }
+  const comments = await client.listComments(ref);
+  const contextResolution = resolveAuthorizationContext({
+    comments,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    gateIssuers: scope.gateIssuers,
+    bootstrapIssuers: scope.bootstrapIssuers
+  });
+  if (!contextResolution.ok) {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${input.actor}": ${contextResolution.reason}; no transition.`
+    );
+    return;
+  }
+  const sourceComment = comments.find((comment) => comment.id === input.commentId);
+  if (sourceComment === void 0) {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber}: source comment ${input.commentId} not found on the issue; no transition.`
+    );
+    return;
+  }
+  const chain = validateExecutorSource({
+    context: contextResolution.context,
+    sourceComment,
+    comments,
+    trustedHumans: scope.identities.humans,
+    repoOwner: input.repoOwner,
+    gateIssuers: scope.gateIssuers
+  });
+  if (!chain.ok) {
+    log.warning(
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${input.actor}" rejected (not the current executor chain): ${chain.reason}; no transition.`
+    );
+    return;
+  }
   const inspection = parseTrackerStatus(body);
   if (inspection.kind === "absent") {
     log.warning(
-      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": no parsable **Status:** line; T4 / T5 need the exact machine value (In Progress / Blocked / Completed); no transition.`
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actorName(input)}": no parsable **Status:** line; T4 / T5 need the exact machine value (In Progress / Blocked / Completed); no transition.`
     );
     return;
   }
   if (inspection.kind === "unknown") {
     log.warning(
-      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "${inspection.raw}" is not a machine value (In Progress / Blocked / Completed); no transition.`
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actorName(input)}": Status "${inspection.raw}" is not a machine value (In Progress / Blocked / Completed); no transition.`
     );
     return;
   }
   const status = inspection.status;
   if (status === "Completed") {
     log.info(
-      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "Completed" never triggers a transition; completion goes exclusively through the completion-report marker (T6).`
+      `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actorName(input)}": Status "Completed" never triggers a transition; completion goes exclusively through the completion-report marker (T6).`
     );
     return;
   }
@@ -25657,10 +26464,24 @@ async function applyTrackerStatusEdit(ref, snapshot, body, publisherKind, actor,
       log.warning("Frozen transition table rejects T4; no transition.");
       return;
     }
-    await client.addLabels(ref, [LABELS.blocked]);
-    await client.removeLabel(ref, snapshot.label);
-    log.info(
-      `T4 on #${ref.issueNumber}: ${snapshot.label} -> ${LABELS.blocked} (WORKING -> BLOCKED, tracker Status "Blocked" edited by ${publisherKind} "${actor}").`
+    await commitTransition(
+      ref,
+      {
+        repositoryId: input.repositoryId,
+        issueNumber: ref.issueNumber,
+        epoch: contextResolution.context.epoch,
+        dispatchId: chain.dispatchId,
+        transition: "T4",
+        fromLabel: LABELS.working,
+        toLabel: LABELS.blocked,
+        sourceCommentId: input.commentId
+      },
+      comments,
+      snapshot.label,
+      client,
+      log,
+      scope,
+      `tracker Status "Blocked" edited by ${publisherKind} "${actorName(input)}"`
     );
     return;
   }
@@ -25669,16 +26490,33 @@ async function applyTrackerStatusEdit(ref, snapshot, body, publisherKind, actor,
       log.warning("Frozen transition table rejects T5; no transition.");
       return;
     }
-    await client.addLabels(ref, [LABELS.working]);
-    await client.removeLabel(ref, snapshot.label);
-    log.info(
-      `T5 on #${ref.issueNumber}: ${snapshot.label} -> ${LABELS.working} (BLOCKED -> WORKING, tracker Status "In Progress" edited by ${publisherKind} "${actor}").`
+    await commitTransition(
+      ref,
+      {
+        repositoryId: input.repositoryId,
+        issueNumber: ref.issueNumber,
+        epoch: contextResolution.context.epoch,
+        dispatchId: chain.dispatchId,
+        transition: "T5",
+        fromLabel: LABELS.blocked,
+        toLabel: LABELS.working,
+        sourceCommentId: input.commentId
+      },
+      comments,
+      snapshot.label,
+      client,
+      log,
+      scope,
+      `tracker Status "In Progress" edited by ${publisherKind} "${actorName(input)}"`
     );
     return;
   }
   log.info(
-    `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actor}": Status "${status}" already matches the current state ${snapshot.state} (${snapshot.label}); no transition.`
+    `Tracker edit on #${ref.issueNumber} by ${publisherKind} "${actorName(input)}": Status "${status}" already matches the current state ${snapshot.state} (${snapshot.label}); no transition.`
   );
+}
+function actorName(input) {
+  return input.actor;
 }
 async function react(client, ref, commentId, content, log) {
   if (commentId === void 0) {
@@ -25860,47 +26698,66 @@ function createGitHubClient(octokit) {
   return new OctokitGitHubClient(octokit);
 }
 
-// src/index.ts
-var GATE_VERSION = "1.0.0";
-function readInputs() {
-  return {
-    trustedHumans: getInput("trusted-humans"),
-    trustedAgents: getInput("trusted-agents"),
-    requireExplicitHumans: getInput("require-explicit-humans") || "true",
-    token: getInput("github-token", { required: true })
-  };
-}
-function readGateInput() {
-  const payload = context2.payload;
+// src/gate/input.ts
+function gateInputFromPayload(eventName, payload, overrides) {
   const issueNumber = payload.issue?.number;
   if (typeof issueNumber !== "number") {
-    warning(
-      `Event ${context2.eventName} carries no issue payload; nothing to do. Check the workflow "on:" configuration.`
-    );
     return null;
   }
   const commentUser = payload.comment?.user;
-  const actor = commentUser?.login ?? payload.sender?.login ?? payload.issue?.user?.login ?? "";
-  const actorId = commentUser?.id ?? payload.sender?.id ?? payload.issue?.user?.id;
-  const inputs = readInputs();
+  const actor = overrides.actor ?? commentUser?.login ?? payload.sender?.login ?? payload.issue?.user?.login ?? "";
   return {
-    eventName: context2.eventName,
+    eventName,
     eventAction: payload.action,
     actor,
-    actorId,
+    actorId: commentUser?.id ?? payload.sender?.id ?? payload.issue?.user?.id,
     repositoryId: payload.repository?.id ?? 0,
-    repoOwner: context2.repo.owner,
-    repo: context2.repo.repo,
+    repoOwner: overrides.repoOwner,
+    repo: overrides.repo,
     issueNumber,
     commentId: payload.comment?.id,
     commentBody: payload.comment?.body,
     // Observability only: the gate parses this for the Producer schema block
     // (issues.opened); it never derives state or permissions from it.
     issueBody: payload.issue?.body,
-    trustedHumansInput: inputs.trustedHumans,
-    trustedAgentsInput: inputs.trustedAgents,
-    requireExplicitHumansInput: inputs.requireExplicitHumans
+    trustedHumansInput: overrides.trustedHumansInput,
+    trustedAgentsInput: overrides.trustedAgentsInput,
+    bootstrapDriversInput: overrides.bootstrapDriversInput ?? "",
+    requireExplicitHumansInput: overrides.requireExplicitHumansInput ?? "true"
   };
+}
+
+// src/index.ts
+function readInputs() {
+  return {
+    trustedHumans: getInput("trusted-humans"),
+    trustedAgents: getInput("trusted-agents"),
+    bootstrapDrivers: getInput("bootstrap-drivers"),
+    requireExplicitHumans: getInput("require-explicit-humans") || "true",
+    token: getInput("github-token", { required: true })
+  };
+}
+function readGateInput() {
+  const inputs = readInputs();
+  const extracted = gateInputFromPayload(
+    context2.eventName,
+    context2.payload,
+    {
+      actor: void 0,
+      repoOwner: context2.repo.owner,
+      repo: context2.repo.repo,
+      trustedHumansInput: inputs.trustedHumans,
+      trustedAgentsInput: inputs.trustedAgents,
+      bootstrapDriversInput: inputs.bootstrapDrivers,
+      requireExplicitHumansInput: inputs.requireExplicitHumans
+    }
+  );
+  if (extracted === null) {
+    warning(
+      `Event ${context2.eventName} carries no issue payload; nothing to do. Check the workflow "on:" configuration.`
+    );
+  }
+  return extracted;
 }
 function actionsLogger() {
   return {

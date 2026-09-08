@@ -13,6 +13,7 @@ import * as nodePath from 'node:path';
 
 import type { CommentDetail } from '../../src/github/client';
 import type { Dispatch, WorkspaceContext } from '../../src/workspace/protocol';
+import { transitionRecord } from './helpers';
 import { atomicWriteJson, sha256Hex } from '../../src/workspace/inbox';
 import { syncAll, syncDispatch } from '../../src/driver/sync';
 import { readReceipt } from '../../src/workspace/outbox';
@@ -231,9 +232,10 @@ describe('preflight authorization gates (hardening)', () => {
         repository_id: 123,
         issue_number: ISSUE,
         workflow_epoch: newEpoch,
+        created_by: 'gate',
         created_at: '2026-09-06T18:00:00Z',
         issued_by: 'github-actions[bot]',
-        operation_id: `epoch:123:${ISSUE}:${newEpoch}`,
+        operation_id: `epoch:123:${ISSUE}:c9002`,
       });
       const outcome = await syncDispatch(deps, client.repository, CONSUMER_ID);
       expect(outcome.action).toBe('obsolete');
@@ -515,9 +517,26 @@ describe('executor sync — completion (scenario 5 tail)', () => {
       }));
       await syncDispatch(deps, client.repository, EXECUTOR_ID);
       expect((await readReceipt(fixture.paths, EXECUTOR_ID))?.status).toBe('published');
+      const reportCommentId = (await readReceipt(fixture.paths, EXECUTOR_ID))?.published_comment_id;
 
-      // The Gate accepted the report (T6): label moved to done.
+      // V1.1 Phase 5 NEGATIVE: the bare `ai:done` label is NEVER acceptance.
       client.issues.get(ISSUE)!.labels = ['ai:done'];
+      const notAccepted = await syncDispatch(deps, client.repository, EXECUTOR_ID);
+      expect(notAccepted.action).toBe('skipped'); // replay guard keeps it published
+      expect((await readReceipt(fixture.paths, EXECUTOR_ID))?.status).toBe('published');
+
+      // The Gate accepted the report (T6): the gate_transition record binds
+      // (epoch, dispatch, T6, THIS report comment) — then the label moved.
+      client.addGateRecord(ISSUE, transitionRecord({
+        repositoryId: 123,
+        issueNumber: ISSUE,
+        epoch: EPOCH,
+        transition: 'T6',
+        fromLabel: 'ai:working',
+        toLabel: 'ai:done',
+        sourceCommentId: reportCommentId ?? -1,
+        dispatchId: EXECUTOR_ID,
+      }) as never);
       const accepted = await syncDispatch(deps, client.repository, EXECUTOR_ID);
       expect(accepted.action).toBe('accepted');
       expect((await readReceipt(fixture.paths, EXECUTOR_ID))?.status).toBe('accepted');

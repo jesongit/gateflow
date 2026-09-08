@@ -18,7 +18,7 @@ import {
 import {
   approvalOperationId,
   buildRecordBody,
-  epochOperationId,
+  gateEpochOperationId,
   feedbackOperationId,
   type ApprovalRecord,
   type FeedbackAcceptedRecord,
@@ -74,7 +74,8 @@ function epochRecord(epoch: string = EPOCH, issuedBy: string = GATE): WorkflowEp
     workflow_epoch: epoch,
     created_at: '2026-09-06T10:00:00Z',
     issued_by: issuedBy,
-    operation_id: epochOperationId(REPO_ID, ISSUE_NUMBER, epoch),
+    created_by: 'gate' as const,
+    operation_id: gateEpochOperationId(REPO_ID, ISSUE_NUMBER, 42),
   };
 }
 

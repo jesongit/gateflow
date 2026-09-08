@@ -321,3 +321,100 @@ Operation ID（冻结语法）：`epoch:<repo>:<issue>:<epoch>`、`approval:<rep
 ### 9.4 Organization 身份规则（GF-H10）
 
 owner type 必须经 API 核实（`repos.get → owner.type`，绝不信事件 payload）：非 User 类型仓库且 `trusted-humans` 为空 → **Gate 拒绝运行**（任何迁移前即失败）；`trusted-humans ∩ trusted-agents ≠ ∅` → 拒绝运行。Driver 侧对称：org 仓库且 `trusted_humans` 为空 → 拒绝启动。
+
+## 10. V1.1 Correctness Hardening（冻结）
+
+> 本节为 V1.1 收尾轮新增的规范面；与前文（含 §9）冲突时以本节为准。单一实现：
+> `src/protocol/workflow-chain.ts`（授权链）、`src/protocol/commands.ts`（命令语法）、
+> `src/protocol/identity.ts`（身份解析）——Gate 与 Driver 共享，禁止任何一侧私有第二套。
+
+### 10.1 Gate Dispatch Authorization（P0：执行链授权）
+
+Marker 触发的迁移（T1 / T3 / T4 / T5 / T6）不再满足于「合法 marker + 可信发布者 + 当前标签」。
+每次迁移还必须通过 **Dispatch 授权链** 校验（`src/gate/authorization.ts` 适配，`workflow-chain.ts` 实现）：
+
+- **T1（Plan → REVIEW）**：Plan 评论必须内嵌 dispatch-id（`<!-- gateflow:dispatch-id: ... -->`），
+  绑定 **当前 epoch**、`role=consumer`、`revision = 当前 consumer 轮次`
+  （= 1 + 本 epoch 已接受 feedback 事件数；T1 只可能发生在 PLANNING，故恒为 `01`），且该评论必须是当前 Plan。
+- **T3（Tracker → WORKING）**：Tracker 评论的 dispatch 必须绑定当前 epoch、`role=executor`、
+  `revision = p<当前 Plan 评论 id>`，且存在 **Gate 签发的 approval 记录** 精确绑定
+  （epoch + plan id + plan_sha256 + 锚定的 Trusted Human `/approve` 完好）。
+- **T4 / T5（Blocked / Resume）**：被编辑的 Tracker 必须仍属于当前 executor 链（同 dispatch、同 epoch）。
+  旧轮次 Tracker 的编辑**绝不**影响新一轮。
+- **T6（Report → DONE）**：Report 同 T3 链校验，且其 dispatch 必须已产出 Tracker（孤儿 Report 不能 DONE）。
+
+失败一律为记录日志的 no-op（无迁移、无记录、无 ✅）。Driver 侧语义相同但独立执行
+（**Driver Preflight ≠ Gate Authorization**：Driver 可提前拦截，Gate 必须重新证明）。
+
+### 10.2 Epoch Record Trust（Epoch 只可信来源）
+
+- **签发者类别**（新冻结字段 `created_by`）：
+  - `"gate"` —— Gate 本身签发（T0）；记录评论作者必须是 Gate 身份；
+  - `"driver_bootstrap"` —— 显式 Bootstrap Driver 身份（Producer 提交的 planning issue 引导）；
+    记录作者必须在 Bootstrap Driver 允许名单内（Gate 输入 `bootstrap-drivers` / Driver 配置
+    `bootstrap_drivers`；缺省规则：个人仓库（owner type=User，API 核实）默认 owner，其余一律无默认 = 禁止）。
+  - 普通用户与 **Trusted Agent 伪造的 epoch 均无效**；`repository_id` / `issue_number`
+    与所在 issue 不符（移植记录）同样 fail closed。
+- **确定性 Operation ID（V1.1 修订 §9 的 epoch 语法）**：
+  - Gate T0：`epoch:<repo>:<issue>:c<命令评论id>`；
+  - Driver 引导：`epoch:<repo>:<issue>:bootstrap`。
+  epoch **随机值不再进入 operation id**——重投的 `/ai-plan` 事件重新推导出同一 id，
+  走 search-adopt 恢复，永不铸造第二个 epoch。
+- **冲突**：同一 operation id 下出现不同 epoch 值 / 不同签发类别 / 不同签发者 → **fail closed**（绝不取最新）。
+- **解析**：任何不可解析的 epoch 记录 → 整个 issue fail closed（append-only 语义不变）。
+
+### 10.3 T0 Record-First（先固化 epoch，后迁移）
+
+`/ai-plan` 的签发顺序冻结为：状态前置（workflow 外 + 合法 T0）→ 按确定性 operation id
+search（命中即 adopt；冲突即 fail closed）→ 未命中则**发布并回读校验** epoch 记录 → 才添加
+`ai:planning`。记录写失败 = 不进入 PLANNING、无 ✅（fail closed）。新一轮绝不沿用旧轮次 epoch。
+
+### 10.4 gate_transition Record（迁移记录）
+
+每次被接受的 T1–T6 迁移，Gate 在**标签交换之前**发布一条迁移记录
+（marker `<!-- gateflow:transition:v2 -->`，签发者**仅 Gate**）：
+
+```json
+{
+  "schema": 2,
+  "kind": "gate_transition",
+  "repository_id": 123,
+  "issue_number": 7,
+  "workflow_epoch": "wf_...",
+  "dispatch_id": "gf_r..._executor_p...",
+  "transition": "T6",
+  "from_label": "ai:working",
+  "to_label": "ai:done",
+  "source_comment_id": 900123,
+  "gate_login": "...",
+  "gate_user_id": 1,
+  "gate_version": "1.1.0",
+  "created_at": "...",
+  "operation_id": "transition:<repo>:<issue>:<epoch>:<transition>:<source_comment_id>"
+}
+```
+
+- 记录写失败 = **不迁移**（record-first，与 T2 approval 记录同一约定）；标签已迁而记录未达的崩溃
+  由同 operation id 的 search-adopt 恢复；同 operation id 内容冲突 → fail closed。
+- **Driver receipt 的 `accepted` 必须绑定迁移记录**：`TransitionRecord.source_comment_id ==
+  receipt.published_comment_id` 且 epoch、dispatch_id、transition 全部一致。`Issue == ai:done →
+  accepted` 被禁止；epoch/dispatch 已变化时旧 receipt 走 `obsolete`。
+- `dispatch_id` 对无 dispatch 的迁移（T2）为 `null`。
+
+### 10.5 Operation ID 统一（Idempotent Publishing with Remote Reconciliation）
+
+所有远端创建统一 Operation ID 语义：准备 id → 远端按 id 搜索 → 完全一致则 adopt → 冲突则
+fail closed → 不存在则创建（超时后下一轮按 id 搜索恢复）。适用对象：Issue Submit（`submit:`）、
+Epoch Record、Plan / Tracker / Report（marker + dispatch-id 对账）、Approval、Feedback、
+Transition Record。同一逻辑操作的重试永不铸造新 id。
+
+### 10.6 共享命令语法与身份解析
+
+- 命令解析（五条冻结命令的 exact/anchored 正则与语义）唯一实现于 `src/protocol/commands.ts`；
+  Driver 的 feedback 投影与 approval 锚定复验共用同一语法（Phase 8：Gate / Driver 不再各自解析）。
+- Consumer Revision 基于本 epoch 的 **Accepted Feedback Sequence**（feedback_accepted 记录且其
+  命令评论仍存在、仍解析、作者仍可信）；被拒绝 / 重复 / 旧 epoch / 纯文本评论永不计数。
+- 身份解析唯一实现于 `src/protocol/identity.ts`：Effective Humans（个人仓库 = owner + 配置；
+  其他 = 仅配置）、Effective Agents（仅配置）、Bootstrap Drivers（配置；个人仓库缺省 owner）、
+  Human ∩ Agent = ∅、Bootstrap Driver ∩ Human = ∅（个人仓库 owner 缺省例外）。
+  Gate / Driver / Bootstrap 三方共用同一解析结果（Phase 9）。

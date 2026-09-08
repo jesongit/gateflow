@@ -2,6 +2,8 @@
 
 > 本指南面向**第一次接触 GateFlow** 的人：只照本文档操作，就能把自己的项目仓库接入 GateFlow 并跑通第一个 Issue 闭环。全程**不需要配置远端服务器、不需要额外部署任何东西**。
 >
+> V1.1 起：真实 GitHub E2E 与 ChatGPT/ZCode 客户端 E2E 的操作手册见 [docs/e2e.md](docs/e2e.md)。
+>
 > V1 接入分两部分：
 >
 > - **Part 1 · Gate 接入（GitHub 侧）**：让目标仓库的 workflow 能运行确定性 Gate——GateFlow 本体可被引用、bootstrap 初始化、Action 输入配置（第 1~5 章）；

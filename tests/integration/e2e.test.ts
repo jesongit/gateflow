@@ -51,7 +51,7 @@ const ISSUE = 101;
 /** The deterministic fixture epoch; its code rides inside every dispatch id. */
 const EPOCH = testEpoch(ISSUE);
 /** Gate record comments (schema 2) are audit entries, not content. */
-const RECORD_MARKER = /<!-- gateflow:(workflow|approval|feedback):v2/;
+const RECORD_MARKER = /<!-- gateflow:(workflow|approval|feedback|transition):v2/;
 const contentComments = (client: FakeDriverClient, issueNumber: number) =>
   (client.issues.get(issueNumber)?.comments ?? []).filter((c) => !RECORD_MARKER.test(c.body));
 
@@ -373,14 +373,20 @@ async function exerciseLifecycle(combo: Combo): Promise<void> {
     expect(comments.map((c) => auditKind(c.body))).toEqual([
       'other', // workflow_epoch record (schema 2 bootstrap)
       'plan',
+      'other', // V1.1: T1 gate_transition record (plan accepted)
       'human-feedback',
       'other', // feedback_accepted record
-      'plan',
+      'plan', // feedback round re-plan: published INTO REVIEW, no T1 re-fire
       'human-approval', // stale /approve (superseded plan) — no record, no transition
       'human-approval', // current /approve → T2
       'other', // approval record (the durable authorization fact)
+      'other', // V1.1: T2 gate_transition record
       'tracker',
+      'other', // V1.1: T3 gate_transition record
+      'other', // V1.1: T4 gate_transition record (tracker → Blocked)
+      'other', // V1.1: T5 gate_transition record (tracker → In Progress)
       'completion',
+      'other', // V1.1: T6 gate_transition record
     ]);
     for (let i = 1; i < comments.length; i += 1) {
       expect(comments[i]?.id).toBeGreaterThan(comments[i - 1]?.id ?? 0); // id order

@@ -62,7 +62,9 @@ import {
 } from '../workspace/outbox';
 import { OversizedFileError, MAX_FILE_BYTES, validateOutboxResult, validateOutboxStatus } from '../workspace/validation';
 import { canonicalPlanContent } from '../protocol/plan';
+import { transitionMatchesReceipt } from '../protocol/workflow-chain';
 import { runPreflight, type SyncSnapshot } from './preflight';
+import { bootstrapIssuersFor } from './discovery';
 import { releaseLock, executorLockFile, DRIVER_LOCK_HOLDER } from './workspace-lock';
 import type { Dispatch } from '../workspace/protocol';
 import type { DriverDeps } from './driver';
@@ -272,6 +274,7 @@ export async function syncDispatch(
   // (3) PREFLIGHT: current-task authorization before any GitHub write.
   const preflight = await runPreflight(deps.client, repositoryInfo, inboxDispatch, {
     gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
+    bootstrapIssuers: bootstrapIssuersFor(deps.config, repositoryInfo),
     trustedHumans: new Set([
       repositoryInfo.owner.toLowerCase(),
       ...deps.config.trustedHumans.map((login) => login.toLowerCase()),
@@ -304,7 +307,12 @@ export async function syncDispatch(
   //   - Consumer plan: the Gate issued an approval record for THIS dispatch's
   //     plan comment (the only durable signal that the specific plan bytes
   //     were accepted — a feedback-round re-plan never re-fires T1).
-  //   - Executor report: the Gate consumed the completion report (label done).
+  //   - Executor report (V1.1 Phase 5, STRICT): the Gate published a
+  //     gate_transition record whose source_comment_id IS the report comment
+  //     this dispatch published, bound to this epoch and dispatch. A bare
+  //     `ai:done` label is NEVER acceptance: `Issue == ai:done → accepted`
+  //     is forbidden. An old report (or a superseded epoch/dispatch) never
+  //     matches and is handled by the preflight's obsolete logic above.
   if (receipt?.status === 'published' && receipt.published_comment_id !== undefined) {
     // Consumer plan: the Gate issued an approval record for the plan comment
     // THIS dispatch published (the only durable signal that the specific plan
@@ -316,7 +324,16 @@ export async function syncDispatch(
           entry.record.workflow_epoch === snapshot.epoch &&
           entry.record.plan_comment_id === receipt.published_comment_id,
       );
-    const isExecutorReportAccepted = role === 'executor' && snapshot.aiState === 'ai:done';
+    const isExecutorReportAccepted =
+      role === 'executor' &&
+      snapshot.view.transitions.some(({ record }) =>
+        transitionMatchesReceipt(record, {
+          epoch: snapshot.epoch,
+          dispatchId: inboxDispatch.dispatch_id,
+          transition: 'T6',
+          sourceCommentId: receipt.published_comment_id ?? -1,
+        }),
+      );
     if (isConsumerPlanAccepted || isExecutorReportAccepted) {
       await writeReceipt(paths, {
         ...receiptBase(receipt, dispatchId),

@@ -1,6 +1,6 @@
 /**
  * Workspace locks (hardening Phase 7.3, docs/plans/v1_hardening_decisions.md
- * §9): one active Executor per worktree, one Driver instance per machine.
+ * §9; V1.1 Phase 7重构: "Executor Lock 不再依赖固定时间自动失效").
  *
  * FROZEN LIMITS (kept honest):
  * - These are LOCAL locks (same machine, same workspace directory). They
@@ -10,10 +10,29 @@
  * - Conflicts QUEUE (the dispatch is skipped with a reason and retried on a
  *   later cycle); there is no preemption and no agent registry.
  *
+ * V1.1 SEMANTICS (Phase 7 — a desktop Agent outlives its Driver process, so
+ * "the Driver died" must NEVER mean "the Executor stopped"):
+ *
+ * - `driver` locks (one Driver instance per machine/workspace) are RUNTIME
+ *   locks: staleness = holder pid is dead (process.kill(pid, 0)) or the lock
+ *   is older than MAX_LOCK_AGE_MS. A stale driver lock is stolen once.
+ *   `refreshLock` (heartbeat) keeps long cycles from aging out.
+ *
+ * - `executor` locks (one active Executor per worktree) are WORKSPACE locks
+ *   with NO time-based staleness:
+ *     · a LIVE holder  → busy (queue);
+ *     · a DEAD holder  → `workspace-conflict` — the Driver crashed but the
+ *       desktop Agent may still be working; the lock is NOT stolen
+ *       automatically (plan: "Driver crash 不自动释放", "固定时间不会自动
+ *       抢占");
+ *     · the ONLY release paths are (a) the SAME process holding it (normal
+ *       terminal receipt handling), or (b) the explicit human command
+ *       `gateflow driver unlock <dispatch_id>` — the human has confirmed the
+ *       old client stopped (fail-safe default: unprovable state → conflict).
+ *
  * Implementation: O_EXCL lock files under `.gateflow/driver/locks/` with
- * { pid, holder, acquired_at } JSON. Stale detection = holder pid is dead
- * (process.kill(pid, 0)) or the lock is older than MAX_LOCK_AGE_MS; a stale
- * lock is stolen once. Every failure mode answers explicitly to the caller.
+ * { pid, holder, kind, acquired_at, heartbeat_at, dispatch_id?, ... } JSON.
+ * Every failure mode answers explicitly to the caller.
  */
 import { open, readFile, unlink, writeFile } from 'node:fs/promises';
 import * as nodePath from 'node:path';
@@ -32,20 +51,41 @@ export function driverLockFile(paths: WorkspacePaths): string {
 /** Holder name recorded in every lock we create. */
 export const DRIVER_LOCK_HOLDER = 'gateflow-driver';
 
+/** Which staleness semantics a lock file follows (V1.1 Phase 7, frozen). */
+export type LockKind = 'driver' | 'executor';
+
 export interface LockContents {
   pid: number;
   holder: string;
+  /** Which staleness semantics apply (driver = runtime, executor = workspace). */
+  kind: LockKind;
   acquired_at: string;
+  /** Last keep-alive write (long syncs); a DRIVER-lock staleness input only. */
+  heartbeat_at?: string;
   /** Executor locks record the dispatch they guard; driver locks don't. */
   dispatch_id?: string;
+  /** Executor locks record the workflow epoch of the guarded dispatch. */
+  workflow_epoch?: string;
+  /** Executor locks record the workspace root they guard. */
+  workspace?: string;
 }
 
-/** Steal a lock whose holder cannot possibly still be alive after this long. */
+/** Steal a stale DRIVER lock whose holder cannot possibly still be alive. */
 export const MAX_LOCK_AGE_MS = 6 * 60 * 60 * 1000;
 
 export type LockAcquireResult =
   | { ok: true }
-  | { ok: false; reason: string; holder: LockContents | null };
+  | {
+      ok: false;
+      reason: string;
+      holder: LockContents | null;
+      /**
+       * Why acquisition failed: `busy` (a live process holds it — queue),
+       * `workspace-conflict` (an executor lock whose holder is unprovable —
+       * requires the explicit human unlock), or `error` (I/O).
+       */
+      failure: 'busy' | 'workspace-conflict' | 'error';
+    };
 
 function isAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -66,7 +106,9 @@ async function readLock(file: string): Promise<LockContents | null> {
     if (typeof parsed !== 'object' || parsed === null) return null;
     const candidate = parsed as Partial<LockContents>;
     if (typeof candidate.pid !== 'number' || typeof candidate.holder !== 'string') return null;
-    return candidate as LockContents;
+    // Schema-1 locks predate `kind`; they behaved like driver locks.
+    const { kind, ...rest } = candidate as LockContents;
+    return { ...rest, kind: typeof kind === 'string' ? kind : 'driver' };
   } catch {
     return null;
   }
@@ -84,23 +126,44 @@ async function lockAgeMs(file: string, nowMs: number): Promise<number> {
   }
 }
 
+export interface AcquireOptions {
+  /** Executor locks record the dispatch they guard. */
+  dispatchId?: string;
+  /** Executor locks record the guarded dispatch's workflow epoch. */
+  workflowEpoch?: string;
+  /** Executor locks record the guarded workspace root. */
+  workspace?: string;
+  /**
+   * Staleness semantics; default `driver`. Executor locks are NEVER stale by
+   * age or by a dead holder pid (V1.1 Phase 7).
+   */
+  kind?: LockKind;
+}
+
 /**
- * Acquire `file` for `holder` (optionally guarding `dispatchId`). Returns
- * { ok: false, holder } when a LIVE holder owns the lock (the caller queues).
- * A stale lock (dead pid or past MAX_LOCK_AGE_MS) is stolen once.
+ * Acquire `file` for `holder`. Returns `ok: false` (with the holder) when a
+ * lock is in force — the caller queues or reports a conflict, never
+ * preempts. A stale DRIVER lock (dead pid or past MAX_LOCK_AGE_MS) is stolen
+ * once; an EXECUTOR lock is never stolen automatically.
  */
 export async function acquireLock(
   file: string,
   holder: string,
-  dispatchId?: string,
+  opts: AcquireOptions = {},
   now: () => Date = () => new Date(),
 ): Promise<LockAcquireResult> {
+  const kind: LockKind = opts.kind ?? 'driver';
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const at = now().toISOString();
     const contents: LockContents = {
       pid: process.pid,
       holder,
-      acquired_at: now().toISOString(),
-      ...(dispatchId !== undefined ? { dispatch_id: dispatchId } : {}),
+      kind,
+      acquired_at: at,
+      heartbeat_at: at,
+      ...(opts.dispatchId !== undefined ? { dispatch_id: opts.dispatchId } : {}),
+      ...(opts.workflowEpoch !== undefined ? { workflow_epoch: opts.workflowEpoch } : {}),
+      ...(opts.workspace !== undefined ? { workspace: opts.workspace } : {}),
     };
     let fd;
     try {
@@ -108,16 +171,61 @@ export async function acquireLock(
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') {
-        return { ok: false, reason: `lock file could not be created: ${(err as Error).message}`, holder: null };
+        return {
+          ok: false,
+          reason: `lock file could not be created: ${(err as Error).message}`,
+          holder: null,
+          failure: 'error',
+        };
       }
       // EEXIST: inspect the current holder.
       const existing = await readLock(file);
-      const age = await lockAgeMs(file, now().getTime());
-      const stale = existing === null || !isAlive(existing.pid) || age > MAX_LOCK_AGE_MS;
-      if (!stale) {
-        return { ok: false, reason: 'workspace busy: lock held by a live process', holder: existing };
+      if (existing === null) {
+        // Unreadable/corrupt lock file: for an executor lock this is an
+        // unprovable state — fail safe, never steal (V1.1 Phase 7).
+        if (kind === 'executor') {
+          return {
+            ok: false,
+            reason:
+              'workspace-conflict: executor lock exists but cannot be read; the state of the ' +
+              'previous executor is unknown — run `gateflow driver unlock` after confirming ' +
+              'the old client stopped (fail safe)',
+            holder: null,
+            failure: 'workspace-conflict',
+          };
+        }
+      } else if (kind === 'executor') {
+        if (isAlive(existing.pid)) {
+          return {
+            ok: false,
+            reason: `workspace busy: executor lock held by ${existing.holder} pid ${existing.pid}`,
+            holder: existing,
+            failure: 'busy',
+          };
+        }
+        return {
+          ok: false,
+          reason:
+            `workspace-conflict: executor lock holder pid ${existing.pid} is gone, but the ` +
+            'desktop Agent it started may still be running (a Driver process ending does not ' +
+            'mean the Agent stopped). Confirm the old client stopped, then run ' +
+            '`gateflow driver unlock` to release explicitly (V1.1 Phase 7, fail safe)',
+          holder: existing,
+          failure: 'workspace-conflict',
+        };
+      } else {
+        // Driver runtime lock: pid + age staleness.
+        const age = await lockAgeMs(file, now().getTime());
+        if (isAlive(existing.pid) && age <= MAX_LOCK_AGE_MS) {
+          return {
+            ok: false,
+            reason: `workspace busy: driver lock held by ${existing.holder} pid ${existing.pid}`,
+            holder: existing,
+            failure: 'busy',
+          };
+        }
       }
-      // Steal the stale lock and retry once.
+      // Steal the stale driver lock and retry once.
       try {
         await unlink(file);
       } catch {
@@ -132,7 +240,7 @@ export async function acquireLock(
     }
     return { ok: true };
   }
-  return { ok: false, reason: 'workspace busy: lock held by a live process', holder: await readLock(file) };
+  return { ok: false, reason: 'workspace busy: lock held by a live process', holder: await readLock(file), failure: 'busy' };
 }
 
 /**
@@ -156,9 +264,45 @@ export async function releaseLock(file: string, holder: string, dispatchId?: str
 export async function refreshLock(file: string, now: () => Date = () => new Date()): Promise<void> {
   const existing = await readLock(file);
   if (existing === null || existing.pid !== process.pid) return;
+  const at = now().toISOString();
   await writeFile(
     file,
-    JSON.stringify({ ...existing, acquired_at: now().toISOString() }, null, 2) + '\n',
+    JSON.stringify({ ...existing, acquired_at: at, heartbeat_at: at }, null, 2) + '\n',
     'utf8',
   );
+}
+
+export type ExplicitReleaseResult =
+  | { ok: true; holder: LockContents }
+  | { ok: false; reason: string };
+
+/**
+ * EXPLICIT human release of an executor lock (V1.1 Phase 7): removes the
+ * lock when it guards `dispatchId`, whatever process holds it. This is the
+ * recovery path for `workspace-conflict` AFTER the human confirmed the old
+ * client stopped — the CLI surfaces it as `gateflow driver unlock`. Never
+ * call from automated code paths.
+ */
+export async function forceReleaseExecutorLock(
+  file: string,
+  dispatchId: string,
+): Promise<ExplicitReleaseResult> {
+  const existing = await readLock(file);
+  if (existing === null) {
+    return { ok: false, reason: 'no executor lock present — nothing to release' };
+  }
+  if (existing.dispatch_id !== dispatchId) {
+    return {
+      ok: false,
+      reason:
+        `executor lock guards dispatch ${existing.dispatch_id ?? '(unknown)'}, not ${dispatchId} ` +
+        '(refusing to release a different dispatch\'s lock)',
+    };
+  }
+  try {
+    await unlink(file);
+  } catch (err) {
+    return { ok: false, reason: `could not remove the lock file: ${(err as Error).message}` };
+  }
+  return { ok: true, holder: existing };
 }

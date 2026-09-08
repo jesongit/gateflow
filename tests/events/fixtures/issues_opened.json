@@ -1,0 +1,12 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 9,
+    "title": "Producer submission: add CSV exporter",
+    "state": "open",
+    "user": { "login": "owner-user", "id": 1001 },
+    "body": "<!-- ai-workflow\nschema: 2\nsource: producer\nkind: feature\nmaturity_hint: solution\n-->\n\nWe need a CSV exporter."
+  },
+  "repository": { "id": 123, "name": "demo", "full_name": "owner-user/demo", "owner": { "login": "owner-user", "type": "User" } },
+  "sender": { "login": "owner-user", "id": 1001 }
+}

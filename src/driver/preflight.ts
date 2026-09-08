@@ -1,6 +1,9 @@
 /**
  * Sync/Dispatch Preflight — the unified current-task authorization check
- * (hardening Phase 4.1, docs/plans/v1_hardening_decisions.md §5).
+ * (hardening Phase 4.1, docs/plans/v1_hardening_decisions.md §5; V1.1
+ * delegates the authorization chain to the SHARED validator —
+ * src/protocol/workflow-chain.ts, Phase 1 §4.6 "Driver Preflight != Gate
+ * Authorization": the Driver may pre-block, the Gate must re-prove).
  *
  * EVERY state-relevant GitHub write in the sync layer must run
  * `runPreflight` first and fail closed on `ok: false`. The preflight re-reads
@@ -9,10 +12,11 @@
  *   Repository id / issue number / epoch binding of the dispatch id
  *   Issue exists and is open
  *   Exactly one ai:* label (0 = cancelled, >1 = corrupted)
- *   Current workflow epoch (Gate/Driver-issued records) == dispatch epoch
+ *   Current workflow epoch (V1.1 trusted resolution: issuer classes,
+ *     repo/issue binding, operation-id conflicts) == dispatch epoch
  *   No suspect authorization records on the issue (tampering → fail closed)
  *   Executor: current Plan exists, an approval RECORD binds
- *             (epoch, plan id, exact plan_sha256)
+ *             (epoch, plan id, exact plan_sha256, intact human anchor)
  *
  * KNOWN CONSISTENCY LIMIT (frozen, docs §4.1): GitHub's "read state → write"
  * is not a transaction. Preflight shrinks the race window; it cannot close
@@ -22,14 +26,8 @@
  * closed (never guess).
  */
 import type { DriverGitHubClient, IssueDetail, CommentDetail, IssueRef } from '../github/client';
-import {
-  approvalRecordAnchorFailure,
-  findLatestPlanComment,
-  readIssueRecords,
-  type IssueRecordView,
-} from '../github/issue-sync';
-import { planSha256 } from '../protocol/plan';
-import { approvalRecordsConflict } from '../protocol/records';
+import { findLatestPlanComment, readIssueRecordsForIssue, type IssueRecordView } from '../github/issue-sync';
+import { validateApprovalBinding } from '../protocol/workflow-chain';
 import { parseDispatchId } from '../workspace/protocol';
 import type { Dispatch } from '../workspace/protocol';
 import { aiLabels } from './intent';
@@ -62,6 +60,11 @@ export type PreflightVerdict =
 export interface PreflightIdentity {
   /** Driver-side allowlist of Gate record identities. */
   gateLogins: ReadonlySet<string>;
+  /**
+   * V1.1 Phase 2: allowlist for `driver_bootstrap` epoch records (config
+   * default: the owner of a personal repository).
+   */
+  bootstrapIssuers: ReadonlySet<string>;
   /** Trusted humans (config + repo owner) for the /approve anchor check. */
   trustedHumans: ReadonlySet<string>;
   repoOwner: string;
@@ -114,9 +117,15 @@ export async function runPreflight(
     return { ok: false, reason: `issue #${dispatch.issue_number} carries multiple ai:* labels [${labels.join(', ')}] (corrupted state — refusing to guess)`, obsolete: false };
   }
 
-  // (3) Fresh records: current epoch + authorization records.
+  // (3) Fresh records: current epoch (SHARED trusted resolution, V1.1) +
+  // authorization records. ANY suspect record fails closed.
   const comments = await client.listComments(ref);
-  const view = readIssueRecords(comments, identity.gateLogins);
+  const view = readIssueRecordsForIssue(comments, {
+    repositoryId: repositoryInfo.id,
+    issueNumber: dispatch.issue_number,
+    gateLogins: identity.gateLogins,
+    bootstrapIssuers: identity.bootstrapIssuers,
+  });
   if (view.suspect.length > 0) {
     return {
       ok: false,
@@ -139,9 +148,10 @@ export async function runPreflight(
     };
   }
 
-  // (4) Executor binding: current plan + approval record with matching hash.
-  // The approval RECORD is the authority that binds the exact plan bytes;
-  // the dispatch only needs to name the plan comment id.
+  // (4) Executor binding (SHARED approval binding, V1.1): current plan + a
+  // Gate-issued approval record binding (epoch, plan id, exact plan hash,
+  // intact human anchor), no record conflicts. The dispatch document must
+  // also still name that plan comment.
   let planCommentId: number | null = null;
   let planHash: string | null = null;
   if (dispatch.role === 'executor') {
@@ -153,28 +163,31 @@ export async function runPreflight(
         obsolete: true,
       };
     }
-    const hash = planSha256(plan.body);
-    const candidates = view.approvals.filter(
-      (entry) =>
-        entry.record.workflow_epoch === dispatch.workflow_epoch &&
-        entry.record.plan_comment_id === dispatch.plan_comment_id &&
-        entry.record.plan_sha256 === hash &&
-        approvalRecordAnchorFailure(entry.record, comments, identity.trustedHumans, identity.repoOwner) ===
-          null,
-    );
-    if (candidates.length === 0) {
+    const binding = validateApprovalBinding({
+      epoch: dispatch.workflow_epoch,
+      repositoryId: repositoryInfo.id,
+      issueNumber: dispatch.issue_number,
+      comments,
+      gateIssuers: identity.gateLogins,
+      trustedHumans: identity.trustedHumans,
+      repoOwner: identity.repoOwner,
+    });
+    if (!binding.ok) {
       return {
         ok: false,
-        reason: `no valid Gate-issued approval record binds (epoch, plan ${String(dispatch.plan_comment_id)}, hash)`,
+        reason: `executor approval binding invalid: ${binding.reason}`,
         obsolete: true,
       };
     }
-    const conflict = approvalRecordsConflict(candidates);
-    if (conflict.conflict) {
-      return { ok: false, reason: `conflicting approval records: ${conflict.reason ?? 'divergent content'}`, obsolete: true };
+    if (binding.planCommentId !== dispatch.plan_comment_id) {
+      return {
+        ok: false,
+        reason: 'approval binding names a different plan comment than the dispatch document',
+        obsolete: true,
+      };
     }
-    planCommentId = plan.id;
-    planHash = hash;
+    planCommentId = binding.planCommentId;
+    planHash = binding.planSha256;
   }
 
   return {

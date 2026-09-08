@@ -16180,6 +16180,7 @@ function defaultConfig() {
     },
     trustedHumans: [],
     gateLogins: ["github-actions[bot]"],
+    bootstrapDrivers: [],
     requireExplicitHumans: true,
     routing: {},
     agents: {},
@@ -16304,6 +16305,14 @@ function parseConfig(raw) {
       errors.push("gate_logins: must be a list of non-empty strings");
     } else {
       config.gateLogins = gateLogins;
+    }
+  }
+  const bootstrapDrivers = raw["bootstrap_drivers"];
+  if (bootstrapDrivers !== void 0) {
+    if (!Array.isArray(bootstrapDrivers) || bootstrapDrivers.some((h) => typeof h !== "string" || h.length === 0)) {
+      errors.push("bootstrap_drivers: must be a list of non-empty strings");
+    } else {
+      config.bootstrapDrivers = bootstrapDrivers;
     }
   }
   const requireExplicitHumans = raw["require_explicit_humans"];
@@ -17882,6 +17891,17 @@ function inspectCommentMarkers(body) {
   return { kind: "none" };
 }
 
+// src/protocol/commands.ts
+var EXACT_COMMANDS = /* @__PURE__ */ new Set([
+  COMMANDS.aiPlan,
+  COMMANDS.cancel
+]);
+var CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
+var CHANGE_PATTERN = /^\/change (.+)$/;
+function isFeedbackCommand(trimmedBody, kind) {
+  return kind === "choose" ? CHOOSE_PATTERN.exec(trimmedBody) !== null : CHANGE_PATTERN.exec(trimmedBody) !== null;
+}
+
 // src/protocol/epoch.ts
 var import_node_crypto6 = require("node:crypto");
 var EPOCH_BODY_PATTERN = /^wf_[0-9a-z]{12}$/;
@@ -17907,6 +17927,7 @@ var RECORD_SCHEMA_VERSION = 2;
 var EPOCH_RECORD_MARKER = "<!-- gateflow:workflow:v2 -->";
 var APPROVAL_RECORD_MARKER = "<!-- gateflow:approval:v2 -->";
 var FEEDBACK_RECORD_MARKER = "<!-- gateflow:feedback:v2 -->";
+var TRANSITION_RECORD_MARKER = "<!-- gateflow:transition:v2 -->";
 var HEX64 = /^[0-9a-f]{64}$/;
 var ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 var LOGIN = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?!$)){0,37}(\[bot\])?$/;
@@ -17914,14 +17935,33 @@ var OPERATION_ID = /^[a-z]+(:[\w.-]+)+$/;
 function isObj(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function epochOperationId(repositoryId, issueNumber, epoch) {
-  return `epoch:${repositoryId}:${issueNumber}:${epoch}`;
+function gateEpochOperationId(repositoryId, issueNumber, commandCommentId) {
+  return `epoch:${repositoryId}:${issueNumber}:c${commandCommentId}`;
+}
+function bootstrapEpochOperationId(repositoryId, issueNumber) {
+  return `epoch:${repositoryId}:${issueNumber}:bootstrap`;
+}
+function isEpochOperationId(operationId, repositoryId, issueNumber) {
+  if (operationId === bootstrapEpochOperationId(repositoryId, issueNumber)) {
+    return true;
+  }
+  const commandCommentId = extractEpochCommandCommentId(operationId);
+  return commandCommentId !== null && operationId === gateEpochOperationId(repositoryId, issueNumber, commandCommentId);
+}
+function extractEpochCommandCommentId(operationId) {
+  const match = /^epoch:(\d+):(\d+):c(\d+)$/.exec(operationId);
+  if (match === null) return null;
+  const id = Number(match[3]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 function approvalOperationId(repositoryId, issueNumber, epoch, planCommentId) {
   return `approval:${repositoryId}:${issueNumber}:${epoch}:p${planCommentId}`;
 }
 function feedbackOperationId(repositoryId, issueNumber, epoch, feedbackCommentId) {
   return `feedback:${repositoryId}:${issueNumber}:${epoch}:${feedbackCommentId}`;
+}
+function transitionOperationId(repositoryId, issueNumber, epoch, transition, sourceCommentId) {
+  return `transition:${repositoryId}:${issueNumber}:${epoch}:${transition}:${sourceCommentId}`;
 }
 function submitOperationId(submissionId) {
   return `submit:${submissionId}`;
@@ -17942,6 +17982,8 @@ function recordMarkerFor(kind) {
       return APPROVAL_RECORD_MARKER;
     case "feedback_accepted":
       return FEEDBACK_RECORD_MARKER;
+    case "gate_transition":
+      return TRANSITION_RECORD_MARKER;
   }
 }
 function recordKindOf(body) {
@@ -17950,6 +17992,7 @@ function recordKindOf(body) {
     if (trimmed === EPOCH_RECORD_MARKER) return "workflow_epoch";
     if (trimmed === APPROVAL_RECORD_MARKER) return "approval";
     if (trimmed === FEEDBACK_RECORD_MARKER) return "feedback_accepted";
+    if (trimmed === TRANSITION_RECORD_MARKER) return "gate_transition";
   }
   return null;
 }
@@ -18011,6 +18054,8 @@ function parseRecord(commentId, body) {
       return validateApprovalRecord(commentId, raw);
     case "feedback_accepted":
       return validateFeedbackRecord(commentId, raw);
+    case "gate_transition":
+      return validateTransitionRecord(commentId, raw);
   }
 }
 function checkFields(raw, required, what, errors) {
@@ -18049,6 +18094,7 @@ function validateEpochRecord(commentId, raw) {
     "repository_id",
     "issue_number",
     "workflow_epoch",
+    "created_by",
     "created_at",
     "issued_by",
     "operation_id"
@@ -18060,6 +18106,10 @@ function validateEpochRecord(commentId, raw) {
   if (raw["kind"] !== "workflow_epoch") {
     errors.push(`kind: expected "workflow_epoch", got ${JSON.stringify(raw["kind"])}`);
   }
+  const createdBy = raw["created_by"];
+  if (createdBy !== "gate" && createdBy !== "driver_bootstrap") {
+    errors.push(`created_by: expected "gate"|"driver_bootstrap", got ${JSON.stringify(createdBy)}`);
+  }
   const repositoryId = num(raw, "repository_id", errors);
   const issueNumber = num(raw, "issue_number", errors);
   const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
@@ -18070,8 +18120,8 @@ function validateEpochRecord(commentId, raw) {
   if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || createdAt === null || issuedBy === null || operationId === null) {
     return { ok: false, reason: `invalid workflow_epoch record: ${errors.join("; ")}` };
   }
-  if (operationId !== epochOperationId(repositoryId, issueNumber, epoch)) {
-    return { ok: false, reason: `invalid workflow_epoch record: operation_id "${operationId}" does not bind repository/issue/epoch` };
+  if (!isEpochOperationId(operationId, repositoryId, issueNumber)) {
+    return { ok: false, reason: `invalid workflow_epoch record: operation_id "${operationId}" does not bind repository/issue` };
   }
   return {
     ok: true,
@@ -18082,6 +18132,7 @@ function validateEpochRecord(commentId, raw) {
       repository_id: repositoryId,
       issue_number: issueNumber,
       workflow_epoch: epoch,
+      created_by: createdBy,
       created_at: createdAt,
       issued_by: issuedBy,
       operation_id: operationId
@@ -18219,6 +18270,78 @@ function validateFeedbackRecord(commentId, raw) {
     }
   };
 }
+var TRANSITION_IDS = ["T1", "T2", "T3", "T4", "T5", "T6"];
+var LABEL_PATTERN = /^ai:(planning|review|ready|working|blocked|done)$/;
+function validateTransitionRecord(commentId, raw) {
+  const errors = [];
+  const required = [
+    "schema",
+    "kind",
+    "repository_id",
+    "issue_number",
+    "workflow_epoch",
+    "dispatch_id",
+    "transition",
+    "from_label",
+    "to_label",
+    "source_comment_id",
+    "gate_login",
+    "gate_user_id",
+    "gate_version",
+    "created_at",
+    "operation_id"
+  ];
+  checkFields(raw, required, "gate_transition record", errors);
+  if (raw["schema"] !== RECORD_SCHEMA_VERSION) {
+    errors.push(`schema: expected ${RECORD_SCHEMA_VERSION}, got ${JSON.stringify(raw["schema"])}`);
+  }
+  if (raw["kind"] !== "gate_transition") {
+    errors.push(`kind: expected "gate_transition", got ${JSON.stringify(raw["kind"])}`);
+  }
+  const repositoryId = num(raw, "repository_id", errors);
+  const issueNumber = num(raw, "issue_number", errors);
+  const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
+  if (epoch === null) errors.push("workflow_epoch: malformed epoch string");
+  const rawDispatchId = raw["dispatch_id"];
+  const dispatchId = rawDispatchId === null ? null : typeof rawDispatchId === "string" && DISPATCH_DIR_PATTERN.test(rawDispatchId) ? rawDispatchId : (errors.push(`dispatch_id: expected a dispatch id or null, got ${JSON.stringify(rawDispatchId)}`), null);
+  const rawTransition = raw["transition"];
+  const transition = typeof rawTransition === "string" && TRANSITION_IDS.includes(rawTransition) ? rawTransition : (errors.push(`transition: expected one of ${TRANSITION_IDS.join("|")}, got ${JSON.stringify(rawTransition)}`), null);
+  const fromLabel = str(raw, "from_label", LABEL_PATTERN, errors);
+  const toLabel = str(raw, "to_label", LABEL_PATTERN, errors);
+  const sourceCommentId = num(raw, "source_comment_id", errors);
+  const gateLogin = str(raw, "gate_login", LOGIN, errors);
+  const gateUserId = num(raw, "gate_user_id", errors);
+  const gateVersion = str(raw, "gate_version", /^[0-9]+\.[0-9]+\.[0-9]+$/, errors);
+  const createdAt = str(raw, "created_at", ISO_DATE, errors);
+  const operationId = str(raw, "operation_id", OPERATION_ID, errors);
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || transition === null || fromLabel === null || toLabel === null || sourceCommentId === null || gateLogin === null || gateUserId === null || gateVersion === null || createdAt === null || operationId === null) {
+    return { ok: false, reason: `invalid gate_transition record: ${errors.join("; ")}` };
+  }
+  if (operationId !== transitionOperationId(repositoryId, issueNumber, epoch, transition, sourceCommentId)) {
+    return { ok: false, reason: `invalid gate_transition record: operation_id "${operationId}" does not bind repository/issue/epoch/transition/source` };
+  }
+  return {
+    ok: true,
+    commentId,
+    record: {
+      schema: RECORD_SCHEMA_VERSION,
+      kind: "gate_transition",
+      repository_id: repositoryId,
+      issue_number: issueNumber,
+      workflow_epoch: epoch,
+      dispatch_id: dispatchId,
+      transition,
+      from_label: fromLabel,
+      to_label: toLabel,
+      source_comment_id: sourceCommentId,
+      gate_login: gateLogin,
+      gate_user_id: gateUserId,
+      gate_version: gateVersion,
+      created_at: createdAt,
+      operation_id: operationId
+    }
+  };
+}
 function approvalRecordsConflict(records) {
   const byOperation = /* @__PURE__ */ new Map();
   const firstCommentIdByOperation = /* @__PURE__ */ new Map();
@@ -18234,6 +18357,25 @@ function approvalRecordsConflict(records) {
       return {
         conflict: true,
         reason: `conflicting approval records for operation ${record.operation_id}: comment ${firstCommentIdByOperation.get(record.operation_id)} vs ${commentId}`
+      };
+    }
+  }
+  return { conflict: false, reason: null };
+}
+function epochRecordsConflict(records) {
+  const byOperation = /* @__PURE__ */ new Map();
+  const firstCommentIdByOperation = /* @__PURE__ */ new Map();
+  for (const { commentId, record } of records) {
+    const existing = byOperation.get(record.operation_id);
+    if (existing === void 0) {
+      byOperation.set(record.operation_id, record);
+      firstCommentIdByOperation.set(record.operation_id, commentId);
+      continue;
+    }
+    if (existing.workflow_epoch !== record.workflow_epoch || existing.created_by !== record.created_by || existing.issued_by.toLowerCase() !== record.issued_by.toLowerCase()) {
+      return {
+        conflict: true,
+        reason: `conflicting workflow_epoch records for operation ${record.operation_id}: comment ${firstCommentIdByOperation.get(record.operation_id)} vs ${commentId} (epoch ${existing.workflow_epoch} vs ${record.workflow_epoch})`
       };
     }
   }
@@ -18263,6 +18405,184 @@ function parseRecords(kind, comments) {
     }
   }
   return { records, invalid };
+}
+
+// src/protocol/plan.ts
+var import_node_crypto7 = require("node:crypto");
+var DROPPED_LINE_PATTERNS = [
+  /^<!--\s*ai-workflow:[a-z-]+:v\d+\s*-->$/,
+  // workflow markers (plan/tracker/report/append)
+  /^<!--\s*gateflow:dispatch-id:\s*\S+\s*-->$/,
+  // dispatch-id anchor comment
+  /^<!--\s*gateflow:[a-z-]+:v\d+\s*-->$/
+  // gate record markers (workflow/approval/feedback)
+];
+function canonicalPlanContent(planCommentBody) {
+  const kept = planCommentBody.split(/(?:\r\n|\r|\n)/).filter((line) => {
+    const trimmed = line.trim();
+    return !DROPPED_LINE_PATTERNS.some((pattern) => pattern.test(trimmed));
+  }).join("\n");
+  return kept.trim();
+}
+function sha256Hex2(content) {
+  return (0, import_node_crypto7.createHash)("sha256").update(content, "utf8").digest("hex");
+}
+function planSha256(planCommentBody) {
+  return sha256Hex2(canonicalPlanContent(planCommentBody));
+}
+
+// src/protocol/workflow-chain.ts
+function loginIn(set3, login) {
+  return set3.has(login.trim().toLowerCase());
+}
+function resolveCurrentEpoch(input) {
+  const { records, invalid } = parseRecords("workflow_epoch", input.comments);
+  if (invalid.length > 0) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: `unparsable workflow_epoch record(s) on #${input.issueNumber} (fail closed): ` + invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+    };
+  }
+  const accepted = [];
+  for (const entry of records) {
+    const { record, comment } = entry;
+    if (record.repository_id !== input.repositoryId || record.issue_number !== input.issueNumber) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: `workflow_epoch record #${entry.commentId} binds repository ${record.repository_id} issue #${record.issue_number}, but sits on repository ${input.repositoryId} issue #${input.issueNumber} (transplanted record \u2014 fail closed)`
+      };
+    }
+    const issuerOk = record.created_by === "gate" ? loginIn(input.gateIssuers, comment.user) : loginIn(input.bootstrapIssuers, comment.user);
+    if (!issuerOk) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: `workflow_epoch record #${entry.commentId} (created_by ${record.created_by}) was authored by "${comment.user}", who is not an allowed issuer for that class (forged epoch \u2014 fail closed)`
+      };
+    }
+    accepted.push(entry);
+  }
+  const conflict = epochRecordsConflict(accepted);
+  if (conflict.conflict) {
+    return { ok: false, conflict: true, reason: conflict.reason ?? "conflicting epoch records" };
+  }
+  const latest = accepted[accepted.length - 1];
+  if (latest === void 0) {
+    return { ok: false, conflict: false, reason: `no workflow_epoch record on #${input.issueNumber}` };
+  }
+  return {
+    ok: true,
+    epoch: latest.record.workflow_epoch,
+    commentId: latest.commentId,
+    record: latest.record
+  };
+}
+function findEpochRecordByOperationId(comments, operationId, expectedEpoch) {
+  const { records, invalid } = parseRecords("workflow_epoch", comments);
+  if (invalid.length > 0) {
+    return { found: false, conflict: false };
+  }
+  const matches = records.filter((entry) => entry.record.operation_id === operationId);
+  const first = matches[0];
+  if (first === void 0) {
+    return { found: false, conflict: false };
+  }
+  if (matches.some((entry) => entry.record.workflow_epoch !== first.record.workflow_epoch)) {
+    return { found: false, conflict: true };
+  }
+  if (expectedEpoch !== void 0 && first.record.workflow_epoch !== expectedEpoch) {
+    return { found: false, conflict: true };
+  }
+  return { found: true, record: first.record, commentId: first.commentId };
+}
+function currentPlanOf(comments) {
+  for (let i = comments.length - 1; i >= 0; i -= 1) {
+    const comment = comments[i];
+    if (comment !== void 0 && detectCommentMarker(comment.body) === MARKERS.plan) {
+      return comment;
+    }
+  }
+  return null;
+}
+function isTrustedAuthor(comment, trustedHumans) {
+  return trustedHumans.has(comment.user.trim().toLowerCase());
+}
+function acceptedFeedbackOfEpoch(input) {
+  const { records } = parseRecords("feedback_accepted", input.comments);
+  const byId = new Map(input.comments.map((comment) => [comment.id, comment]));
+  const accepted = [];
+  for (const entry of records) {
+    const { record } = entry;
+    if (record.workflow_epoch !== input.epoch) continue;
+    const comment = byId.get(record.feedback_comment_id);
+    if (comment === void 0) continue;
+    if (!isTrustedAuthor(comment, input.trustedHumans)) continue;
+    if (!isFeedbackCommand(comment.body.trim(), record.feedback_kind)) continue;
+    accepted.push({ record, comment });
+  }
+  return accepted;
+}
+function validateApprovalBinding(input) {
+  const plan = currentPlanOf(input.comments);
+  if (plan === null) {
+    return { ok: false, conflict: false, reason: "no plan comment on the issue (no current plan)" };
+  }
+  const hash = planSha256(plan.body);
+  const { records: approvals, invalid } = parseRecords("approval", input.comments);
+  if (invalid.length > 0) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: "unparsable approval record(s) present (fail closed): " + invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+    };
+  }
+  const candidates = approvals.filter((entry) => {
+    const record = entry.record;
+    return loginIn(input.gateIssuers, entry.comment.user) && record.workflow_epoch === input.epoch && record.plan_comment_id === plan.id && record.plan_sha256 === hash && approvalAnchorFailure(record, input.comments, input.trustedHumans, input.repoOwner) === null;
+  });
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: `no valid Gate-issued approval record binds (epoch ${input.epoch}, plan ${plan.id}, sha256)`
+    };
+  }
+  const conflict = approvalRecordsConflict(candidates);
+  if (conflict.conflict) {
+    return { ok: false, conflict: true, reason: conflict.reason ?? "conflicting approval records" };
+  }
+  const approval = candidates[candidates.length - 1];
+  if (approval === void 0) {
+    return { ok: false, conflict: false, reason: "no approval record" };
+  }
+  return {
+    ok: true,
+    planCommentId: plan.id,
+    planSha256: hash,
+    approvalCommentId: approval.commentId
+  };
+}
+function approvalAnchorFailure(record, comments, trustedHumans, repoOwner) {
+  const command = comments.find((entry) => entry.id === record.approval_command_comment_id);
+  if (command === void 0) {
+    return `approval command comment ${record.approval_command_comment_id} no longer exists`;
+  }
+  const match = /^\/approve (\d+)$/.exec(command.body.trim());
+  if (match === null || Number.parseInt(match[1] ?? "", 10) !== record.plan_comment_id) {
+    return `approval command comment ${command.id} is not an anchored "/approve ${record.plan_comment_id}"`;
+  }
+  if (!isTrustedAuthor(command, trustedHumans) && command.user.trim().toLowerCase() !== repoOwner.trim().toLowerCase()) {
+    return `approval command comment ${command.id} author "${command.user}" is not a trusted human`;
+  }
+  if (command.user.trim().toLowerCase() !== record.approved_by_login.trim().toLowerCase()) {
+    return `approval record approver "${record.approved_by_login}" does not match command author "${command.user}"`;
+  }
+  return null;
+}
+function transitionMatchesReceipt(record, opts) {
+  return record.workflow_epoch === opts.epoch && record.transition === opts.transition && record.source_comment_id === opts.sourceCommentId && record.dispatch_id === opts.dispatchId;
 }
 
 // src/gate/tracker.ts
@@ -18297,7 +18617,6 @@ function parseTrackerStatus(body) {
 
 // src/github/comments.ts
 var DISPATCH_ID_COMMENT_PATTERN = /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:consumer|executor)_\S+) -->/;
-var STATUS_LINE_PATTERN = /^\*\*Status:\*\*\s*(.*)$/;
 function findDispatchIdInComment(body) {
   return DISPATCH_ID_COMMENT_PATTERN.exec(body)?.[1] ?? null;
 }
@@ -18376,54 +18695,29 @@ function findCompletionReportComments(comments, dispatchId) {
   }
   return reports;
 }
-var CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
-var CHANGE_PATTERN = /^\/change (.+)$/;
-function isTrustedAuthor(comment, trustedHumans, repoOwner) {
-  const login = comment.user.toLowerCase();
-  if (login === repoOwner.toLowerCase()) {
-    return true;
-  }
-  for (const human of trustedHumans) {
-    if (human.toLowerCase() === login) {
-      return true;
-    }
-  }
-  return false;
-}
 function isKnownLogin(login, allowlist) {
-  return allowlist.has(login.toLowerCase());
+  return allowlist.has(login.trim().toLowerCase());
 }
-var APPROVE_PATTERN = /^\/approve (\d+)$/;
-function approvalRecordAnchorFailure(record, comments, trustedHumans, repoOwner) {
-  const command = comments.find((entry) => entry.id === record.approval_command_comment_id);
-  if (command === void 0) {
-    return `approval command comment ${record.approval_command_comment_id} no longer exists`;
-  }
-  const match = APPROVE_PATTERN.exec(command.body.trim());
-  if (match === null || Number.parseInt(match[1] ?? "", 10) !== record.plan_comment_id) {
-    return `approval command comment ${command.id} is not an anchored "/approve ${record.plan_comment_id}"`;
-  }
-  if (!isTrustedAuthor(command, trustedHumans, repoOwner)) {
-    return `approval command comment ${command.id} author "${command.user}" is not a trusted human`;
-  }
-  if (command.user.toLowerCase() !== record.approved_by_login.toLowerCase()) {
-    return `approval record approver "${record.approved_by_login}" does not match command author "${command.user}"`;
-  }
-  return null;
-}
-function readIssueRecords(comments, gateLogins) {
+function readIssueRecords(comments, gateLogins, bootstrapIssuers = /* @__PURE__ */ new Set()) {
+  const suspect = [];
   const epoch = parseRecords("workflow_epoch", comments);
   const approvals = parseRecords("approval", comments);
   const feedback = parseRecords("feedback_accepted", comments);
-  const suspect = [];
-  for (const invalid of [...epoch.invalid, ...approvals.invalid, ...feedback.invalid]) {
+  const transitions = parseRecords("gate_transition", comments);
+  for (const invalid of [
+    ...epoch.invalid,
+    ...approvals.invalid,
+    ...feedback.invalid,
+    ...transitions.invalid
+  ]) {
     suspect.push({ commentId: invalid.commentId, reason: invalid.reason });
   }
-  const latestEpochRecord = epoch.records[epoch.records.length - 1] ?? null;
-  const trustedApprovals = approvals.records.filter((entry) => isKnownLogin(entry.comment.user, gateLogins)).map((entry) => ({ commentId: entry.commentId, record: entry.record }));
-  const trustedFeedback = feedback.records.filter((entry) => isKnownLogin(entry.comment.user, gateLogins)).map((entry) => ({ commentId: entry.commentId, record: entry.record }));
+  const trusted = (entry) => isKnownLogin(entry.comment.user, gateLogins);
+  const trustedApprovals = approvals.records.filter(trusted).map((entry) => ({ commentId: entry.commentId, record: entry.record }));
+  const trustedFeedback = feedback.records.filter(trusted).map((entry) => ({ commentId: entry.commentId, record: entry.record }));
+  const trustedTransitions = transitions.records.filter(trusted).map((entry) => ({ commentId: entry.commentId, record: entry.record }));
   for (const entry of approvals.records) {
-    if (!isKnownLogin(entry.comment.user, gateLogins)) {
+    if (!trusted(entry)) {
       suspect.push({
         commentId: entry.commentId,
         reason: `approval record authored by untrusted identity "${entry.comment.user}"`
@@ -18431,36 +18725,77 @@ function readIssueRecords(comments, gateLogins) {
     }
   }
   for (const entry of feedback.records) {
-    if (!isKnownLogin(entry.comment.user, gateLogins)) {
+    if (!trusted(entry)) {
       suspect.push({
         commentId: entry.commentId,
         reason: `feedback record authored by untrusted identity "${entry.comment.user}"`
       });
     }
   }
+  for (const entry of transitions.records) {
+    if (!trusted(entry)) {
+      suspect.push({
+        commentId: entry.commentId,
+        reason: `gate_transition record authored by untrusted identity "${entry.comment.user}"`
+      });
+    }
+  }
+  const epochCandidates = epoch.records.filter((entry) => {
+    const allowed = entry.record.created_by === "gate" ? isKnownLogin(entry.comment.user, gateLogins) : isKnownLogin(entry.comment.user, bootstrapIssuers);
+    if (!allowed) {
+      suspect.push({
+        commentId: entry.commentId,
+        reason: `workflow_epoch record (created_by ${entry.record.created_by}) authored by "${entry.comment.user}", who is not an allowed issuer for that class`
+      });
+    }
+    return allowed;
+  });
+  const latestEpochRecord = epochCandidates[epochCandidates.length - 1] ?? null;
   return {
     epoch: latestEpochRecord === null ? null : { record: latestEpochRecord.record, commentId: latestEpochRecord.commentId },
     approvals: trustedApprovals,
     feedback: trustedFeedback,
+    transitions: trustedTransitions,
     suspect
   };
 }
+function readIssueRecordsForIssue(comments, opts) {
+  const view = readIssueRecords(comments, opts.gateLogins, opts.bootstrapIssuers);
+  const resolution = resolveCurrentEpoch({
+    comments,
+    repositoryId: opts.repositoryId,
+    issueNumber: opts.issueNumber,
+    gateIssuers: opts.gateLogins,
+    bootstrapIssuers: opts.bootstrapIssuers
+  });
+  if (!resolution.ok) {
+    const plainAbsence = resolution.reason.startsWith("no workflow_epoch record");
+    return {
+      epoch: null,
+      approvals: [],
+      feedback: [],
+      transitions: [],
+      suspect: plainAbsence ? view.suspect : [
+        ...view.suspect,
+        { commentId: -1, reason: `workflow_epoch resolution failed: ${resolution.reason}` }
+      ]
+    };
+  }
+  return { ...view, epoch: { record: resolution.record, commentId: resolution.commentId } };
+}
 function acceptedFeedbackEvents(view, comments, trustedHumans, repoOwner) {
   if (view.epoch === null) return [];
-  const epoch = view.epoch.record.workflow_epoch;
-  const byId = new Map(comments.map((comment) => [comment.id, comment]));
-  const accepted = [];
-  for (const { record } of view.feedback) {
-    if (record.workflow_epoch !== epoch) continue;
-    const comment = byId.get(record.feedback_comment_id);
-    if (comment === void 0) continue;
-    if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) continue;
-    const trimmed = comment.body.trim();
-    if (record.feedback_kind === "choose" && CHOOSE_PATTERN.exec(trimmed) === null) continue;
-    if (record.feedback_kind === "change" && CHANGE_PATTERN.exec(trimmed) === null) continue;
-    accepted.push({ comment, kind: record.feedback_kind });
-  }
-  return accepted;
+  const humansWithOwner = new Set(trustedHumans);
+  humansWithOwner.add(repoOwner.trim().toLowerCase());
+  const accepted = acceptedFeedbackOfEpoch({
+    comments,
+    epoch: view.epoch.record.workflow_epoch,
+    trustedHumans: humansWithOwner
+  });
+  return accepted.map((entry) => ({
+    comment: entry.comment,
+    kind: entry.record.feedback_kind
+  }));
 }
 async function publishPlanComment(client, ref2, planMarkdown, dispatchId) {
   return client.addIssueComment(ref2, buildPlanCommentBody(planMarkdown, dispatchId));
@@ -18486,7 +18821,7 @@ function extractProgressTail(body) {
     if (insideFence) {
       continue;
     }
-    if (STATUS_LINE_PATTERN.test(trimmed)) {
+    if (trimmed.startsWith("**Status:**")) {
       return lines.slice(i + 1).join("\n");
     }
   }
@@ -18514,30 +18849,6 @@ async function publishCompletionReport(client, ref2, reportMarkdown, dispatchId)
   return client.addIssueComment(ref2, buildCompletionReportBody(reportMarkdown, dispatchId));
 }
 
-// src/protocol/plan.ts
-var import_node_crypto7 = require("node:crypto");
-var DROPPED_LINE_PATTERNS = [
-  /^<!--\s*ai-workflow:[a-z-]+:v\d+\s*-->$/,
-  // workflow markers (plan/tracker/report/append)
-  /^<!--\s*gateflow:dispatch-id:\s*\S+\s*-->$/,
-  // dispatch-id anchor comment
-  /^<!--\s*gateflow:[a-z-]+:v\d+\s*-->$/
-  // gate record markers (workflow/approval/feedback)
-];
-function canonicalPlanContent(planCommentBody) {
-  const kept = planCommentBody.split(/(?:\r\n|\r|\n)/).filter((line) => {
-    const trimmed = line.trim();
-    return !DROPPED_LINE_PATTERNS.some((pattern) => pattern.test(trimmed));
-  }).join("\n");
-  return kept.trim();
-}
-function sha256Hex2(content) {
-  return (0, import_node_crypto7.createHash)("sha256").update(content, "utf8").digest("hex");
-}
-function planSha256(planCommentBody) {
-  return sha256Hex2(canonicalPlanContent(planCommentBody));
-}
-
 // src/driver/intent.ts
 function aiLabels(labels) {
   return labels.filter((label) => label.startsWith("ai:"));
@@ -18551,7 +18862,12 @@ function deriveIntents(issue, comments, ctx) {
   if (labels.length !== 1) return [];
   const state = labels[0];
   if (state === void 0) return [];
-  const view = readIssueRecords(comments, ctx.gateLogins);
+  const view = readIssueRecordsForIssue(comments, {
+    repositoryId: ctx.repositoryId,
+    issueNumber: issue.number,
+    gateLogins: ctx.gateLogins,
+    bootstrapIssuers: ctx.bootstrapIssuers
+  });
   if (view.suspect.length > 0) return [];
   if (view.epoch === null) return [];
   const epoch = view.epoch.record.workflow_epoch;
@@ -18592,27 +18908,26 @@ function deriveIntents(issue, comments, ctx) {
       ];
     }
     case "ai:ready": {
-      const plans = findPlanComments(comments);
-      const plan = plans[plans.length - 1];
-      if (plan === void 0) return [];
-      const candidates = view.approvals.filter(
-        (entry) => entry.record.workflow_epoch === epoch && entry.record.plan_comment_id === plan.id && entry.record.plan_sha256 === planSha256(plan.body) && approvalRecordAnchorFailure(entry.record, comments, ctx.trustedHumans, ctx.repoOwner) === null
-      );
-      if (candidates.length === 0) return [];
-      const conflict = approvalRecordsConflict(candidates);
-      if (conflict.conflict) return [];
-      const approval = candidates[candidates.length - 1];
-      if (approval === void 0) return [];
+      const binding = validateApprovalBinding({
+        epoch,
+        repositoryId: ctx.repositoryId,
+        issueNumber: issue.number,
+        comments,
+        gateIssuers: ctx.gateLogins,
+        trustedHumans: ctx.trustedHumans,
+        repoOwner: ctx.repoOwner
+      });
+      if (!binding.ok) return [];
       return [
         {
           role: "executor",
           issueNumber: issue.number,
           reason: "approved_plan",
-          revision: `p${plan.id}`,
+          revision: `p${binding.planCommentId}`,
           epoch,
-          planCommentId: plan.id,
-          approvalCommentId: approval.commentId,
-          planSha256: approval.record.plan_sha256
+          planCommentId: binding.planCommentId,
+          approvalCommentId: binding.approvalCommentId,
+          planSha256: binding.planSha256
         }
       ];
     }
@@ -18672,6 +18987,24 @@ ${sections.join("\n\n")}
 `;
 }
 
+// src/protocol/identity.ts
+function normalize(login) {
+  return login.trim().toLowerCase();
+}
+function normalizeList(list) {
+  return (list ?? []).map(normalize).filter((login) => login.length > 0);
+}
+function bootstrapDriverSetOf(input) {
+  const configured = normalizeList(input.bootstrapDrivers);
+  if (configured.length > 0) {
+    return new Set(configured);
+  }
+  if (input.ownerType === "User" && input.owner.trim().length > 0) {
+    return /* @__PURE__ */ new Set([input.owner.trim().toLowerCase()]);
+  }
+  return /* @__PURE__ */ new Set();
+}
+
 // src/driver/discovery.ts
 function parseRepositorySlug(repository) {
   const match = /^([^/\s]+)\/([^/\s]+)$/.exec(repository.trim());
@@ -18681,24 +19014,41 @@ function parseRepositorySlug(repository) {
   if (owner === void 0 || name === void 0) return null;
   return { owner, name };
 }
-async function bootstrapEpochIfNeeded(client, ref2, repositoryInfo, issue, records) {
+function bootstrapIssuersFor(config, repositoryInfo) {
+  return bootstrapDriverSetOf({
+    owner: repositoryInfo.owner,
+    ownerType: repositoryInfo.ownerType,
+    bootstrapDrivers: config.bootstrapDrivers
+  });
+}
+async function bootstrapEpochIfNeeded(client, ref2, repositoryInfo, issue, records, comments, bootstrapIssuers) {
   const labels = aiLabels(issue.labels);
   if (!(labels.length === 1 && labels[0] === "ai:planning")) return null;
   if (records.epoch !== null) return null;
-  if (records.suspect.some((entry) => entry.reason.includes("workflow_epoch"))) return null;
+  if (records.suspect.length > 0) return null;
   const identity = await client.getAuthenticatedUser();
-  const epoch = newWorkflowEpoch();
-  const record = {
-    schema: 2,
-    kind: "workflow_epoch",
-    repository_id: repositoryInfo.id,
-    issue_number: issue.number,
-    workflow_epoch: epoch,
-    created_at: (/* @__PURE__ */ new Date()).toISOString(),
-    issued_by: identity.login,
-    operation_id: epochOperationId(repositoryInfo.id, issue.number, epoch)
-  };
-  await client.addIssueComment(ref2, buildRecordBody(record));
+  if (!bootstrapIssuers.has(identity.login.trim().toLowerCase())) {
+    return null;
+  }
+  const operationId = bootstrapEpochOperationId(repositoryInfo.id, issue.number);
+  const existing = findEpochRecordByOperationId(comments, operationId);
+  if (!existing.found && existing.conflict) {
+    return null;
+  }
+  if (!existing.found) {
+    const record = {
+      schema: 2,
+      kind: "workflow_epoch",
+      repository_id: repositoryInfo.id,
+      issue_number: issue.number,
+      workflow_epoch: newWorkflowEpoch(),
+      created_by: "driver_bootstrap",
+      created_at: (/* @__PURE__ */ new Date()).toISOString(),
+      issued_by: identity.login,
+      operation_id: operationId
+    };
+    await client.addIssueComment(ref2, buildRecordBody(record));
+  }
   return client.listComments(ref2);
 }
 async function discoverIssue(client, repository, issue, config, repositoryInfo) {
@@ -18708,18 +19058,38 @@ async function discoverIssue(client, repository, issue, config, repositoryInfo) 
   }
   const ref2 = { owner: slug.owner, repo: slug.name, issueNumber: issue.number };
   let comments = await client.listComments(ref2);
-  const gateLogins = new Set(config.gateLogins.map((login) => login.toLowerCase()));
-  let records = readIssueRecords(comments, gateLogins);
-  const bootstrapped = await bootstrapEpochIfNeeded(client, ref2, repositoryInfo, issue, records);
+  const gateLogins = new Set(config.gateLogins.map((login) => login.trim().toLowerCase()));
+  const bootstrapIssuers = bootstrapIssuersFor(config, repositoryInfo);
+  let records = readIssueRecordsForIssue(comments, {
+    repositoryId: repositoryInfo.id,
+    issueNumber: issue.number,
+    gateLogins,
+    bootstrapIssuers
+  });
+  const bootstrapped = await bootstrapEpochIfNeeded(
+    client,
+    ref2,
+    repositoryInfo,
+    issue,
+    records,
+    comments,
+    bootstrapIssuers
+  );
   if (bootstrapped !== null) {
     comments = bootstrapped;
-    records = readIssueRecords(comments, gateLogins);
+    records = readIssueRecordsForIssue(comments, {
+      repositoryId: repositoryInfo.id,
+      issueNumber: issue.number,
+      gateLogins,
+      bootstrapIssuers
+    });
   }
   const ctx = {
     repositoryId: repositoryInfo.id,
     repoOwner: slug.owner,
     trustedHumans: /* @__PURE__ */ new Set([slug.owner.toLowerCase(), ...config.trustedHumans.map((h) => h.toLowerCase())]),
-    gateLogins
+    gateLogins,
+    bootstrapIssuers
   };
   return {
     issue,
@@ -18815,7 +19185,8 @@ async function readLock(file) {
     if (typeof parsed !== "object" || parsed === null) return null;
     const candidate = parsed;
     if (typeof candidate.pid !== "number" || typeof candidate.holder !== "string") return null;
-    return candidate;
+    const { kind, ...rest } = candidate;
+    return { ...rest, kind: typeof kind === "string" ? kind : "driver" };
   } catch {
     return null;
   }
@@ -18831,13 +19202,19 @@ async function lockAgeMs(file, nowMs) {
     return MAX_LOCK_AGE_MS + 1;
   }
 }
-async function acquireLock(file, holder, dispatchId, now = () => /* @__PURE__ */ new Date()) {
+async function acquireLock(file, holder, opts = {}, now = () => /* @__PURE__ */ new Date()) {
+  const kind = opts.kind ?? "driver";
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const at = now().toISOString();
     const contents = {
       pid: process.pid,
       holder,
-      acquired_at: now().toISOString(),
-      ...dispatchId !== void 0 ? { dispatch_id: dispatchId } : {}
+      kind,
+      acquired_at: at,
+      heartbeat_at: at,
+      ...opts.dispatchId !== void 0 ? { dispatch_id: opts.dispatchId } : {},
+      ...opts.workflowEpoch !== void 0 ? { workflow_epoch: opts.workflowEpoch } : {},
+      ...opts.workspace !== void 0 ? { workspace: opts.workspace } : {}
     };
     let fd;
     try {
@@ -18845,13 +19222,48 @@ async function acquireLock(file, holder, dispatchId, now = () => /* @__PURE__ */
     } catch (err) {
       const code = err.code;
       if (code !== "EEXIST") {
-        return { ok: false, reason: `lock file could not be created: ${err.message}`, holder: null };
+        return {
+          ok: false,
+          reason: `lock file could not be created: ${err.message}`,
+          holder: null,
+          failure: "error"
+        };
       }
       const existing = await readLock(file);
-      const age = await lockAgeMs(file, now().getTime());
-      const stale = existing === null || !isAlive(existing.pid) || age > MAX_LOCK_AGE_MS;
-      if (!stale) {
-        return { ok: false, reason: "workspace busy: lock held by a live process", holder: existing };
+      if (existing === null) {
+        if (kind === "executor") {
+          return {
+            ok: false,
+            reason: "workspace-conflict: executor lock exists but cannot be read; the state of the previous executor is unknown \u2014 run `gateflow driver unlock` after confirming the old client stopped (fail safe)",
+            holder: null,
+            failure: "workspace-conflict"
+          };
+        }
+      } else if (kind === "executor") {
+        if (isAlive(existing.pid)) {
+          return {
+            ok: false,
+            reason: `workspace busy: executor lock held by ${existing.holder} pid ${existing.pid}`,
+            holder: existing,
+            failure: "busy"
+          };
+        }
+        return {
+          ok: false,
+          reason: `workspace-conflict: executor lock holder pid ${existing.pid} is gone, but the desktop Agent it started may still be running (a Driver process ending does not mean the Agent stopped). Confirm the old client stopped, then run \`gateflow driver unlock\` to release explicitly (V1.1 Phase 7, fail safe)`,
+          holder: existing,
+          failure: "workspace-conflict"
+        };
+      } else {
+        const age = await lockAgeMs(file, now().getTime());
+        if (isAlive(existing.pid) && age <= MAX_LOCK_AGE_MS) {
+          return {
+            ok: false,
+            reason: `workspace busy: driver lock held by ${existing.holder} pid ${existing.pid}`,
+            holder: existing,
+            failure: "busy"
+          };
+        }
       }
       try {
         await (0, import_promises7.unlink)(file);
@@ -18866,7 +19278,7 @@ async function acquireLock(file, holder, dispatchId, now = () => /* @__PURE__ */
     }
     return { ok: true };
   }
-  return { ok: false, reason: "workspace busy: lock held by a live process", holder: await readLock(file) };
+  return { ok: false, reason: "workspace busy: lock held by a live process", holder: await readLock(file), failure: "busy" };
 }
 async function releaseLock(file, holder, dispatchId) {
   const existing = await readLock(file);
@@ -18879,6 +19291,34 @@ async function releaseLock(file, holder, dispatchId) {
   } catch {
     return false;
   }
+}
+async function refreshLock(file, now = () => /* @__PURE__ */ new Date()) {
+  const existing = await readLock(file);
+  if (existing === null || existing.pid !== process.pid) return;
+  const at = now().toISOString();
+  await (0, import_promises7.writeFile)(
+    file,
+    JSON.stringify({ ...existing, acquired_at: at, heartbeat_at: at }, null, 2) + "\n",
+    "utf8"
+  );
+}
+async function forceReleaseExecutorLock(file, dispatchId) {
+  const existing = await readLock(file);
+  if (existing === null) {
+    return { ok: false, reason: "no executor lock present \u2014 nothing to release" };
+  }
+  if (existing.dispatch_id !== dispatchId) {
+    return {
+      ok: false,
+      reason: `executor lock guards dispatch ${existing.dispatch_id ?? "(unknown)"}, not ${dispatchId} (refusing to release a different dispatch's lock)`
+    };
+  }
+  try {
+    await (0, import_promises7.unlink)(file);
+  } catch (err) {
+    return { ok: false, reason: `could not remove the lock file: ${err.message}` };
+  }
+  return { ok: true, holder: existing };
 }
 
 // src/driver/dispatch.ts
@@ -18914,12 +19354,23 @@ async function dispatchIntent(deps, repositoryInfo, discovery, intent) {
     if (existing !== null && existing.dispatch_id === dispatchId) {
       await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
     }
-    const lock = await acquireLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId, now);
+    const lock = await acquireLock(
+      executorLockFile(paths),
+      DRIVER_LOCK_HOLDER,
+      {
+        dispatchId,
+        workflowEpoch: intent.epoch,
+        workspace: paths.root,
+        kind: "executor"
+      },
+      now
+    );
     if (!lock.ok) {
+      const reason = lock.failure === "workspace-conflict" ? "workspace-executor-conflict" : "workspace-executor-busy";
       deps.log.warning(
-        `skip ${dispatchId}: workspace-executor-busy (holder ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : "unknown"})`
+        `skip ${dispatchId}: ${reason} (holder ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : "unknown"})`
       );
-      return { dispatched: false, dispatchId, reason: "workspace-executor-busy" };
+      return { dispatched: false, dispatchId, reason };
     }
     lockAcquired = true;
   }
@@ -19266,7 +19717,12 @@ async function runPreflight(client, repositoryInfo, dispatch, identity) {
     return { ok: false, reason: `issue #${dispatch.issue_number} carries multiple ai:* labels [${labels.join(", ")}] (corrupted state \u2014 refusing to guess)`, obsolete: false };
   }
   const comments = await client.listComments(ref2);
-  const view = readIssueRecords(comments, identity.gateLogins);
+  const view = readIssueRecordsForIssue(comments, {
+    repositoryId: repositoryInfo.id,
+    issueNumber: dispatch.issue_number,
+    gateLogins: identity.gateLogins,
+    bootstrapIssuers: identity.bootstrapIssuers
+  });
   if (view.suspect.length > 0) {
     return {
       ok: false,
@@ -19295,23 +19751,31 @@ async function runPreflight(client, repositoryInfo, dispatch, identity) {
         obsolete: true
       };
     }
-    const hash = planSha256(plan.body);
-    const candidates = view.approvals.filter(
-      (entry) => entry.record.workflow_epoch === dispatch.workflow_epoch && entry.record.plan_comment_id === dispatch.plan_comment_id && entry.record.plan_sha256 === hash && approvalRecordAnchorFailure(entry.record, comments, identity.trustedHumans, identity.repoOwner) === null
-    );
-    if (candidates.length === 0) {
+    const binding = validateApprovalBinding({
+      epoch: dispatch.workflow_epoch,
+      repositoryId: repositoryInfo.id,
+      issueNumber: dispatch.issue_number,
+      comments,
+      gateIssuers: identity.gateLogins,
+      trustedHumans: identity.trustedHumans,
+      repoOwner: identity.repoOwner
+    });
+    if (!binding.ok) {
       return {
         ok: false,
-        reason: `no valid Gate-issued approval record binds (epoch, plan ${String(dispatch.plan_comment_id)}, hash)`,
+        reason: `executor approval binding invalid: ${binding.reason}`,
         obsolete: true
       };
     }
-    const conflict = approvalRecordsConflict(candidates);
-    if (conflict.conflict) {
-      return { ok: false, reason: `conflicting approval records: ${conflict.reason ?? "divergent content"}`, obsolete: true };
+    if (binding.planCommentId !== dispatch.plan_comment_id) {
+      return {
+        ok: false,
+        reason: "approval binding names a different plan comment than the dispatch document",
+        obsolete: true
+      };
     }
-    planCommentId = plan.id;
-    planHash = hash;
+    planCommentId = binding.planCommentId;
+    planHash = binding.planSha256;
   }
   return {
     ok: true,
@@ -19438,6 +19902,7 @@ async function syncDispatch(deps, repositoryInfo, dispatchId) {
   const receipt = await readReceipt(paths, dispatchId);
   const preflight = await runPreflight(deps.client, repositoryInfo, inboxDispatch, {
     gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
+    bootstrapIssuers: bootstrapIssuersFor(deps.config, repositoryInfo),
     trustedHumans: /* @__PURE__ */ new Set([
       repositoryInfo.owner.toLowerCase(),
       ...deps.config.trustedHumans.map((login) => login.toLowerCase())
@@ -19464,7 +19929,14 @@ async function syncDispatch(deps, repositoryInfo, dispatchId) {
     const isConsumerPlanAccepted = role === "consumer" && snapshot.view.approvals.some(
       (entry) => entry.record.workflow_epoch === snapshot.epoch && entry.record.plan_comment_id === receipt.published_comment_id
     );
-    const isExecutorReportAccepted = role === "executor" && snapshot.aiState === "ai:done";
+    const isExecutorReportAccepted = role === "executor" && snapshot.view.transitions.some(
+      ({ record }) => transitionMatchesReceipt(record, {
+        epoch: snapshot.epoch,
+        dispatchId: inboxDispatch.dispatch_id,
+        transition: "T6",
+        sourceCommentId: receipt.published_comment_id ?? -1
+      })
+    );
     if (isConsumerPlanAccepted || isExecutorReportAccepted) {
       await writeReceipt(paths, {
         ...receiptBase(receipt, dispatchId),
@@ -19860,7 +20332,12 @@ async function startDriver(deps) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
   const now = deps.now ?? (() => /* @__PURE__ */ new Date());
-  const lock = await acquireLock(driverLockFile(paths), DRIVER_LOCK_HOLDER, void 0, now);
+  const lock = await acquireLock(
+    driverLockFile(paths),
+    DRIVER_LOCK_HOLDER,
+    { kind: "driver" },
+    now
+  );
   if (!lock.ok) {
     throw new Error(
       `another GateFlow driver instance appears to be running for this workspace (driver.lock held by ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : "an unknown process"}); refusing to start a second instance (single-writer rule, hardening \xA79)`
@@ -19930,6 +20407,8 @@ async function startDriver(deps) {
       }
       cycling = false;
       await drain();
+      await refreshLock(driverLockFile(paths), now).catch(() => {
+      });
       await sleep2(pollMs);
     }
   } finally {
@@ -19961,6 +20440,7 @@ Usage:
   gateflow driver start  [--root <dir>] [--config <file>]   poll + watch until interrupted
   gateflow driver status [--root <dir>] [--config <file>]   show local workspace state (offline)
   gateflow driver retry <dispatchId> [--root <dir>]         clear a receipt so the next cycle re-dispatches
+  gateflow driver unlock <dispatchId> [--root <dir>]        release a conflicted executor lock (V1.1 Phase 7)
 
 Environment:
   GITHUB_TOKEN          required for once/start; never written to disk
@@ -19996,12 +20476,12 @@ function parseArgs(argv) {
   }
   if (positionals[0] === "driver") positionals.shift();
   const command = positionals[0];
-  if (command !== "once" && command !== "start" && command !== "status" && command !== "retry") {
+  if (command !== "once" && command !== "start" && command !== "status" && command !== "retry" && command !== "unlock") {
     return { ok: false, error: `unknown command "${command ?? ""}"` };
   }
   const dispatchId = positionals[1] ?? null;
-  if (command === "retry" && dispatchId === null) {
-    return { ok: false, error: "retry requires a <dispatchId> argument" };
+  if ((command === "retry" || command === "unlock") && dispatchId === null) {
+    return { ok: false, error: `${command} requires a <dispatchId> argument` };
   }
   return { ok: true, args: { command, dispatchId, root, config } };
 }
@@ -20130,6 +20610,28 @@ async function runRetry(args) {
   }
   return 0;
 }
+async function runUnlock(args) {
+  const dispatchId = args.dispatchId ?? "";
+  if (!DISPATCH_DIR_PATTERN.test(dispatchId)) {
+    console.error(
+      `invalid dispatch id: ${JSON.stringify(dispatchId)} (expected gf_r<id>_i<issue>_w<epoch-code>_<role>_<revision>)`
+    );
+    return 1;
+  }
+  const config = await loadConfig(args.root, args.config);
+  const paths = resolveWorkspace(args.root, config.driver.workspaceDir);
+  const result = await forceReleaseExecutorLock(executorLockFile(paths), dispatchId);
+  if (result.ok) {
+    console.log(
+      `executor lock released for ${dispatchId} (was held by ${result.holder.holder} pid ${result.holder.pid}, acquired ${result.holder.acquired_at}).`
+    );
+    console.log("Make sure the old agent client is really stopped before re-dispatching.");
+  } else {
+    console.error(`unlock failed: ${result.reason}`);
+    return 1;
+  }
+  return 0;
+}
 async function main(argv) {
   const parsed = parseArgs(argv);
   if (!parsed.ok) {
@@ -20147,6 +20649,8 @@ ${USAGE}`);
         return await runStatus(parsed.args);
       case "retry":
         return await runRetry(parsed.args);
+      case "unlock":
+        return await runUnlock(parsed.args);
     }
   } catch (err) {
     if (err instanceof ConfigError) {

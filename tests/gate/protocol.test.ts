@@ -84,6 +84,6 @@ describe('Phase 0 protocol freeze (docs/protocol.md <-> src/protocol.ts)', () =>
     // Gate version tracks the implementation milestone (V1 hardening = 1.0.0);
     // the frozen protocol schema itself moved to 2 in the same wave
     // (SCHEMA_VERSION above).
-    expect(GATE_VERSION).toBe('1.0.0');
+    expect(GATE_VERSION).toBe('1.1.0');
   });
 });

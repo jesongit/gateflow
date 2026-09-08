@@ -60,6 +60,13 @@ export interface DriverConfig {
    * run. Default true.
    */
   requireExplicitHumans: boolean;
+  /**
+   * V1.1 Phase 2 (Epoch Record Trust): explicit allowlist of Bootstrap
+   * Driver identities allowed to issue `driver_bootstrap` workflow_epoch
+   * records. Empty = default rule: on a personal (User-type) repository the
+   * owner; otherwise NONE (Organization repos must configure this).
+   */
+  bootstrapDrivers: string[];
   /** Role → agent name; an absent role gets no activation agent. */
   routing: { consumer?: string; executor?: string };
   /** Agent name → activation config. */
@@ -88,6 +95,7 @@ export function defaultConfig(): DriverConfig {
     },
     trustedHumans: [],
     gateLogins: ['github-actions[bot]'],
+    bootstrapDrivers: [],
     requireExplicitHumans: true,
     routing: {},
     agents: {},
@@ -244,6 +252,18 @@ export function parseConfig(raw: unknown): DriverConfig {
       errors.push('gate_logins: must be a list of non-empty strings');
     } else {
       config.gateLogins = gateLogins as string[];
+    }
+  }
+
+  const bootstrapDrivers = raw['bootstrap_drivers'];
+  if (bootstrapDrivers !== undefined) {
+    if (
+      !Array.isArray(bootstrapDrivers) ||
+      bootstrapDrivers.some((h) => typeof h !== 'string' || h.length === 0)
+    ) {
+      errors.push('bootstrap_drivers: must be a list of non-empty strings');
+    } else {
+      config.bootstrapDrivers = bootstrapDrivers as string[];
     }
   }
 
