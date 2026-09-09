@@ -1,150 +1,231 @@
 # GateFlow
 
-> **GitHub-native Human-Gated Agent Runtime。GitHub 保存正式状态；Gate 控制授权和状态迁移；Driver 负责任务发现、派发和同步；Agent 只通过本地 Workspace Protocol 接收任务、汇报进度和提交结果。**（V1 定位，引自 [docs/architecture-v1.md](docs/architecture-v1.md) §1）
+> **轻量的 GitHub-native AI 工作流工具。** 用户在 GitHub Issue 中提出任务，AI 生成计划，人类批准后 AI 执行，结果同步回 GitHub：
+>
+> ```text
+> Issue → Plan → Approve → Execute → Report → Done
+> ```
 
-职责一句话：
+没有常驻 Server、没有数据库、没有 Web UI、没有消息队列。GitHub 是唯一正式状态来源；Gate 是运行在 GitHub Actions 上的确定性程序；Driver 是运行在你本地机器上的确定性 CLI（`gateflow`）；Agent（ChatGPT / ZCode / 任意客户端）只读写本地 `.gateflow/` 工作区，**不需要任何 GitHub 凭证**。
+
+## V1 Architecture & Design Principles
+
+本章是后续所有讨论与开发的架构依据；旧版架构文档仅作历史参考。
+
+### 产品定位
+
+GateFlow 是一个轻量的 GitHub-native AI 工作流工具，**不是通用 Agent 平台**。核心能力只有一条：
 
 ```text
-Gate 管"能不能做"，Driver 管"什么时候做"，Adapter 管"怎么叫醒"，Skill 管"Agent 怎么干活"。
+Issue → Plan → Approve → Execute → Report
 ```
 
-没有常驻 Server、没有数据库、没有 Web UI。GitHub 是唯一正式状态载体；Gate 是运行在 GitHub Actions 上的确定性程序；Driver 是运行在你本地机器上的确定性 CLI（`gateflow`）；Agent（ChatGPT / ZCode / 任意客户端）只读写本地 `.gateflow/` 工作区，**不需要任何 GitHub 凭证**。
+V1 面向个人开发者和少量项目，优先支持本地 ChatGPT、ZCode 等 AI 客户端。不以多 Agent 平台、自动调度平台或通用 AI Control Plane 为目标。
 
-## V1 架构总览
+### 核心架构
 
 ```text
-GitHub（唯一正式状态：Issue / Comment / Label / PR / Timeline）
-   ↕                              ↕
-Gate（GitHub Action，事件驱动）   Driver（本地进程，轮询 + 同步）
- 授权 / 命令解析 / 状态迁移        发现 / 派发 / 校验 / GitHub 同步
-   └──────── GateFlow Runtime ─────────┘
-                  ↕
-   Workspace Protocol（.gateflow/：inbox / outbox / receipts）
-                  ↕
-        Any Agent（ChatGPT / ZCode / …，无 GitHub 凭证）
+                  GitHub
+           Issue / Plan / Report
+                    ↕
+             GitHub Actions
+                 Gate
+          授权校验 / 状态迁移
+                    ↕
+              Local Driver
+       任务准备 / 文件同步 / 结果发布
+                    ↕
+               .gateflow/
+                    ↕
+          ChatGPT / ZCode + Skill
+               规划 / 执行
 ```
 
-- **Gate**（`dist/index.js`，GitHub JS Action）：事件驱动，只做确定性判定——Actor Identity / Human Commands / State Validation / Plan & Approval Validation / Marker Validation / State Transition / Approval Proof。不启动 Agent、不调 LLM、不轮询、不碰本地 Workspace。
-- **Driver**（`dist/cli.js`，本地 CLI，`src/driver/`）：轮询 GitHub，构建 `.gateflow/inbox/` 派发，经 Activation Adapter 唤醒 Agent，监听 `.gateflow/outbox/`，按严格 Schema 与角色白名单校验产出，再以注册在 `trusted-agents` 里的 Bot 身份把 Plan / Tracker / Completion 同步回 GitHub。**不调用 LLM；不自己决定状态迁移**——它只发布协议对象，迁移由 Gate 完成。
-- **Workspace Protocol**（`.gateflow/`）：Agent 通信边界。inbox（Driver 写，Agent 只读）/ outbox（Agent 写，Driver 读）。契约冻结在 [docs/workspace-protocol.md](docs/workspace-protocol.md)。
-- **Agent**：理解、规划、编码、验证、汇报。**不直接访问 GitHub（无 GitHub MCP / PAT）；不改 Workflow State。**
-
-## 组件与职责边界（冻结）
+职责固定，只有四个核心组件：
 
 | 组件 | 职责 | 明确不做 |
 | --- | --- | --- |
-| **GitHub** | 唯一正式状态载体（Issue / Comment / Label / PR / Timeline） | 不引入独立数据库 |
-| **Gate**（GitHub Action，确定性） | Actor Identity / Human Commands / State Validation / Plan & Approval Validation / Marker Validation / State Transition / Approval Proof | 不启动 Agent、不调 LLM、不轮询、不碰本地 Workspace、不解析 AI 自然语言 |
-| **Driver**（本地，确定性） | Discovery / Dispatch / Inbox 构建 / Outbox 监听与校验 / GitHub 同步 / Dedup / Retry / Crash Recovery / Feedback 回流 | **不调用 LLM**；不自己决定状态迁移（只发布协议对象，迁移由 Gate 完成） |
-| **Workspace Protocol**（`.gateflow/`） | Agent 通信边界：inbox（Driver 写，Agent 只读）/ outbox（Agent 写，Driver 读）/ receipts / logs | 不是正式状态（GitHub 才是） |
-| **Activation Adapter** | 只负责"Dispatch 准备好后如何唤醒客户端"（probe / notify / cancel） | 不负责通信（通信 = Workspace Protocol）；不做脆弱 GUI 自动化 |
-| **Skill** | 教 Agent 怎么规划、开发、验证、汇报 | 不含 GitHub MCP / Label / Marker / Comment / Token 等系统集成知识 |
-| **Agent** | 理解、规划、编码、验证、汇报 | 不直接访问 GitHub（无 GitHub MCP / PAT）；不改 Workflow State |
+| **GitHub** | 唯一正式状态来源：Issue 需求、当前 Plan、人类审批、执行报告、正式工作流状态、审计记录 | 不引入数据库；本地文件只是工作副本和运行缓存 |
+| **Gate**（GitHub Action） | 校验事件与身份；解析人类命令；校验 Plan 与审批（Gate-issued 记录）；校验执行授权关联；正式状态迁移；修复可安全恢复的状态投影 | 不启动 AI、不调 LLM、不管理本地 Workspace |
+| **Driver**（本地 CLI） | 拉取当前任务；准备本地任务文件；输出可复制提示词；校验 AI 产出；将 Plan / Report 同步到 GitHub；重试、去重与恢复 | 不调用 LLM；不自行决定 GitHub 正式状态 |
+| **Skill**（`skills/gateflow`） | 指导 AI 如何规划、开发、验证和汇报（`plan` / `execute` 两种模式） | 不含 GitHub API、授权和状态迁移知识 |
+| **Agent** | 实际 AI 工作 | 不直接操作 GateFlow 的 GitHub 协议（无 Token、不发评论、不打标签） |
 
-（表引自 [docs/architecture-v1.md](docs/architecture-v1.md) §2，冻结。）
+### 确定性优先
 
-## 核心原则：确定性优先
+能够通过普通程序完成的事情，不交给 AI。AI 不负责：
 
-1. **所有能由确定性程序完成的事情，都不经过 AI**；AI 只参与真正需要理解、判断、规划和开发的部分。
-2. **GitHub 是唯一正式状态存储**：`.gateflow/` 工作区、receipts 都是本地缓存，不是正式状态。
-3. **状态迁移权唯一属于 Gate**：其余角色只能发布"协议对象"——`Agent Output → Driver（校验）→ GitHub Protocol Object → Gate → State Transition`。
-4. **审批永远是人类动作，但授权事实由 Gate 固化**：`/approve <plan-comment-id>`（Plan 绑定审批）只由 Trusted Human 在 Issue 上发出；Gate 校验通过后签发 **approval 记录**（绑定 epoch / Plan id / Plan 内容 SHA-256 / 审批人），先固化记录再迁移标签。Driver 派发与同步前独立重验该记录——**没有 Gate 记录，任何标签与评论都不能解锁执行**。
-5. **Marker 只是结构标记**：任何人都能写出 Marker 文本，Marker 永远不能当权限证明。
-6. **两个身份概念永不合并**：Trusted Human（默认 = repo owner）是唯一命令发布者；Trusted Agent 在 V1 重定义为**受控 Driver 的 GitHub Identity**（如 `gateflow-agent[bot]`），只用于让 Gate 认可 Driver 发布的 marker 评论——AI 本身永远不持有该凭证。
-7. **四层状态严格分离**（schema 2）：`published`（远端对象已确认）≠ `accepted`（Gate 消费完成）；Agent Claim ≠ 授权；旧 epoch 的记录与派发随新轮次自动作废。
+* 解析 GitHub 协议；
+* 判断审批是否有效；
+* 修改正式工作流状态；
+* 管理 GitHub Token；
+* 执行同步重试和幂等处理。
 
-## 文档导航
+### 不提前复杂化
 
-| 文档 | 内容 |
-| --- | --- |
-| [docs/architecture-v1.md](docs/architecture-v1.md) | **V1 架构（冻结）**：组件边界、数据流、身份模型、目录结构 |
-| [docs/workspace-protocol.md](docs/workspace-protocol.md) | **Workspace Protocol 契约（冻结）**：`.gateflow/` 布局、JSON Schema、dispatch_id 规则、角色白名单、`gateflow.config.yml` |
-| [docs/driver.md](docs/driver.md) | **Driver 运维手册**：安装构建、配置参考、凭证与身份、CLI（`start / once / status / retry`）、发现规则、去重 / 重试 / 崩溃恢复、FAQ |
-| [docs/agent-skills.md](docs/agent-skills.md) | **Agent 指南（V1）**：四个 Skill 的安装与工作方式、无 GitHub 原则、会话生命周期、故障排查 |
-| [docs/protocol.md](docs/protocol.md) | V0 Gate 协议（冻结）：Labels / 状态机 / Commands / Markers / Maturity / Permissions / 并发规则 |
-| [docs/security.md](docs/security.md) | 安全模型：V0 Gate 权限边界 + **V1 Workspace 安全模型**（凭证隔离 / 审批证明链 / 路径防护） |
-| [docs/usage.md](docs/usage.md) | 协议速查表 + V1 六步安装摘要 + 场景 A~J 日常操作手册（附录：V0 手动调试模式） |
-| [docs/integration.md](docs/integration.md) | **接入项目仓库详细指南**：Part 1 Gate 接入（三种可引用模式、bootstrap）+ Part 2 Driver + Workspace 接入（配置、Skills、冒烟闭环） |
-| [docs/release.md](docs/release.md) | 发布手册：版本策略（`package.json` / `GATE_VERSION`）、两个 dist 产物与 `check:dist`、`@v0` / `@v1` 浮动 tag 策略 |
-| [docs/architecture.md](docs/architecture.md) | V0 架构文档（历史，仅供追溯） |
-| [计划总文档](github-native-ai-workflow-v0-development-and-usage-guide.md) | V0 详细开发计划与使用手册（Phase 0~11） |
+> GateFlow V1 以满足当前实际使用需求为目标。后续讨论和开发应优先使用现有组件解决问题，不为假设中的多 Agent、远程部署、大规模并发或未来插件需求提前增加抽象。只有真实需求出现，并且现有设计确实无法合理满足时，才考虑增加新的组件、协议或扩展机制。
 
-## 仓库结构
+具体约束：
+
+* 不为了未来可能支持多个 Agent 而提前设计复杂路由；
+* 不为了未来可能自动唤醒客户端而提前设计 Adapter 框架；
+* 不为了未来可能远程部署而增加 Server；
+* 不为了未来可能并行执行而增加 Scheduler；
+* 不为了未来可能扩展功能而增加插件系统；
+* 不为了未来可能需要查询而增加数据库；
+* 不为了未来可能兼容旧版本而长期保留两套实现；
+* 不为了"架构完整"增加没有实际使用场景的状态、记录或配置。
+
+**新增设计必须能够回答：当前哪个真实需求需要它？现有实现为什么不能满足？最简单的替代方案是什么？**
+
+### 允许破坏性修改
+
+项目仍处于开发阶段。允许删除旧协议、旧配置、不再使用的 Skill；允许合并模块、重命名命令、调整 Workspace 文件格式、删除不再适用的测试和文档。不为尚未正式发布的旧版本维护复杂兼容层（迁移说明见 [docs/migration.md](docs/migration.md)）。
+
+### 安全性不因简化而退化
+
+简化不等于删除必要的安全约束。以下不变量必须保留：
+
+* 人类审批绑定具体 Plan（`/approve <plan-comment-id>` + Gate-issued approval 记录）；
+* Plan 内容变化后旧审批失效（plan sha256 绑定）；
+* 只有 Gate 能确认正式状态迁移（标签只由 Gate 写）；
+* Agent 不持有 GitHub 凭证；
+* Driver 不凭标签或 AI 自述直接放行执行（独立重验 Gate 记录）；
+* 重复事件和重复同步不得造成重复执行（Operation ID 调和 + replay 保护）；
+* 旧任务输出不得被当作当前任务结果（epoch / 输入快照绑定）；
+* Marker 与普通协议文本永远不是身份或授权证明。
+
+### 后续计划的约束
+
+> 后续开发计划默认遵循本架构。除非用户明确提出新需求，否则不得主动扩展为多 Agent 平台、复杂自动化框架或通用 Control Plane。架构变更应以实际问题为依据，优先局部修改，而不是重新设计整个系统。
+
+判断一个新需求时依次回答：
+
+1. 当前真实需求是什么？
+2. 现有 GitHub + Gate + Driver + Skill 能否直接解决？
+3. 是否可以通过增加一个简单命令、配置或函数完成？
+4. 是否真的需要新增组件或协议？
+5. 新增复杂度是否明显小于它解决的问题？
+
+优先级：复用现有功能 → 局部修改 → 增加简单配置或命令 → 增加小型模块 → 确有必要时才增加新架构层。
+
+## 用户如何完成一条任务
 
 ```text
-src/
-├── index.ts               # Gate Action 入口（不变）
-├── cli.ts                 # gateflow driver CLI（start / once / status / retry）
-├── protocol/              # 共享协议层（Gate 与 Driver 的单一事实来源）
-│   ├── records.ts         # Gate-issued 记录（epoch / approval / feedback）+ Operation ID
-│   ├── plan.ts            # Plan 规范化 + plan_sha256（冻结唯一实现）
-│   └── epoch.ts           # workflow epoch（CSPRNG，非时间戳/计数推导）
-├── gate/                  # Gate（V1 审批增强 → schema 2 记录签发）
-│   ├── gate.ts  commands.ts  states.ts  permissions.ts  identity.ts
-│   ├── markers.ts  tracker.ts  github.ts  protocol.ts  approvals.ts
-├── driver/                # V1 Local Driver
-│   ├── driver.ts          # 编排循环（once / start 共用）+ 单实例锁
-│   ├── discovery.ts       # GitHub Canonical State → DispatchIntent（含 epoch 引导）
-│   ├── intent.ts          # DispatchIntent 类型与推导（记录驱动）
-│   ├── dispatch.ts        # Intent → inbox 构建 → 派发（快照绑定 + executor 锁）
-│   ├── preflight.ts       # 同步前统一授权校验（epoch/plan/approval 绑定）
-│   ├── sync.ts            # outbox → GitHub（operation 调和 + published/accepted）
-│   ├── submit.ts          # Producer 提交（submission_id + source-id 调和）
-│   ├── workspace-lock.ts  # 同 Worktree 单 Executor + 同机单 Driver 锁
-│   ├── dedup.ts  retry.ts  config.ts
-├── workspace/             # Workspace Protocol 运行时（schema 2）
-│   ├── protocol.ts  schemas.ts  paths.ts  inbox.ts  outbox.ts
-│   ├── watcher.ts  validation.ts  submit.ts
-├── activation/            # Activation Adapters（env 白名单 + notified/started/failed 语义）
-│   ├── types.ts  env.ts  manual.ts  chatgpt.ts  zcode.ts
-└── github/                # Driver 侧 GitHub 访问层（独立于 gate/github.ts）
-    ├── client.ts  issue-sync.ts  comments.ts
-protocol/
-├── workspace-schema-v2.json   # Workspace Protocol JSON 镜像（schema 2）
-└── github-schema-v2.json      # GitHub 协议 + Gate 记录 JSON 镜像（schema 2）
-skills/                        # agent / consumer / executor / producer（schema 2 语义）
-dist/                          # esbuild 产物（index.js = Gate Action；cli.js = Driver），必须提交
-docs/                          # 架构 / 协议 / Driver / 安全 / 发布等
-tests/                         # vitest（gate / workspace / driver / github / activation / integration / security / protocol / hardening）
+chat（或手动创建 Issue）
+  ↓  /ai-plan
+GitHub Issue（Gate 进入 PLANNING）
+  ↓  gateflow run
+Driver 准备任务目录 + 打印提示词
+  ↓  粘贴到 ChatGPT / ZCode（plan 模式）
+AI 写 plan.md + result.json
+  ↓  gateflow sync
+Plan 评论发布（Gate 迁 REVIEW）
+  ↓  /approve <plan-comment-id>   （或 /change <反馈> 重新规划）
+Gate 固化 approval 记录，迁 READY
+  ↓  gateflow run
+Driver 准备执行任务（plan.md 作为输入）
+  ↓  粘贴到 ChatGPT / ZCode（execute 模式）
+AI 开发、验证，写 report.md + result.json
+  ↓  gateflow sync
+Tracker / Report 评论发布（Gate 迁 WORKING → DONE）
+  ↓  人工检查，Close Issue
 ```
 
-（目录结构以 [docs/architecture-v1.md](docs/architecture-v1.md) §5 为准。）
+人类命令只有三个 + 一个保险：
 
-## Schema 2 Hardening 摘要
+* `/ai-plan` — 开始规划；
+* `/change <反馈>` — 提交修改意见，重新生成 Plan（V1 将 `/choose` 并入此命令）；
+* `/approve <plan-comment-id>` — 批准当前 Plan；
+* `/cancel` — 退出工作流（保留的简单保险，不做完整取消状态机）。
 
-本轮 Hardening（决策全文见 [docs/plans/v1_hardening_decisions.md](docs/plans/v1_hardening_decisions.md)）是一次破坏性协议升级：
+## 快速开始（五步）
 
-- **GitHub Protocol Schema 2**：`/approve` 签发 Gate-issued **approval 记录**（Plan 内容哈希绑定，先固化记录再迁移标签）；`/choose` `/change` 签发 **feedback 记录**（Consumer Revision 的唯一来源）；`/ai-plan` 签发 **workflow epoch 记录**（旧轮次自动作废）；Organization 仓库必须显式配置 Trusted Humans（fail closed）。
-- **Workspace Protocol Schema 2**：dispatch id 绑定 epoch；receipt 拆分 `published` / `accepted`（取代单一 `synced`），新增 `obsolete`；inbox 输入快照哈希绑定；Producer 提交携带 `submission_id`；Driver 私有状态移入 `.gateflow/driver/`。
-- **可靠性**：所有 GitHub 写入走 Operation ID + 远端调和（adopt / conflict fail-closed），不依赖本地 receipt 恰好成功；Action 运行时升级 **Node24**（Node20 已于 2026-09-23 从 runner 移除）。
-
-（目录结构以 [docs/architecture-v1.md](docs/architecture-v1.md) §5 为准。）
-
-## 快速开始（六步）
-
-> 逐步详细操作见 [docs/integration.md](docs/integration.md)；Driver 细节见 [docs/driver.md](docs/driver.md)。
+> 逐步详细操作见 [docs/integration.md](docs/integration.md)；CLI 细节见 [docs/driver.md](docs/driver.md)。
 
 ```bash
 # 第 1 步：bootstrap Gate（在目标仓库的检出目录里运行；生成后手动 commit + push）
 node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHUB_TOKEN"
 ```
 
-1. **bootstrap Gate**：初始化目标仓库——创建 6 个 `ai:*` 标签 + 生成 `.github/workflows/ai-workflow.yml`（幂等，绝不覆盖已有文件）；前提是 GateFlow 本体可被 `uses:` 引用（public 仓库 / 私有 + Access 策略 / 内嵌，三选一，见 integration.md 第 2 章）。
-2. **安装本地 Driver**：在本仓库执行 `npm install && npm run build:cli`，得到 `dist/cli.js`（或经 `npm run build` 与 Gate 产物一起构建）；之后用 `node dist/cli.js driver …`（或全局 `gateflow` bin）运行。
-3. **配置凭证与 `gateflow.config.yml`**：`export GITHUB_TOKEN=…`（**只存在于 Driver 进程环境**，永不写入 `.gateflow/` 与配置文件）；在目标仓库根目录创建 `gateflow.config.yml`（完整示例见 [docs/workspace-protocol.md](docs/workspace-protocol.md) §10）。
-4. **安装 Agent Skills**：把 `skills/agent`、`skills/consumer`、`skills/executor`、`skills/producer` 四个 Skill 装入你的 AI 客户端（ChatGPT / ZCode 等）。
-5. **配置角色路由**：在 `gateflow.config.yml` 的 `routing:` 里把 `consumer` / `executor` 路由到具体 agent（role 与 provider 分离，任意 role 可路由到任意 agent）。
-6. **启动 Driver**：
+1. **bootstrap Gate**：创建 6 个 `ai:*` 标签 + 生成 `.github/workflows/ai-workflow.yml`（幂等）。前提是 GateFlow 本体可被 `uses:` 引用（public 仓库 / 私有 + Access 策略 / 内嵌，三选一）。
+2. **安装本地 Driver**：`npm install && npm run build`，得到 `dist/cli.js`（`gateflow` bin）。
+3. **配置凭证与仓库**：`export GITHUB_TOKEN=…`（**只存在于 Driver 进程环境**）；仓库解析顺序：`gateflow.config.yml` 的 `repository` → `GATEFLOW_REPOSITORY` → git remote `origin`。配置文件可缺省（全部默认值），需要时只保留 `repository` / `trusted_humans` / `gate_logins` / `driver.workspace_dir` / `driver.max_attempts`。
+4. **安装 Skill**：把 `skills/gateflow` 这一个 Skill 装入你的 AI 客户端。
+5. **开始**：在 Issue 上评论 `/ai-plan`，然后：
 
 ```bash
-gateflow driver start        # 常驻轮询（或 node dist/cli.js driver start）
+gateflow run     # 准备任务并打印提示词 → 粘贴给 AI
+gateflow sync    # AI 完成后同步结果
+gateflow status  # 查看本地状态（离线）
+gateflow retry <task-id>  # 清除任务状态以便重新准备（离线）
 ```
 
-之后的标准闭环：Issue 上 `/ai-plan`（Gate 固化 epoch 记录）→ Driver 自动派发 Consumer → Agent 产出 Plan → Driver 发布 Plan 评论（Gate 迁 `ai:review`）→ 你 `/approve <plan-comment-id>`（**Gate 固化 approval 记录**后迁 `ai:ready`）→ Driver 独立重验批准记录后派发 Executor → Tracker / Completion Report（Gate 迁 `ai:working` → `ai:done`）→ 你检查后 Close Issue。
+> 运行环境要求：**Node.js ≥ 24**（Action 运行时与本地 Driver 均为 node24 目标）。
 
-> 运行环境要求：**Node.js ≥ 24**（Action 运行时与本地 Driver 均为 node24 目标；GitHub runner 已于 2026-09-23 移除 Node20）。
+## Workspace 一览（Agent 视角）
 
-本仓库自身开发：
+```text
+.gateflow/
+├── current.json            # 当前活动任务指针
+├── tasks/
+│   └── <task-id>/          # 一个目录 = 一个任务
+│       ├── task.json       # 任务绑定（mode / issue / 输入清单），Driver 最后写入
+│       ├── task.md         # 任务描述（Agent 只读）
+│       ├── plan.md         # plan 模式输出 / execute 模式输入（已批准计划）
+│       ├── feedback.md     # 人类反馈投影（若有）
+│       ├── report.md       # execute 模式输出
+│       └── result.json     # Agent 的最小结果声明（唯一机器输出）
+└── driver/                 # Driver 私有：state.json / locks / logs
+```
+
+Agent 只需要知道：当前任务是什么、是规划还是执行、读哪些文件、结果写到哪里。契约见 [docs/workspace-protocol.md](docs/workspace-protocol.md)。
+
+## V1 能力边界与已知限制
+
+**明确不进入 V1**：多 Agent 并行协作、自动任务分配与任务队列、Agent Registry、复杂角色权限系统、ChatGPT/ZCode 自动唤醒、远程 Agent 执行、多机器 Driver、分布式锁、常驻 Server、独立数据库、消息队列、Web Dashboard、插件市场、通用 Scheduler、自动 PR 合并、自动代码审查平台、组织级权限管理、为未来扩展预留的通用事件总线。
+
+**已知限制**：
+
+* 单工作区同一时间只有一个活动任务（显式 `--issue` 切换）；
+* Driver 锁只约束同一台机器上的进程，不构成跨机器互斥；
+* GitHub"读状态→写入"不是事务：Driver preflight 缩小竞态窗口，Gate 在每次消费协议对象时独立重验（纵深防御）；
+* 执行进度不回传 GitHub（Tracker 只表达 In Progress / Blocked），完成即报告；
+* Windows 上 Driver 私有目录没有 POSIX 权限位，隔离是协议级的不是 OS 级的。
+
+## 仓库结构
+
+```text
+src/
+├── index.ts               # Gate Action 入口
+├── cli.ts                 # gateflow CLI（run / sync / status / retry）
+├── protocol/              # 共享协议层（Gate 与 Driver 的单一事实来源）
+│   ├── records.ts         # Gate-issued 记录（epoch / approval / feedback）+ Operation ID
+│   ├── plan.ts            # Plan 规范化 + plan_sha256（冻结唯一实现）
+│   └── epoch.ts           # workflow epoch（CSPRNG）
+├── gate/                  # Gate（授权链 + 状态机，GitHub Action）
+│   ├── gate.ts  commands.ts  states.ts  permissions.ts  identity.ts
+│   ├── markers.ts  tracker.ts  github.ts  protocol.ts  approvals.ts
+├── driver/                # Local Driver（主动命令式）
+│   ├── driver.ts          # run / sync 命令编排 + 单实例锁
+│   ├── discovery.ts       # GitHub 状态 → Discovery
+│   ├── intent.ts          # 任务意图推导（纯函数；伪造审批死在这里）
+│   ├── prepare.ts         # 意图 → 任务目录 + 提示词
+│   ├── preflight.ts       # 同步前统一授权校验（epoch/plan/approval 绑定）
+│   ├── sync.ts            # result.json → GitHub（Operation 调和 + published/accepted）
+│   ├── prompts.ts         # Manual Activation 提示词
+│   ├── config.ts  workspace-lock.ts
+├── workspace/             # Workspace Protocol 运行时（schema 3）
+│   ├── protocol.ts  paths.ts  tasks.ts  validation.ts  driver-state.ts
+└── github/                # Driver 侧 GitHub 访问层（只读 + 发评论）
+    ├── client.ts  comments.ts  issue-sync.ts
+skills/gateflow/           # 唯一的 Agent Skill（plan / execute 两模式）
+dist/                      # esbuild 产物（index.js = Gate；cli.js = Driver），必须提交
+docs/                      # 架构 / 协议 / Driver / 安全 / 发布
+tests/                     # vitest（gate / workspace / driver / github / protocol / hardening / integration）
+```
+
+## 本仓库自身开发
 
 ```bash
 npm install        # 安装依赖
@@ -154,17 +235,38 @@ npm run typecheck  # tsc --noEmit（strict）
 npm test           # vitest
 ```
 
-## 从 V0 迁移
+## 文档导航
 
-V1 保留了 V0 的 Gate 协议（Labels / 状态机 / 命令解析 / Marker 规则不变），但改变了 Agent 与系统的交互边界：
+| 文档 | 内容 |
+| --- | --- |
+| [docs/workspace-protocol.md](docs/workspace-protocol.md) | **Workspace Protocol 契约（schema 3）**：任务目录布局、task.json / result.json、输入快照绑定 |
+| [docs/driver.md](docs/driver.md) | **Driver 手册**：安装、配置、CLI（run / sync / status / retry）、同步与恢复语义 |
+| [docs/protocol.md](docs/protocol.md) | GitHub 协议：Labels / 状态机 / Commands / Markers / Gate 记录 / 权限 |
+| [docs/security.md](docs/security.md) | 安全模型：授权链、凭证隔离、防伪造与防重放 |
+| [docs/integration.md](docs/integration.md) | 接入项目仓库指南：Gate 接入 + Driver + Skill + 冒烟闭环 |
+| [docs/usage.md](docs/usage.md) | 日常操作手册与场景速查 |
+| [docs/release.md](docs/release.md) | 发布手册：版本策略、dist 产物与 check:dist |
+| [docs/migration.md](docs/migration.md) | 从 schema 2（inbox/outbox + 四 Skill）迁移到 schema 3 |
+| [docs/architecture-v1.md](docs/architecture-v1.md) | 上一代 V1 架构文档（历史参考；本文 README 为现行依据） |
+| [docs/architecture.md](docs/architecture.md) | V0 架构文档（历史，仅供追溯） |
+| [docs/plans/](docs/plans/) | 历史计划文档（含本轮 V1 精简重构计划） |
 
-| 变化点 | V0 | V1 |
+## 从 schema 2 迁移（摘要）
+
+V1 精简重构是一次破坏性协议升级，核心变化：
+
+| 变化点 | schema 2 | schema 3（V1） |
 | --- | --- | --- |
-| **Agent 的 GitHub 访问** | Agent 配 GitHub MCP + PAT，直接读 Issue / 发评论 / 打标签 | **Agent 不再需要 GitHub MCP / PAT / Token**：只读 `.gateflow/inbox/`、只写 `.gateflow/outbox/`；GitHub 访问全部收归 Driver |
-| **审批命令** | `/approve`（全等匹配） | `/approve <plan-comment-id>`（Plan 绑定审批；细节见 [docs/protocol.md](docs/protocol.md)） |
-| **主流程** | 人手动对 AI 说"规划 #123 / 执行 #123"唤醒 Skill，AI 经 MCP 操作 GitHub | Driver 轮询自动发现、派发与同步；人只发 Gate 命令（`/ai-plan`、`/approve`、`/change`、`/choose`、`/cancel`） |
-| **人类反馈** | `/change` / `/choose` 后需再手动唤醒 Consumer | Driver 把反馈投影为 `FEEDBACK.md`，自动触发新一轮 Consumer 派发（work_revision 递增） |
-| **Trusted Agent 语义** | 为"AI 以 Bot 身份直接操作 GitHub"预留（默认空） | 重定义为**受控 Driver 的 GitHub Identity**（`gateflow-agent[bot]`），登记在 `trusted-agents` 输入 |
-| **安装内容** | 配置 GitHub MCP + 装 3 个 Skill | bootstrap Gate + 本地 Driver + `gateflow.config.yml` + 4 个 Skill；**不再配置 MCP** |
+| Skill | agent / consumer / executor / producer 四个 | **一个 `gateflow` Skill**（plan / execute 两模式） |
+| 工作区 | inbox / outbox 分离 + dispatch.json / receipt | 一个任务目录 `tasks/<task-id>/` + Driver 私有 `driver/state.json` |
+| 唤醒 | Driver 自动派发 + ChatGPT/ZCode Adapter | **Manual Activation**：`gateflow run` 打印提示词，用户粘贴 |
+| CLI | `driver start/once/status/retry` 常驻轮询 | `run / sync / status / retry` 主动命令 |
+| 命令 | /ai-plan /approve /change /choose /cancel | /ai-plan /approve **/change** /cancel（/choose 并入 /change） |
+| Producer | `.gateflow/submit/` 提交协议 | 删除；普通聊天或手动创建 Issue |
+| 执行进度 | status.json + PROGRESS.md + Tracker 进度编辑 | 删除；Tracker 只表达 In Progress / Blocked，完成即报告 |
 
-V0 的手动直连模式（MCP + 手动唤醒）仍可用于调试，但**不再是标准架构**——见 [docs/usage.md](docs/usage.md) 附录。
+细节见 [docs/migration.md](docs/migration.md)。
+
+---
+
+> **GateFlow V1 已收敛为 GitHub + Gate + Driver + Skill 的轻量架构。后续以实际需求驱动演进，优先保持简单，不提前建设通用 Agent 平台。需要新能力时，再在现有架构上按需增加。**

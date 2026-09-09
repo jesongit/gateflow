@@ -1,29 +1,27 @@
 /**
- * DispatchIntent type and derivation — PURE functions, no I/O (docs/
- * architecture-v1.md §5: "GitHub Canonical State → DispatchIntent").
+ * TaskIntent type and derivation — PURE functions, no I/O.
  *
- * SCHEMA 2 FROZEN CONSTRAINTS (docs/plans/v1_hardening_decisions.md §4-§5):
- * - Every dispatch binds the issue's CURRENT workflow epoch (the
- *   highest-comment-id Gate/Driver-issued epoch record). No epoch record →
- *   no intent (the Driver bootstraps one for planning issues elsewhere).
- * - Consumer revision = 1 + Gate-ACCEPTED feedback events of the current
- *   epoch (feedback_accepted records whose command comment still exists and
+ * FROZEN CONSTRAINTS (schema 2 hardening, kept intact):
+ * - Every task binds the issue's CURRENT workflow epoch (the
+ *   highest-comment-id Gate-issued epoch record). No epoch record → no task.
+ * - Plan revision = 1 + Gate-ACCEPTED feedback events of the current epoch
+ *   (feedback_accepted records whose command comment still exists and
  *   parses). Raw command counts are NEVER used: rejected, duplicated,
  *   foreign-epoch and plain-text comments don't count.
- * - Executor dispatches bind the Gate-issued approval RECORD: epoch match,
+ * - Execute tasks bind the Gate-issued approval RECORD: epoch match,
  *   plan-comment-id match AND plan_sha256 equality against the CURRENT plan
  *   body. A plan edited after its approval produces a hash mismatch → no
- *   intent (the stale approval cannot execute).
+ *   task (the stale approval cannot execute).
  * - Any suspect record (unparsable, or authored outside the gate-logins
- *   allowlist) fails the whole issue closed: no intents.
+ *   allowlist) fails the whole issue closed: no tasks.
  *
  * THIS IS WHERE ATTACKS DIE: a fake `ai:ready` label, a hand-copied
  * `/approve` comment, or an approval from a rejected/old round all produce
- * NO intent, because none of them is a valid Gate-issued record bound to
- * the current epoch and the exact current plan bytes.
+ * NO task, because none of them is a valid Gate-issued record bound to the
+ * current epoch and the exact current plan bytes.
  *
  * The Driver NEVER calls an LLM and NEVER transitions labels; it only turns
- * canonical GitHub state into dispatch intents for the dispatch layer.
+ * canonical GitHub state into task intents for the preparation layer.
  */
 import type { CommentDetail, IssueDetail } from '../github/client';
 import {
@@ -35,7 +33,7 @@ import {
 } from '../github/issue-sync';
 import { planSha256 } from '../protocol/plan';
 import { approvalRecordsConflict } from '../protocol/records';
-import type { Role } from '../workspace/protocol';
+import type { Mode } from '../workspace/protocol';
 import type { HumanFeedbackEntry } from '../github/issue-sync';
 
 /** Inputs the intent derivation reads from canonical state + config. */
@@ -48,20 +46,20 @@ export interface IntentContext {
   gateLogins: ReadonlySet<string>;
 }
 
-/** One to-be-dispatched unit of work derived from canonical GitHub state. */
-export interface DispatchIntent {
-  role: Role;
+/** One to-be-prepared unit of work derived from canonical GitHub state. */
+export interface TaskIntent {
+  mode: Mode;
   issueNumber: number;
   reason: 'planning' | 'feedback_applied' | 'approved_plan';
-  /** Consumer: zero-padded round (`'01'`). Executor: `'p<plan_comment_id>'`. */
+  /** Plan mode: zero-padded round (`'01'`). Execute mode: `'p<plan_comment_id>'`. */
   revision: string;
-  /** The workflow epoch this dispatch belongs to (schema 2, always present). */
+  /** The workflow epoch this task belongs to (always present). */
   epoch: string;
-  /** Executor only: the approved Plan comment id. */
+  /** Execute mode only: the approved Plan comment id. */
   planCommentId: number | null;
-  /** Executor only: the Gate-issued approval RECORD comment id. */
+  /** Execute mode only: the Gate-issued approval RECORD comment id. */
   approvalCommentId: number | null;
-  /** Executor only: the approval-bound plan content hash. */
+  /** Execute mode only: the approval-bound plan content hash. */
   planSha256: string | null;
 }
 
@@ -74,30 +72,30 @@ export function aiLabels(labels: readonly string[]): string[] {
   return labels.filter((label) => label.startsWith('ai:'));
 }
 
-function consumerRound(feedbackCount: number): string {
+function planRound(feedbackCount: number): string {
   return String(1 + feedbackCount).padStart(2, '0');
 }
 
 /**
- * Derive dispatch intents for one issue from canonical state.
+ * Derive task intents for one issue from canonical state.
  *
  * - closed issue, or 0 / >1 `ai:*` labels → [] (caller logs).
  * - no epoch record, or ANY suspect record → [] (fail closed).
- * - `ai:planning` → consumer planning round (reason `feedback_applied` when
- *   accepted feedback exists in this epoch).
- * - `ai:review` → consumer round ONLY when an accepted feedback event is
- *   NEWER than the latest Plan comment (a plan comment newer than all
- *   feedback means the plan already incorporates it).
- * - `ai:ready` → executor dispatch, gated by the independent approval-record
+ * - `ai:planning` → plan task (reason `feedback_applied` when accepted
+ *   feedback exists in this epoch).
+ * - `ai:review` → plan task ONLY when an accepted feedback event is NEWER
+ *   than the latest Plan comment (a plan comment newer than all feedback
+ *   means the plan already incorporates it).
+ * - `ai:ready` → execute task, gated by the independent approval-record
  *   re-validation (epoch + plan id + plan hash).
  * - `ai:working` | `ai:blocked` | `ai:done` → [] (sync-only states: the
- *   Driver's job here is outbox syncing, not dispatching).
+ *   Driver's job here is result syncing, not preparation).
  */
 export function deriveIntents(
   issue: IssueDetail,
   comments: CommentDetail[],
   ctx: IntentContext,
-): DispatchIntent[] {
+): TaskIntent[] {
   if (issue.state === 'closed') return [];
   const labels = aiLabels(issue.labels);
   if (labels.length !== 1) return [];
@@ -120,10 +118,10 @@ export function deriveIntents(
     case 'ai:planning': {
       return [
         {
-          role: 'consumer',
+          mode: 'plan',
           issueNumber: issue.number,
           reason: feedbackCount > 0 ? 'feedback_applied' : 'planning',
-          revision: consumerRound(feedbackCount),
+          revision: planRound(feedbackCount),
           epoch,
           planCommentId: null,
           approvalCommentId: null,
@@ -139,10 +137,10 @@ export function deriveIntents(
       if (!newerFeedback) return [];
       return [
         {
-          role: 'consumer',
+          mode: 'plan',
           issueNumber: issue.number,
           reason: 'feedback_applied',
-          revision: consumerRound(feedbackCount),
+          revision: planRound(feedbackCount),
           epoch,
           planCommentId: null,
           approvalCommentId: null,
@@ -172,7 +170,7 @@ export function deriveIntents(
       if (approval === undefined) return [];
       return [
         {
-          role: 'executor',
+          mode: 'execute',
           issueNumber: issue.number,
           reason: 'approved_plan',
           revision: `p${plan.id}`,
@@ -189,24 +187,24 @@ export function deriveIntents(
   }
 }
 
-/** Fixed `## Goal` wording per role (docs/workspace-protocol.md §7, frozen). */
-const GOAL_CONSUMER =
-  '分析任务并产出可执行的 Execution Plan（写入 outbox/PLAN.md），完成后写 result.json（result=plan_ready）';
-const GOAL_EXECUTOR =
-  '严格按照 PLAN.md 执行并通过真实验证，完成后写 REPORT.md 与 result.json（result=completed）';
+/** Fixed `## Goal` wording per mode. */
+const GOAL_PLAN =
+  '分析任务并产出可执行的执行计划（写入本目录 plan.md），完成后写 result.json（status=completed, report=plan.md）';
+const GOAL_EXECUTE =
+  '严格按照已批准的 plan.md 执行并通过真实验证，完成后写 report.md 与 result.json（status=completed, validation=passed）';
 
 /**
- * Build the TASK.md projection of an issue (docs §7): `# <title>`, the issue
- * body verbatim (a Producer schema block stays in, it is context only), then
- * the fixed role goal. GateFlow-internal state is never exposed.
+ * Build the task.md projection of an issue: `# <title>`, the issue body
+ * verbatim, then the MODE section and the fixed mode goal. The agent treats
+ * this file as task data, never as instructions over the protocol.
  */
-export function buildTaskMarkdown(issue: IssueDetail, role: Role): string {
+export function buildTaskMarkdown(issue: IssueDetail, mode: Mode): string {
   const body = issue.body.length > 0 ? issue.body : '(no body)';
-  const goal = role === 'executor' ? GOAL_EXECUTOR : GOAL_CONSUMER;
-  return `# ${issue.title}\n\n${body}\n\n## Goal\n\n${goal}\n`;
+  const goal = mode === 'execute' ? GOAL_EXECUTE : GOAL_PLAN;
+  return `# ${issue.title}\n\n${body}\n\n## Mode\n\n${mode}\n\n## Goal\n\n${goal}\n`;
 }
 
-/** `YYYY-MM-DD HH:mm` in UTC for FEEDBACK.md section headers (docs §7). */
+/** `YYYY-MM-DD HH:mm` in UTC for feedback.md section headers. */
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '????-??-?? ??:??';
@@ -220,27 +218,15 @@ function formatTimestamp(iso: string): string {
 /** Extract the human-readable payload of one feedback command comment. */
 function feedbackEntryText(entry: HumanFeedbackEntry): string {
   const trimmed = entry.comment.body.trim();
-  if (entry.kind === 'choose') {
-    const match = /^\/choose (\S+) (\S+)$/.exec(trimmed);
-    const question = match?.[1];
-    const answer = match?.[2];
-    if (question !== undefined && answer !== undefined) {
-      return `Q: ${question} → A: ${answer}`;
-    }
-  } else {
-    const match = /^\/change (.+)$/.exec(trimmed);
-    const text = match?.[1];
-    if (text !== undefined) {
-      return text;
-    }
-  }
-  return trimmed; // defensive: accepted events are anchored commands
+  const match = /^\/change (.+)$/.exec(trimmed);
+  const text = match?.[1];
+  return text !== undefined ? text : trimmed; // defensive: accepted events are anchored commands
 }
 
 /**
- * Build the FEEDBACK.md projection (docs §7, frozen layout): numbered
- * sections in ascending comment order. Returns null when there is no
- * feedback to project (the inbox file is then simply absent).
+ * Build the feedback.md projection: numbered sections in ascending comment
+ * order. Returns null when there is no feedback to project (the file is then
+ * simply absent).
  */
 export function buildFeedbackMarkdown(entries: HumanFeedbackEntry[]): string | null {
   if (entries.length === 0) return null;

@@ -8686,9 +8686,9 @@ __export(cli_exports, {
   main: () => main
 });
 module.exports = __toCommonJS(cli_exports);
-var import_node_child_process3 = require("node:child_process");
-var import_node_fs2 = require("node:fs");
-var nodePath9 = __toESM(require("node:path"));
+var import_node_child_process = require("node:child_process");
+var import_node_fs = require("node:fs");
+var nodePath5 = __toESM(require("node:path"));
 var import_node_url = require("node:url");
 var import_node_process = __toESM(require("node:process"));
 
@@ -16028,10 +16028,6 @@ var OctokitDriverClient = class {
       ownerType: data.owner?.type ?? "unknown"
     };
   }
-  async getAuthenticatedUser() {
-    const { data } = await this.octokit.rest.users.getAuthenticated({});
-    return { id: data.id ?? 0, login: data.login ?? "unknown" };
-  }
   async getIssue(ref2) {
     try {
       const { data } = await this.octokit.rest.issues.get({
@@ -16097,22 +16093,13 @@ var OctokitDriverClient = class {
       body
     });
   }
-  async addReaction(ref2, commentId, content) {
-    await this.octokit.rest.reactions.createForIssueComment({
-      owner: ref2.owner,
-      repo: ref2.repo,
-      comment_id: commentId,
-      content
-    });
-  }
   async listIssues(ref2) {
-    const state = ref2.state ?? "open";
     const issues = [];
     for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
       const { data } = await this.octokit.rest.issues.list({
         owner: ref2.owner,
         repo: ref2.repo,
-        state,
+        state: "open",
         per_page: ISSUES_PER_PAGE,
         page
       });
@@ -16133,23 +16120,6 @@ var OctokitDriverClient = class {
     }
     issues.sort((a, b) => a.number - b.number);
     return issues;
-  }
-  /**
-   * Backward-compatible alias for `listIssues({ state: 'open' })` — kept as
-   * the named discovery entry point used across the Driver.
-   */
-  async listOpenIssues(ref2) {
-    return this.listIssues({ ...ref2, state: "open" });
-  }
-  async createIssue(ref2, input) {
-    const { data } = await this.octokit.rest.issues.create({
-      owner: ref2.owner,
-      repo: ref2.repo,
-      title: input.title,
-      body: input.body,
-      labels: [...input.labels]
-    });
-    return { number: data.number ?? 0 };
   }
 };
 function createOctokit(token, baseUrl) {
@@ -16173,20 +16143,14 @@ function defaultConfig() {
   return {
     version: 1,
     driver: {
-      pollIntervalSeconds: 30,
       workspaceDir: ".gateflow",
-      progressSyncSeconds: 60,
       maxAttempts: 3
     },
     trustedHumans: [],
     gateLogins: ["github-actions[bot]"],
-    requireExplicitHumans: true,
-    routing: {},
-    agents: {},
-    activation: { fallback: "manual" }
+    requireExplicitHumans: true
   };
 }
-var ACTIVATION_KINDS = ["manual", "chatgpt", "zcode"];
 var REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -16220,47 +16184,6 @@ function optionalNumber(raw, key, errors, opts) {
   }
   return value;
 }
-function optionalActivationKind(raw, key, what, errors) {
-  const value = raw[key];
-  if (value === void 0) return void 0;
-  if (typeof value !== "string" || !ACTIVATION_KINDS.includes(value)) {
-    errors.push(`${what}: must be one of ${ACTIVATION_KINDS.join("|")}, got ${JSON.stringify(value)}`);
-    return void 0;
-  }
-  return value;
-}
-function parseAgents(raw, errors) {
-  const agents = {};
-  for (const [name, value] of Object.entries(raw)) {
-    if (!isRecord(value)) {
-      errors.push(`agents.${name}: expected a mapping, got ${typeof value}`);
-      continue;
-    }
-    const activation = optionalActivationKind(value, "activation", `agents.${name}.activation`, errors);
-    if (activation === void 0) continue;
-    const agent = { activation };
-    const autoStart = value["autoStart"];
-    if (autoStart !== void 0) {
-      if (typeof autoStart !== "boolean") {
-        errors.push(`agents.${name}.autoStart: must be a boolean, got ${JSON.stringify(autoStart)}`);
-      } else {
-        agent.autoStart = autoStart;
-      }
-    }
-    const command = optionalString(value, "command", errors, `agents.${name}.command`);
-    if (command !== void 0) agent.command = command;
-    const envPassthrough = value["env_passthrough"];
-    if (envPassthrough !== void 0) {
-      if (!Array.isArray(envPassthrough) || envPassthrough.some((k) => typeof k !== "string" || k.length === 0)) {
-        errors.push(`agents.${name}.env_passthrough: must be a list of non-empty strings`);
-      } else {
-        agent.envPassthrough = envPassthrough;
-      }
-    }
-    agents[name] = agent;
-  }
-  return agents;
-}
 function parseConfig(raw) {
   if (!isRecord(raw)) {
     throw new ConfigError("gateflow config must be a YAML mapping at the top level");
@@ -16269,7 +16192,7 @@ function parseConfig(raw) {
   const version = raw["version"];
   if (version !== 1) {
     throw new ConfigError(
-      `config version must be exactly 1, got ${JSON.stringify(version)} \u2014 this build speaks protocol v1 only`
+      `config version must be exactly 1, got ${JSON.stringify(version)} \u2014 this build speaks config v1 only`
     );
   }
   const config = defaultConfig();
@@ -16282,12 +16205,8 @@ function parseConfig(raw) {
     }
   }
   const driver = section(raw, "driver", errors);
-  const pollIntervalSeconds = optionalNumber(driver, "poll_interval_seconds", errors, { min: 1 });
-  if (pollIntervalSeconds !== void 0) config.driver.pollIntervalSeconds = pollIntervalSeconds;
   const workspaceDir = optionalString(driver, "workspace_dir", errors, "driver.workspace_dir");
   if (workspaceDir !== void 0) config.driver.workspaceDir = workspaceDir;
-  const progressSyncSeconds = optionalNumber(driver, "progress_sync_seconds", errors, { min: 0 });
-  if (progressSyncSeconds !== void 0) config.driver.progressSyncSeconds = progressSyncSeconds;
   const maxAttempts = optionalNumber(driver, "max_attempts", errors, { min: 1 });
   if (maxAttempts !== void 0) config.driver.maxAttempts = maxAttempts;
   const trusted = raw["trusted_humans"];
@@ -16314,16 +16233,6 @@ function parseConfig(raw) {
       config.requireExplicitHumans = requireExplicitHumans;
     }
   }
-  const routing = section(raw, "routing", errors);
-  const consumer = optionalString(routing, "consumer", errors, "routing.consumer");
-  if (consumer !== void 0) config.routing.consumer = consumer;
-  const executor = optionalString(routing, "executor", errors, "routing.executor");
-  if (executor !== void 0) config.routing.executor = executor;
-  const agents = section(raw, "agents", errors);
-  config.agents = parseAgents(agents, errors);
-  const activation = section(raw, "activation", errors);
-  const fallback = optionalActivationKind(activation, "fallback", "activation.fallback", errors);
-  if (fallback !== void 0) config.activation.fallback = fallback;
   if (errors.length > 0) {
     throw new ConfigError(`invalid gateflow config: ${errors.join("; ")}`);
   }
@@ -16384,33 +16293,15 @@ var import_promises2 = require("node:fs/promises");
 var nodePath2 = __toESM(require("node:path"));
 
 // src/workspace/protocol.ts
-var WORKSPACE_SCHEMA_VERSION = 2;
-var RECEIPT_STATUSES = [
-  "dispatched",
-  "publishing",
-  "published",
-  "accepted",
-  "failed",
-  "obsolete"
-];
-var SUBMIT_KINDS = ["feature", "bug", "refactor", "docs", "chore"];
-var SUBMIT_MATURITY_HINTS = ["requirement", "direction", "solution", "execution_plan"];
-var HUMAN_ONLY_RESULTS = ["approve", "ready", "cancel", "human-close"];
-var ROLE_RESULT_WHITELIST = {
-  consumer: ["plan_ready", "question", "failed"],
-  executor: ["completed", "blocked", "question", "failed"]
-};
-var ROLE_STATE_WHITELIST = {
-  consumer: ["working", "blocked", "failed"],
-  executor: ["working", "blocked", "failed"]
-};
-var DISPATCH_DIR_PATTERN = /^gf_r(\d+)_i(\d+)_w([0-9a-z]{12})_(consumer|executor)_(\d+|p\d+)$/;
+var WORKSPACE_SCHEMA_VERSION = 3;
+var HUMAN_ONLY_STATUSES = ["approve", "ready", "cancel", "human-close"];
+var TASK_ID_PATTERN = /^gf_r(\d+)_i(\d+)_w([0-9a-z]{12})_(plan|execute)_(\d+|p\d+)$/;
 function assertPositiveInt(value, name) {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError(`${name} must be a positive integer, got ${String(value)}`);
   }
 }
-function makeConsumerDispatchId(repositoryId, issueNumber, epoch, round) {
+function makePlanTaskId(repositoryId, issueNumber, epoch, round) {
   assertPositiveInt(repositoryId, "repositoryId");
   assertPositiveInt(issueNumber, "issueNumber");
   assertPositiveInt(round, "round");
@@ -16418,37 +16309,45 @@ function makeConsumerDispatchId(repositoryId, issueNumber, epoch, round) {
     throw new RangeError(`epoch must be a workflow epoch string, got ${JSON.stringify(epoch)}`);
   }
   const revision = String(round).padStart(2, "0");
-  return `gf_r${repositoryId}_i${issueNumber}_w${epoch.slice(3)}_consumer_${revision}`;
+  return `gf_r${repositoryId}_i${issueNumber}_w${epoch.slice(3)}_plan_${revision}`;
 }
-function makeExecutorDispatchId(repositoryId, issueNumber, epoch, planCommentId) {
+function makeExecuteTaskId(repositoryId, issueNumber, epoch, planCommentId) {
   assertPositiveInt(repositoryId, "repositoryId");
   assertPositiveInt(issueNumber, "issueNumber");
   assertPositiveInt(planCommentId, "planCommentId");
   if (!/^wf_[0-9a-z]{12}$/.test(epoch)) {
     throw new RangeError(`epoch must be a workflow epoch string, got ${JSON.stringify(epoch)}`);
   }
-  return `gf_r${repositoryId}_i${issueNumber}_w${epoch.slice(3)}_executor_p${planCommentId}`;
+  return `gf_r${repositoryId}_i${issueNumber}_w${epoch.slice(3)}_execute_p${planCommentId}`;
 }
-function parseDispatchId(id) {
-  const match = DISPATCH_DIR_PATTERN.exec(id);
+function parseTaskId(id) {
+  const match = TASK_ID_PATTERN.exec(id);
   if (match === null) return null;
   const repositoryId = match[1];
   const issueNumber = match[2];
   const epochCode = match[3];
-  const role = match[4];
+  const mode = match[4];
   const revision = match[5];
-  if (repositoryId === void 0 || issueNumber === void 0 || epochCode === void 0 || role === void 0 || revision === void 0) {
+  if (repositoryId === void 0 || issueNumber === void 0 || epochCode === void 0 || mode === void 0 || revision === void 0) {
     return null;
   }
-  if (role !== "consumer" && role !== "executor") return null;
+  if (mode !== "plan" && mode !== "execute") return null;
   return {
     repositoryId: Number(repositoryId),
     issueNumber: Number(issueNumber),
     epochCode,
-    role,
+    mode,
     revision
   };
 }
+var TASK_STATES = [
+  "prepared",
+  "publishing",
+  "published",
+  "accepted",
+  "failed",
+  "obsolete"
+];
 
 // src/workspace/paths.ts
 var DEFAULT_WORKSPACE_DIR = ".gateflow";
@@ -16458,11 +16357,9 @@ function resolveWorkspace(projectRoot, dirName = DEFAULT_WORKSPACE_DIR) {
   return {
     root,
     current: nodePath2.join(root, "current.json"),
-    inbox: nodePath2.join(root, "inbox"),
-    outbox: nodePath2.join(root, "outbox"),
-    submit: nodePath2.join(root, "submit"),
+    tasks: nodePath2.join(root, "tasks"),
     driver,
-    receipts: nodePath2.join(driver, "receipts"),
+    state: nodePath2.join(driver, "state.json"),
     locks: nodePath2.join(driver, "locks"),
     logs: nodePath2.join(driver, "logs")
   };
@@ -16472,17 +16369,14 @@ async function ensureWorkspace(paths) {
   const agentDirMode = isPosix ? 493 : void 0;
   const driverDirMode = isPosix ? 448 : void 0;
   await (0, import_promises2.mkdir)(paths.root, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
-  await (0, import_promises2.mkdir)(paths.inbox, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
-  await (0, import_promises2.mkdir)(paths.outbox, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
-  await (0, import_promises2.mkdir)(paths.submit, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
+  await (0, import_promises2.mkdir)(paths.tasks, { recursive: true, ...agentDirMode !== void 0 ? { mode: agentDirMode } : {} });
   await (0, import_promises2.mkdir)(paths.driver, { recursive: true, ...driverDirMode !== void 0 ? { mode: driverDirMode } : {} });
-  await (0, import_promises2.mkdir)(paths.receipts, { recursive: true, ...driverDirMode !== void 0 ? { mode: driverDirMode } : {} });
   await (0, import_promises2.mkdir)(paths.locks, { recursive: true, ...driverDirMode !== void 0 ? { mode: driverDirMode } : {} });
   await (0, import_promises2.mkdir)(paths.logs, { recursive: true, ...driverDirMode !== void 0 ? { mode: driverDirMode } : {} });
 }
-function assertDispatchId(dispatchId) {
-  if (typeof dispatchId !== "string" || !DISPATCH_DIR_PATTERN.test(dispatchId)) {
-    throw new Error(`invalid dispatch id: ${JSON.stringify(dispatchId)}`);
+function assertTaskId(taskId) {
+  if (typeof taskId !== "string" || !TASK_ID_PATTERN.test(taskId)) {
+    throw new Error(`invalid task id: ${JSON.stringify(taskId)}`);
   }
 }
 function assertInsideBase(base, candidate, label) {
@@ -16492,20 +16386,17 @@ function assertInsideBase(base, candidate, label) {
     throw new Error(`${label} escapes workspace: ${candidate}`);
   }
 }
-function safeDispatchDir(base, dispatchId, label) {
-  assertDispatchId(dispatchId);
-  const dir = nodePath2.join(base, dispatchId);
+function safeTaskDir(base, taskId, label) {
+  assertTaskId(taskId);
+  const dir = nodePath2.join(base, taskId);
   assertInsideBase(base, dir, label);
   return dir;
 }
-function inboxDispatchDir(paths, dispatchId) {
-  return safeDispatchDir(paths.inbox, dispatchId, "inbox dispatch dir");
+function taskDir(paths, taskId) {
+  return safeTaskDir(paths.tasks, taskId, "task dir");
 }
-function outboxDispatchDir(paths, dispatchId) {
-  return safeDispatchDir(paths.outbox, dispatchId, "outbox dispatch dir");
-}
-var MAX_DISPATCH_DIRS = 200;
-async function listDispatchDirs(base) {
+var MAX_TASK_DIRS = 200;
+async function listTaskDirs(base) {
   let entries;
   try {
     entries = await (0, import_promises2.readdir)(base, { withFileTypes: true });
@@ -16514,1260 +16405,100 @@ async function listDispatchDirs(base) {
   }
   const ids = [];
   for (const entry of entries) {
-    if (entry.isDirectory() && DISPATCH_DIR_PATTERN.test(entry.name)) {
+    if (entry.isDirectory() && TASK_ID_PATTERN.test(entry.name)) {
       ids.push(entry.name);
     }
   }
-  return ids.sort().slice(0, MAX_DISPATCH_DIRS);
+  return ids.sort().slice(0, MAX_TASK_DIRS);
 }
 
-// src/workspace/watcher.ts
-var import_node_fs = require("node:fs");
+// src/driver/workspace-lock.ts
 var import_promises3 = require("node:fs/promises");
 var nodePath3 = __toESM(require("node:path"));
-
-// src/workspace/schemas.ts
-var PHASE_SUMMARY_MAX = 500;
-var REASON_MAX = 1e3;
-var TITLE_MAX = 256;
-var REPOSITORY_MAX = 256;
-var ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
-var SHA256_PATTERN = /^[0-9a-f]{64}$/i;
-function isRecord2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function driverLockFile(paths) {
+  return nodePath3.join(paths.locks, "driver.lock");
 }
-function fail(what, message) {
-  return { ok: false, errors: [`${what}: ${message}`] };
-}
-function checkUnknownKeys(raw, allowed, what, errors) {
-  for (const key of Object.keys(raw)) {
-    if (!allowed.includes(key)) {
-      errors.push(`${what}: unknown key "${key}"`);
-    }
-  }
-}
-function checkRequiredKeys(raw, required, what, errors) {
-  for (const key of required) {
-    if (!(key in raw)) {
-      errors.push(`${what}: missing required key "${key}"`);
-    }
-  }
-}
-function checkSchema(value, what, errors) {
-  if (value === void 0) return;
-  if (value !== WORKSPACE_SCHEMA_VERSION) {
-    errors.push(`${what}: schema must be ${WORKSPACE_SCHEMA_VERSION}, got ${JSON.stringify(value)}`);
-  }
-}
-function checkString(value, what, errors, opts = {}) {
-  if (value === void 0) return;
-  if (typeof value !== "string") {
-    errors.push(`${what}: must be a string, got ${typeof value}`);
-    return;
-  }
-  if (opts.min !== void 0 && value.length < opts.min) {
-    errors.push(`${what}: must be at least ${opts.min} character(s)`);
-  }
-  if (opts.max !== void 0 && value.length > opts.max) {
-    errors.push(`${what}: exceeds maximum length of ${opts.max}`);
-  }
-}
-function checkPositiveInt(value, what, errors) {
-  if (value === void 0) return;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-    errors.push(`${what}: must be a positive integer, got ${JSON.stringify(value)}`);
-  }
-}
-function checkNonNegativeInt(value, what, errors) {
-  if (value === void 0) return;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    errors.push(`${what}: must be a non-negative integer, got ${JSON.stringify(value)}`);
-  }
-}
-function checkNull(value, what, errors) {
-  if (value === void 0) return;
-  if (value !== null) {
-    errors.push(`${what}: must be null, got ${JSON.stringify(value)}`);
-  }
-}
-function checkIsoDate(value, what, errors) {
-  if (value === void 0) return;
-  if (typeof value !== "string" || !ISO_DATE_PATTERN.test(value) || Number.isNaN(Date.parse(value))) {
-    errors.push(`${what}: must be an ISO 8601 date string, got ${JSON.stringify(value)}`);
-  }
-}
-function checkHumanOnly(value, what, errors) {
-  const normalized = value.toLowerCase();
-  for (const word of HUMAN_ONLY_RESULTS) {
-    if (normalized === word) {
-      errors.push(
-        `${what}: human-only value "${value}" is reserved for humans and must never appear in agent files`
-      );
-      return;
-    }
-  }
-}
-function checkDispatchId(value, what, errors) {
-  if (value === void 0) return void 0;
-  if (typeof value !== "string" || parseDispatchId(value) === null) {
-    errors.push(`${what}: must match the frozen dispatch_id format, got ${JSON.stringify(value)}`);
-    return void 0;
-  }
-  return value;
-}
-function checkRole(value, what, errors) {
-  if (value === void 0) return void 0;
-  if (value !== "consumer" && value !== "executor") {
-    errors.push(`${what}: must be "consumer" or "executor", got ${JSON.stringify(value)}`);
-    return void 0;
-  }
-  return value;
-}
-var DISPATCH_KEYS = [
-  "schema",
-  "dispatch_id",
-  "repository",
-  "repository_id",
-  "issue_number",
-  "workflow_epoch",
-  "role",
-  "reason",
-  "created_at",
-  "plan_comment_id",
-  "approval_comment_id",
-  "input"
-];
-var EPOCH_SHAPE = /^wf_[0-9a-z]{12}$/;
-function checkEpoch(value, what, errors) {
-  if (value === void 0) return;
-  if (typeof value !== "string" || !EPOCH_SHAPE.test(value)) {
-    errors.push(`${what}: must be a workflow epoch ("wf_" + 12 base36 chars), got ${JSON.stringify(value)}`);
-  }
-}
-function validateDispatch(raw) {
-  const what = "dispatch";
-  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
-  const errors = [];
-  checkUnknownKeys(raw, DISPATCH_KEYS, what, errors);
-  checkRequiredKeys(raw, DISPATCH_KEYS, what, errors);
-  checkSchema(raw["schema"], what, errors);
-  const role = checkRole(raw["role"], `${what}.role`, errors);
-  const dispatchId = checkDispatchId(raw["dispatch_id"], `${what}.dispatch_id`, errors);
-  if (dispatchId !== void 0 && role !== void 0) {
-    const parsed = parseDispatchId(dispatchId);
-    if (parsed !== null && parsed.role !== role) {
-      errors.push(`${what}.dispatch_id: role component "${parsed.role}" does not match role "${role}"`);
-    }
-    if (parsed !== null && typeof raw["workflow_epoch"] === "string") {
-      const expected = `wf_${parsed.epochCode}`;
-      if (raw["workflow_epoch"] !== expected) {
-        errors.push(
-          `${what}.workflow_epoch "${String(raw["workflow_epoch"])}" does not match the dispatch_id epoch code (expected "${expected}")`
-        );
-      }
-    }
-  }
-  checkString(raw["repository"], `${what}.repository`, errors, { min: 1, max: REPOSITORY_MAX });
-  checkPositiveInt(raw["repository_id"], `${what}.repository_id`, errors);
-  checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
-  checkEpoch(raw["workflow_epoch"], `${what}.workflow_epoch`, errors);
-  checkIsoDate(raw["created_at"], `${what}.created_at`, errors);
-  if (role === "consumer") {
-    if (raw["reason"] !== void 0 && raw["reason"] !== "planning" && raw["reason"] !== "feedback_applied") {
-      errors.push(
-        `${what}.reason: consumer reason must be "planning" or "feedback_applied", got ${JSON.stringify(raw["reason"])}`
-      );
-    }
-    checkNull(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
-    checkNull(raw["approval_comment_id"], `${what}.approval_comment_id`, errors);
-  } else if (role === "executor") {
-    if (raw["reason"] !== void 0 && raw["reason"] !== "approved_plan") {
-      errors.push(`${what}.reason: executor reason must be "approved_plan", got ${JSON.stringify(raw["reason"])}`);
-    }
-    checkPositiveInt(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
-    checkPositiveInt(raw["approval_comment_id"], `${what}.approval_comment_id`, errors);
-  }
-  const input = raw["input"];
-  if (input !== void 0) {
-    if (!isRecord2(input)) {
-      errors.push(`${what}.input: expected a JSON object`);
-    } else {
-      const inputWhat = `${what}.input`;
-      checkUnknownKeys(input, ["task", "plan", "feedback"], inputWhat, errors);
-      checkRequiredKeys(input, ["task", "plan", "feedback"], inputWhat, errors);
-      if (input["task"] !== void 0 && input["task"] !== "TASK.md") {
-        errors.push(`${inputWhat}.task: must be "TASK.md", got ${JSON.stringify(input["task"])}`);
-      }
-      if (role === "executor") {
-        if (input["plan"] !== void 0 && input["plan"] !== "PLAN.md") {
-          errors.push(`${inputWhat}.plan: executor input.plan must be "PLAN.md", got ${JSON.stringify(input["plan"])}`);
-        }
-      } else if (role === "consumer") {
-        if (input["plan"] !== void 0 && input["plan"] !== null) {
-          errors.push(`${inputWhat}.plan: consumer input.plan must be null, got ${JSON.stringify(input["plan"])}`);
-        }
-      }
-      if (input["feedback"] !== void 0 && input["feedback"] !== null && input["feedback"] !== "FEEDBACK.md") {
-        errors.push(`${inputWhat}.feedback: must be "FEEDBACK.md" or null, got ${JSON.stringify(input["feedback"])}`);
-      }
-    }
-  }
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: raw };
-}
-var CONTEXT_KEYS = [
-  "schema",
-  "dispatch_id",
-  "workflow_epoch",
-  "plan_comment_id",
-  "plan_sha256",
-  "feedback_count",
-  "input_snapshot_sha256"
-];
-var CONTEXT_REQUIRED = [
-  "schema",
-  "dispatch_id",
-  "workflow_epoch",
-  "feedback_count",
-  "input_snapshot_sha256"
-];
-function validateContext(raw) {
-  const what = "context";
-  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
-  const errors = [];
-  checkUnknownKeys(raw, CONTEXT_KEYS, what, errors);
-  checkRequiredKeys(raw, CONTEXT_REQUIRED, what, errors);
-  checkSchema(raw["schema"], what, errors);
-  const dispatchId = checkDispatchId(raw["dispatch_id"], `${what}.dispatch_id`, errors);
-  checkEpoch(raw["workflow_epoch"], `${what}.workflow_epoch`, errors);
-  const parsed = dispatchId !== void 0 ? parseDispatchId(dispatchId) : null;
-  const role = parsed?.role;
-  if (parsed !== null && typeof raw["workflow_epoch"] === "string") {
-    const expected = `wf_${parsed.epochCode}`;
-    if (raw["workflow_epoch"] !== expected) {
-      errors.push(
-        `${what}.workflow_epoch "${String(raw["workflow_epoch"])}" does not match the dispatch_id epoch code (expected "${expected}")`
-      );
-    }
-  }
-  if (role === "executor") {
-    if (raw["plan_comment_id"] === void 0) {
-      errors.push(`${what}.plan_comment_id: required for executor dispatches`);
-    }
-    checkPositiveInt(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
-    if (raw["plan_sha256"] === void 0) {
-      errors.push(`${what}.plan_sha256: required for executor dispatches`);
-    }
-    if (typeof raw["plan_sha256"] !== "undefined" && (typeof raw["plan_sha256"] !== "string" || !SHA256_PATTERN.test(raw["plan_sha256"]))) {
-      errors.push(`${what}.plan_sha256: must be a 64-character hex sha256, got ${JSON.stringify(raw["plan_sha256"])}`);
-    }
-  } else if (role === "consumer") {
-    if (raw["plan_comment_id"] !== void 0 && raw["plan_comment_id"] !== null) {
-      errors.push(`${what}.plan_comment_id: must be absent or null for consumer dispatches`);
-    }
-    if (raw["plan_sha256"] !== void 0 && raw["plan_sha256"] !== null) {
-      errors.push(`${what}.plan_sha256: must be absent or null for consumer dispatches`);
-    }
-  }
-  checkNonNegativeInt(raw["feedback_count"], `${what}.feedback_count`, errors);
-  if (typeof raw["input_snapshot_sha256"] !== "undefined" && (typeof raw["input_snapshot_sha256"] !== "string" || !SHA256_PATTERN.test(raw["input_snapshot_sha256"]))) {
-    errors.push(`${what}.input_snapshot_sha256: must be a 64-character hex sha256, got ${JSON.stringify(raw["input_snapshot_sha256"])}`);
-  }
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: raw };
-}
-var STATUS_KEYS = ["schema", "dispatch_id", "role", "state", "phase", "summary", "updated_at"];
-var STATUS_REQUIRED = ["schema", "dispatch_id", "role", "state", "updated_at"];
-function validateStatus(raw) {
-  const what = "status";
-  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
-  const errors = [];
-  checkUnknownKeys(raw, STATUS_KEYS, what, errors);
-  checkRequiredKeys(raw, STATUS_REQUIRED, what, errors);
-  checkSchema(raw["schema"], what, errors);
-  const role = checkRole(raw["role"], `${what}.role`, errors);
-  checkDispatchId(raw["dispatch_id"], `${what}.dispatch_id`, errors);
-  const state = raw["state"];
-  if (state !== void 0) {
-    if (typeof state !== "string") {
-      errors.push(`${what}.state: must be a string, got ${typeof state}`);
-    } else {
-      checkHumanOnly(state, `${what}.state`, errors);
-      if (role !== void 0 && !ROLE_STATE_WHITELIST[role].includes(state)) {
-        errors.push(`${what}.state: "${state}" is not allowed for role "${role}"`);
-      }
-    }
-  }
-  checkString(raw["phase"], `${what}.phase`, errors, { max: PHASE_SUMMARY_MAX });
-  checkString(raw["summary"], `${what}.summary`, errors, { max: PHASE_SUMMARY_MAX });
-  checkIsoDate(raw["updated_at"], `${what}.updated_at`, errors);
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: raw };
-}
-var RESULT_KEYS = [
-  "schema",
-  "dispatch_id",
-  "role",
-  "result",
-  "plan_file",
-  "report_file",
-  "validation",
-  "reason"
-];
-var RESULT_REQUIRED = ["schema", "dispatch_id", "role", "result"];
-var ALL_RESULT_VALUES = [
-  .../* @__PURE__ */ new Set([...ROLE_RESULT_WHITELIST.consumer, ...ROLE_RESULT_WHITELIST.executor])
-];
-function validateResult(raw) {
-  const what = "result";
-  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
-  const errors = [];
-  checkUnknownKeys(raw, RESULT_KEYS, what, errors);
-  checkRequiredKeys(raw, RESULT_REQUIRED, what, errors);
-  checkSchema(raw["schema"], what, errors);
-  const role = checkRole(raw["role"], `${what}.role`, errors);
-  checkDispatchId(raw["dispatch_id"], `${what}.dispatch_id`, errors);
-  const result = raw["result"];
-  if (result !== void 0) {
-    if (typeof result !== "string") {
-      errors.push(`${what}.result: must be a string, got ${typeof result}`);
-    } else {
-      checkHumanOnly(result, `${what}.result`, errors);
-      if (!ALL_RESULT_VALUES.includes(result)) {
-        errors.push(`${what}.result: "${result}" is not a valid result value`);
-      }
-    }
-  }
-  if (raw["plan_file"] !== void 0 && raw["plan_file"] !== "PLAN.md") {
-    errors.push(`${what}.plan_file: must be "PLAN.md", got ${JSON.stringify(raw["plan_file"])}`);
-  }
-  if (raw["report_file"] !== void 0 && raw["report_file"] !== "REPORT.md") {
-    errors.push(`${what}.report_file: must be "REPORT.md", got ${JSON.stringify(raw["report_file"])}`);
-  }
-  if (raw["validation"] !== void 0 && raw["validation"] !== "passed" && raw["validation"] !== "failed") {
-    errors.push(`${what}.validation: must be "passed" or "failed", got ${JSON.stringify(raw["validation"])}`);
-  }
-  checkString(raw["reason"], `${what}.reason`, errors, { min: 1, max: REASON_MAX });
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: raw };
-}
-var CURRENT_KEYS = ["schema", "dispatch_id", "role", "issue_number", "updated_at"];
-function validateCurrent(raw) {
-  const what = "current";
-  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
-  const errors = [];
-  checkUnknownKeys(raw, CURRENT_KEYS, what, errors);
-  checkRequiredKeys(raw, CURRENT_KEYS, what, errors);
-  checkSchema(raw["schema"], what, errors);
-  checkDispatchId(raw["dispatch_id"], `${what}.dispatch_id`, errors);
-  checkRole(raw["role"], `${what}.role`, errors);
-  checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
-  checkIsoDate(raw["updated_at"], `${what}.updated_at`, errors);
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: raw };
-}
-var RECEIPT_KEYS = [
-  "dispatch_id",
-  "status",
-  "attempts",
-  "workflow_epoch",
-  "plan_comment_id",
-  "approval_comment_id",
-  "tracker_comment_id",
-  "published_comment_id",
-  "last_progress_sha256",
-  "last_feedback_comment_id",
-  "last_sync_at",
-  "error",
-  "last_notice_key",
-  "activation",
-  "input_snapshot_sha256"
-];
-var RECEIPT_REQUIRED = ["dispatch_id", "status", "attempts"];
-function validateReceipt(raw) {
-  const what = "receipt";
-  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
-  const errors = [];
-  checkUnknownKeys(raw, RECEIPT_KEYS, what, errors);
-  checkRequiredKeys(raw, RECEIPT_REQUIRED, what, errors);
-  checkDispatchId(raw["dispatch_id"], `${what}.dispatch_id`, errors);
-  checkEpoch(raw["workflow_epoch"], `${what}.workflow_epoch`, errors);
-  const status = raw["status"];
-  if (status !== void 0 && !RECEIPT_STATUSES.includes(status)) {
-    errors.push(`${what}.status: must be one of ${RECEIPT_STATUSES.join("|")}, got ${JSON.stringify(status)}`);
-  }
-  checkPositiveInt(raw["attempts"], `${what}.attempts`, errors);
-  checkPositiveInt(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
-  checkPositiveInt(raw["approval_comment_id"], `${what}.approval_comment_id`, errors);
-  checkPositiveInt(raw["tracker_comment_id"], `${what}.tracker_comment_id`, errors);
-  checkPositiveInt(raw["published_comment_id"], `${what}.published_comment_id`, errors);
-  checkPositiveInt(raw["last_feedback_comment_id"], `${what}.last_feedback_comment_id`, errors);
-  checkString(raw["last_progress_sha256"], `${what}.last_progress_sha256`, errors, { min: 1 });
-  checkIsoDate(raw["last_sync_at"], `${what}.last_sync_at`, errors);
-  const error = raw["error"];
-  if (error !== void 0 && error !== null) {
-    checkString(error, `${what}.error`, errors, { min: 1, max: 2e3 });
-  }
-  checkString(raw["last_notice_key"], `${what}.last_notice_key`, errors, { min: 1, max: 64 });
-  if (typeof raw["last_notice_key"] === "string" && !/^[0-9a-f]{16}$/.test(raw["last_notice_key"])) {
-    errors.push(`${what}.last_notice_key: must be a 16-character lowercase hex sha256 prefix, got ${JSON.stringify(raw["last_notice_key"])}`);
-  }
-  if (typeof raw["input_snapshot_sha256"] !== "undefined" && (typeof raw["input_snapshot_sha256"] !== "string" || !SHA256_PATTERN.test(raw["input_snapshot_sha256"]))) {
-    errors.push(`${what}.input_snapshot_sha256: must be a 64-character hex sha256, got ${JSON.stringify(raw["input_snapshot_sha256"])}`);
-  }
-  const activation = raw["activation"];
-  if (activation !== void 0) {
-    if (!isRecord2(activation)) {
-      errors.push(`${what}.activation: expected a JSON object`);
-    } else {
-      const aWhat = `${what}.activation`;
-      checkUnknownKeys(activation, ["adapter", "state", "detail", "at"], aWhat, errors);
-      checkRequiredKeys(activation, ["adapter", "state", "at"], aWhat, errors);
-      checkString(activation["adapter"], `${aWhat}.adapter`, errors, { min: 1, max: 64 });
-      const state = activation["state"];
-      if (state !== void 0 && state !== "notified" && state !== "started" && state !== "failed") {
-        errors.push(`${aWhat}.state: must be "notified"|"started"|"failed", got ${JSON.stringify(state)}`);
-      }
-      checkString(activation["detail"], `${aWhat}.detail`, errors, { max: 500 });
-      checkIsoDate(activation["at"], `${aWhat}.at`, errors);
-    }
-  }
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: raw };
-}
-var SUBMIT_KEYS = ["schema", "submission_id", "title", "kind", "maturity_hint", "created_at"];
-var SUBMIT_REQUIRED = ["schema", "title", "kind", "maturity_hint", "created_at"];
-var SUBMISSION_ID_SHAPE = /^sub_[0-9a-z]{16}$/;
-function validateSubmit(raw) {
-  const what = "submit";
-  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
-  const errors = [];
-  checkUnknownKeys(raw, SUBMIT_KEYS, what, errors);
-  checkRequiredKeys(raw, SUBMIT_REQUIRED, what, errors);
-  checkSchema(raw["schema"], what, errors);
-  if (raw["submission_id"] !== void 0 && (typeof raw["submission_id"] !== "string" || !SUBMISSION_ID_SHAPE.test(raw["submission_id"]))) {
-    errors.push(
-      `${what}.submission_id: must be "sub_" + 16 base36 chars, got ${JSON.stringify(raw["submission_id"])}`
-    );
-  }
-  checkString(raw["title"], `${what}.title`, errors, { min: 1, max: TITLE_MAX });
-  const kind = raw["kind"];
-  if (kind !== void 0 && !SUBMIT_KINDS.includes(kind)) {
-    errors.push(`${what}.kind: must be one of ${SUBMIT_KINDS.join("|")}, got ${JSON.stringify(kind)}`);
-  }
-  const maturity = raw["maturity_hint"];
-  if (maturity !== void 0 && !SUBMIT_MATURITY_HINTS.includes(maturity)) {
-    errors.push(`${what}.maturity_hint: must be one of ${SUBMIT_MATURITY_HINTS.join("|")}, got ${JSON.stringify(maturity)}`);
-  }
-  checkIsoDate(raw["created_at"], `${what}.created_at`, errors);
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: raw };
-}
-
-// src/workspace/validation.ts
-var MAX_FILE_BYTES = 512 * 1024;
-var OversizedFileError = class extends Error {
-  /** Path of the offending file. */
-  file;
-  /** Actual size in bytes. */
-  size;
-  /** Allowed maximum in bytes. */
-  maxBytes;
-  constructor(file, size, maxBytes) {
-    super(`file exceeds ${maxBytes} bytes: ${file} (${size} bytes)`);
-    this.name = "OversizedFileError";
-    this.file = file;
-    this.size = size;
-    this.maxBytes = maxBytes;
-  }
-};
-function validateDispatchDirName(name) {
-  return DISPATCH_DIR_PATTERN.test(name);
-}
-function validateOutboxStatus(raw, expected) {
-  const shape = validateStatus(raw);
-  if (!shape.ok) return shape;
-  const value = shape.value;
-  const errors = [];
-  if (value.dispatch_id !== expected.dispatchId) {
-    errors.push(`status: dispatch_id "${value.dispatch_id}" does not match expected "${expected.dispatchId}"`);
-  }
-  if (value.role !== expected.role) {
-    errors.push(`status: role "${value.role}" does not match expected "${expected.role}"`);
-  }
-  if (!ROLE_STATE_WHITELIST[expected.role].includes(value.state)) {
-    errors.push(`status: state "${value.state}" is not allowed for role "${expected.role}"`);
-  }
-  const humanOnly = HUMAN_ONLY_RESULTS.includes(value.state.toLowerCase());
-  if (humanOnly) {
-    errors.push(`status: human-only value "${value.state}" is reserved for humans and must never appear in agent files`);
-  }
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value };
-}
-function validateOutboxResult(raw, expected) {
-  const shape = validateResult(raw);
-  if (!shape.ok) return shape;
-  const value = shape.value;
-  const errors = [];
-  if (value.dispatch_id !== expected.dispatchId) {
-    errors.push(`result: dispatch_id "${value.dispatch_id}" does not match expected "${expected.dispatchId}"`);
-  }
-  if (value.role !== expected.role) {
-    errors.push(`result: role "${value.role}" does not match expected "${expected.role}"`);
-  }
-  if (!ROLE_RESULT_WHITELIST[expected.role].includes(value.result)) {
-    errors.push(`result: "${value.result}" is not allowed for role "${expected.role}"`);
-  }
-  const humanOnly = HUMAN_ONLY_RESULTS.includes(value.result.toLowerCase());
-  if (humanOnly) {
-    errors.push(`result: human-only value "${value.result}" is reserved for humans and must never appear in agent files`);
-  }
-  const isConsumer = value.role === "consumer";
-  const isExecutor = value.role === "executor";
-  if (isConsumer && value.result === "plan_ready") {
-    if (value.plan_file === void 0) {
-      errors.push("result: plan_file is required when a consumer reports result=plan_ready");
-    }
-  } else if (value.plan_file !== void 0) {
-    errors.push("result: plan_file is only allowed when a consumer reports result=plan_ready");
-  }
-  if (isExecutor && value.result === "completed") {
-    if (value.report_file === void 0) {
-      errors.push("result: report_file is required when an executor reports result=completed");
-    }
-    if (value.validation === void 0) {
-      errors.push("result: validation is required when an executor reports result=completed");
-    }
-  } else {
-    if (value.report_file !== void 0) {
-      errors.push("result: report_file is only allowed when an executor reports result=completed");
-    }
-    if (value.validation !== void 0) {
-      errors.push("result: validation is only allowed when an executor reports result=completed");
-    }
-  }
-  const reasonExpected = value.result === "blocked" || value.result === "question" || value.result === "failed";
-  if (reasonExpected) {
-    if (value.reason === void 0 || value.reason.trim().length === 0) {
-      errors.push(`result: a non-empty reason is required when result is "${value.result}"`);
-    }
-  } else if (value.reason !== void 0) {
-    errors.push("result: reason is only allowed when result is blocked, question or failed");
-  }
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value };
-}
-
-// src/workspace/watcher.ts
-var WATCHED_FILES = ["status.json", "result.json", "PLAN.md", "PROGRESS.md", "REPORT.md"];
-async function computeSignature(dir) {
-  const parts = [];
-  for (const name of WATCHED_FILES) {
-    try {
-      const info = await (0, import_promises3.stat)(nodePath3.join(dir, name));
-      parts.push(`${name}:${info.isFile() ? info.size : "-"}`);
-    } catch {
-      parts.push(`${name}:-`);
-    }
-  }
-  return parts.join("|");
-}
-function watchOutbox(paths, opts, onDispatchId) {
-  const debounceMs = opts.debounceMs ?? 300;
-  const pollIntervalMs = opts.pollIntervalMs ?? 2e3;
-  const states = /* @__PURE__ */ new Map();
-  let closed = false;
-  let fsWatcher = null;
-  const startFsWatch = () => {
-    if (closed || fsWatcher !== null) return;
-    try {
-      fsWatcher = (0, import_node_fs.watch)(paths.outbox, { recursive: true }, (_event, fileName) => {
-        if (closed || typeof fileName !== "string") return;
-        const top = fileName.split(/[\\/]/)[0];
-        if (top === void 0 || !validateDispatchDirName(top)) return;
-        const now = Date.now();
-        const state = states.get(top);
-        if (state === void 0) {
-          states.set(top, {
-            signature: null,
-            stablePolls: 0,
-            lastChangeMs: now,
-            fired: false
-          });
-        } else {
-          state.lastChangeMs = now;
-          state.fired = false;
-        }
-      });
-      fsWatcher.on("error", () => {
-        if (!closed) {
-          try {
-            fsWatcher?.close();
-          } catch {
-          }
-          fsWatcher = null;
-        }
-      });
-    } catch {
-      fsWatcher = null;
-    }
-  };
-  const pollTick = async () => {
-    if (closed) return;
-    let entries;
-    try {
-      entries = await (0, import_promises3.readdir)(paths.outbox, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    if (fsWatcher === null) startFsWatch();
-    const now = Date.now();
-    const seen = /* @__PURE__ */ new Set();
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !validateDispatchDirName(entry.name)) continue;
-      seen.add(entry.name);
-      const signature = await computeSignature(nodePath3.join(paths.outbox, entry.name));
-      const existing = states.get(entry.name);
-      const state = existing ?? { signature: null, stablePolls: 0, lastChangeMs: now, fired: false };
-      if (signature !== state.signature) {
-        state.signature = signature;
-        state.stablePolls = 1;
-        state.lastChangeMs = now;
-        state.fired = false;
-      } else {
-        state.stablePolls += 1;
-      }
-      states.set(entry.name, state);
-      if (!state.fired && state.stablePolls >= 2 && now - state.lastChangeMs >= debounceMs) {
-        state.fired = true;
-        try {
-          onDispatchId(entry.name);
-        } catch {
-        }
-      }
-    }
-    for (const key of [...states.keys()]) {
-      if (!seen.has(key)) states.delete(key);
-    }
-  };
-  startFsWatch();
-  void pollTick();
-  const timer = setInterval(() => {
-    void pollTick();
-  }, pollIntervalMs);
-  timer.unref();
-  return {
-    async close() {
-      closed = true;
-      clearInterval(timer);
-      if (fsWatcher !== null) {
-        try {
-          fsWatcher.close();
-        } catch {
-        }
-        fsWatcher = null;
-      }
-      states.clear();
-    }
-  };
-}
-
-// src/activation/chatgpt.ts
-var import_node_child_process = require("node:child_process");
-var import_node_util = require("node:util");
-
-// src/activation/manual.ts
-var ManualActivationAdapter = class {
-  name = "manual";
-  out;
-  bell;
-  constructor(options = {}) {
-    this.out = options.out ?? ((line) => {
-      process.stdout.write(`${line}
-`);
-    });
-    this.bell = options.bell ?? (() => {
-      try {
-        process.stdout.write("\x07");
-      } catch {
-      }
-    });
-  }
-  /** A human is the most reliable activation mechanism there is. */
-  async probe() {
-    return { available: true, detail: "human activation \u2014 always available" };
-  }
-  async notify(dispatch, workspaceRoot) {
-    const lines = [
-      "============================================================",
-      "GateFlow: dispatch ready \u2014 human activation required",
-      "------------------------------------------------------------",
-      `Dispatch   : ${dispatch.dispatchId}`,
-      `Role       : ${dispatch.role}`,
-      `Issue      : #${dispatch.issueNumber}`,
-      `Repository : ${dispatch.repository}`,
-      `Workspace  : ${workspaceRoot}`,
-      "------------------------------------------------------------",
-      "Steps:",
-      "  1. Open the project in ChatGPT / ZCode.",
-      "  2. Tell the agent to load the gateflow-agent skill.",
-      `  3. The agent reads exactly ${workspaceRoot}/.gateflow/inbox/${dispatch.dispatchId}/dispatch.json`,
-      "     and processes ONLY that dispatch (never .gateflow/current.json \u2014",
-      "     that file is a manual UI pointer, not task identity).",
-      "============================================================"
-    ];
-    for (const line of lines) {
-      this.out(line);
-    }
-    this.bell();
-    return { state: "notified", detail: "manual" };
-  }
-  /**
-   * There is no session handle to cancel: the human activated the client.
-   * The answer is explicit (hardening §9) — cancel support is `unsupported`,
-   * and stopping the agent is a human/Skill-level action.
-   */
-  async cancel(_dispatchId) {
-    return {
-      state: "unsupported",
-      detail: "manual activation has no session handle; ask the running agent to stop and let the Driver refuse the dispatch's outbox (revocation happens at sync time)"
-    };
-  }
-};
-
-// src/activation/env.ts
-var BASE_ALLOWLIST = [
-  // Process/OS essentials
-  "PATH",
-  "PATHEXT",
-  "COMSPEC",
-  "SYSTEMROOT",
-  "SYSTEMDRIVE",
-  "WINDIR",
-  "OS",
-  "HOMEDRIVE",
-  "HOMEPATH",
-  "HOME",
-  "USERPROFILE",
-  "USERNAME",
-  "DOMAINNAME",
-  "APPDATA",
-  "LOCALAPPDATA",
-  "PROGRAMDATA",
-  "PROGRAMFILES",
-  "COMMONPROGRAMFILES",
-  "TEMP",
-  "TMP",
-  "LANG",
-  "LC_ALL",
-  "TZ",
-  "TERM",
-  "DISPLAY",
-  "XDG_CONFIG_HOME",
-  "XDG_CACHE_HOME",
-  "XDG_DATA_HOME",
-  "SHELL",
-  "NUMBER_OF_PROCESSORS",
-  "PROCESSOR_ARCHITECTURE"
-];
-var DENYLIST = [
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "GH_ENTERPRISE_TOKEN",
-  "GITHUB_ENTERPRISE_TOKEN",
-  "HUB_TOKEN",
-  "GIT_ASKPASS",
-  "SSH_ASKPASS",
-  "GATEFLOW_TOKEN",
-  "GATEFLOW_WEBHOOK_SECRET",
-  "GATEFLOW_APP_KEY",
-  "GATEFLOW_APP_PRIVATE_KEY",
-  "NODE_OPTIONS"
-];
-var CredentialInPassthroughError = class extends Error {
-  constructor(keys) {
-    super(
-      `env_passthrough requested secret-shaped key(s) that are never passed to agents: ${keys.join(", ")}`
-    );
-    this.keys = keys;
-    this.name = "CredentialInPassthroughError";
-  }
-  keys;
-};
-function isDenied(key) {
-  const upper = key.trim().toUpperCase();
-  if (DENYLIST.includes(upper)) return true;
-  return upper.startsWith("GATEFLOW_");
-}
-function buildAgentEnv(passthrough = [], source = process.env) {
-  const deniedRequested = [];
-  const env = {};
-  const wanted = new Set(BASE_ALLOWLIST);
-  for (const key of passthrough) {
-    if (typeof key !== "string" || key.length === 0) continue;
-    if (isDenied(key)) {
-      deniedRequested.push(key);
-      continue;
-    }
-    wanted.add(key);
-  }
-  if (deniedRequested.length > 0) {
-    throw new CredentialInPassthroughError(deniedRequested);
-  }
-  for (const [key, value] of Object.entries(source)) {
-    if (value === void 0) continue;
-    if (isDenied(key)) continue;
-    if (wanted.has(key)) {
-      env[key] = value;
-    }
-  }
-  return env;
-}
-
-// src/activation/chatgpt.ts
-var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
-async function commandExists(command) {
-  const checker = process.platform === "win32" ? "where" : "which";
+var DRIVER_LOCK_HOLDER = "gateflow-driver";
+var MAX_LOCK_AGE_MS = 6 * 60 * 60 * 1e3;
+function isAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
-    await execFileAsync(checker, [command]);
+    process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    const code = err.code;
+    return code === "EPERM";
   }
 }
-function buildLaunchPrompt(dispatch, workspaceRoot) {
-  return `GateFlow dispatch ${dispatch.dispatchId} is ready (issue #${dispatch.issueNumber}, role ${dispatch.role}, repo ${dispatch.repository}). Load the gateflow-agent skill, then read exactly ${workspaceRoot}/.gateflow/inbox/${dispatch.dispatchId}/dispatch.json and process ONLY that dispatch; write all output to the matching outbox directory.`;
-}
-function defaultRunner(cmd, args, env) {
-  return new Promise((resolve4, reject) => {
-    let settled = false;
-    const child = (0, import_node_child_process.spawn)(cmd, args, { detached: true, stdio: "ignore", windowsHide: true, env });
-    child.unref();
-    child.once("error", (err) => {
-      if (!settled) {
-        settled = true;
-        reject(err);
-      }
-    });
-    child.once("spawn", () => {
-      if (!settled) {
-        settled = true;
-        resolve4();
-      }
-    });
-  });
-}
-var ChatGPTActivationAdapter = class {
-  name = "chatgpt";
-  command;
-  autoStart;
-  envPassthrough;
-  envSource;
-  runner;
-  manual;
-  constructor(options = {}) {
-    this.command = options.command ?? "chatgpt";
-    this.autoStart = options.autoStart === true;
-    this.envPassthrough = options.envPassthrough ?? [];
-    this.envSource = options.envSource ?? process.env;
-    this.runner = options.runner ?? defaultRunner;
-    this.manual = options.manual ?? new ManualActivationAdapter();
-  }
-  /** Capability check: is the configured command executable on PATH? */
-  async probe() {
-    const exists = await commandExists(this.command);
-    if (!exists) {
-      return {
-        available: false,
-        detail: `command '${this.command}' not found on PATH \u2014 no stable external launch capability; fall back to manual activation`
-      };
-    }
-    return {
-      available: true,
-      detail: `stable external launch capability: '${this.command}' found on PATH`
-    };
-  }
-  /**
-   * Auto-start only when explicitly configured (`autoStart === true`) AND the
-   * capability probe passes. The child environment is the explicit allowlist
-   * build (secret-shaped passthrough keys fail closed via
-   * CredentialInPassthroughError). Every other path — and any failure at
-   * all — delegates to the injected ManualActivationAdapter. NEVER throws.
-   */
-  async notify(dispatch, workspaceRoot) {
-    if (this.autoStart === true && (await this.probe()).available) {
-      try {
-        const env = buildAgentEnv(this.envPassthrough, this.envSource);
-        await this.runner(this.command, [buildLaunchPrompt(dispatch, workspaceRoot)], env);
-        return { state: "started", detail: `auto-started via '${this.command}'` };
-      } catch (err) {
-        if (err instanceof Error && err.name === "CredentialInPassthroughError") {
-          return { state: "failed", detail: err.message };
-        }
-      }
-    }
-    const manual = await this.manual.notify(dispatch, workspaceRoot);
-    return manual;
-  }
-  /** A detached one-shot launch cannot be cancelled: explicit, not silent. */
-  async cancel(_dispatchId) {
-    return {
-      state: "unsupported",
-      detail: "detached one-shot launch has no cancellation handle; instruct the running agent session to stop and revoke the dispatch instead"
-    };
-  }
-};
-
-// src/activation/zcode.ts
-var import_node_child_process2 = require("node:child_process");
-var import_node_util2 = require("node:util");
-var execFileAsync2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
-async function commandExists2(command) {
-  const checker = process.platform === "win32" ? "where" : "which";
+async function readLock(file) {
   try {
-    await execFileAsync2(checker, [command]);
-    return true;
+    const raw = await (0, import_promises3.readFile)(file, "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const candidate = parsed;
+    if (typeof candidate.pid !== "number" || typeof candidate.holder !== "string") return null;
+    return candidate;
   } catch {
-    return false;
+    return null;
   }
 }
-function buildLaunchPrompt2(dispatch, workspaceRoot) {
-  return `GateFlow dispatch ${dispatch.dispatchId} is ready (issue #${dispatch.issueNumber}, role ${dispatch.role}, repo ${dispatch.repository}). Load the gateflow-agent skill, then read exactly ${workspaceRoot}/.gateflow/inbox/${dispatch.dispatchId}/dispatch.json and process ONLY that dispatch; write all output to the matching outbox directory.`;
-}
-function defaultRunner2(cmd, args, env) {
-  return new Promise((resolve4, reject) => {
-    let settled = false;
-    const child = (0, import_node_child_process2.spawn)(cmd, args, { detached: true, stdio: "ignore", windowsHide: true, env });
-    child.unref();
-    child.once("error", (err) => {
-      if (!settled) {
-        settled = true;
-        reject(err);
-      }
-    });
-    child.once("spawn", () => {
-      if (!settled) {
-        settled = true;
-        resolve4();
-      }
-    });
-  });
-}
-var ZCodeActivationAdapter = class {
-  name = "zcode";
-  command;
-  autoStart;
-  envPassthrough;
-  envSource;
-  runner;
-  out;
-  manual;
-  constructor(options = {}) {
-    this.command = options.command ?? "zcode";
-    this.autoStart = options.autoStart === true;
-    this.envPassthrough = options.envPassthrough ?? [];
-    this.envSource = options.envSource ?? process.env;
-    this.runner = options.runner ?? defaultRunner2;
-    this.out = options.out ?? ((line) => {
-      process.stdout.write(`${line}
-`);
-    });
-    this.manual = options.manual ?? new ManualActivationAdapter();
+async function lockAgeMs(file, nowMs) {
+  try {
+    const raw = await (0, import_promises3.readFile)(file, "utf8");
+    const parsed = JSON.parse(raw);
+    const at = typeof parsed.acquired_at === "string" ? Date.parse(parsed.acquired_at) : NaN;
+    if (Number.isNaN(at)) return MAX_LOCK_AGE_MS + 1;
+    return nowMs - at;
+  } catch {
+    return MAX_LOCK_AGE_MS + 1;
   }
-  /** Capability check: is the configured command executable on PATH? */
-  async probe() {
-    const exists = await commandExists2(this.command);
-    if (!exists) {
-      return {
-        available: false,
-        detail: `command '${this.command}' not found on PATH \u2014 no stable external launch capability; fall back to manual activation`
-      };
-    }
-    return {
-      available: true,
-      detail: `stable external launch capability: '${this.command}' found on PATH`
+}
+async function acquireLock(file, holder, now = () => /* @__PURE__ */ new Date()) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const contents = {
+      pid: process.pid,
+      holder,
+      acquired_at: now().toISOString()
     };
-  }
-  /**
-   * Conservative by default (`autoStart` defaults to false, see the options
-   * docs): without opt-in we print the exact command the human can run plus
-   * the manual instructions, and never spawn anything. With opt-in we mirror
-   * the ChatGPT adapter: spawn only when the probe passes, with the explicit
-   * allowlist environment; a credential-shaped passthrough request fails
-   * closed instead of falling back; ANY spawn failure falls back to the
-   * injected ManualActivationAdapter. NEVER throws.
-   */
-  async notify(dispatch, workspaceRoot) {
-    if (this.autoStart !== true) {
-      const prompt = buildLaunchPrompt2(dispatch, workspaceRoot);
-      this.out(`GateFlow suggests (run it yourself to activate): ${this.command} "${prompt}"`);
-      return this.manual.notify(dispatch, workspaceRoot);
-    }
+    let fd;
     try {
-      if ((await this.probe()).available) {
-        const env = buildAgentEnv(this.envPassthrough, this.envSource);
-        await this.runner(this.command, [buildLaunchPrompt2(dispatch, workspaceRoot)], env);
-        return { state: "started", detail: `auto-started via '${this.command}'` };
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "CredentialInPassthroughError") {
-        return { state: "failed", detail: err.message };
-      }
-    }
-    return this.manual.notify(dispatch, workspaceRoot);
-  }
-  /** A detached one-shot launch cannot be cancelled: explicit, not silent. */
-  async cancel(_dispatchId) {
-    return {
-      state: "unsupported",
-      detail: "detached one-shot launch has no cancellation handle; instruct the running agent session to stop and revoke the dispatch instead"
-    };
-  }
-};
-
-// src/activation/index.ts
-function createActivationAdapter(kind, opts) {
-  switch (kind) {
-    case "chatgpt":
-      return new ChatGPTActivationAdapter({
-        command: opts?.command,
-        autoStart: opts?.autoStart,
-        envPassthrough: opts?.envPassthrough
-      });
-    case "zcode":
-      return new ZCodeActivationAdapter({
-        command: opts?.command,
-        autoStart: opts?.autoStart,
-        envPassthrough: opts?.envPassthrough
-      });
-    case "manual":
-    default:
-      return new ManualActivationAdapter();
-  }
-}
-function isActivationKind(value) {
-  return value === "manual" || value === "chatgpt" || value === "zcode";
-}
-function resolveAdapterForAgent(agentName, agents, fallback = "manual") {
-  const config = agents?.[agentName];
-  const requested = isActivationKind(config?.activation) ? config.activation : void 0;
-  const kind = requested ?? (isActivationKind(fallback) ? fallback : "manual");
-  return createActivationAdapter(kind, config);
-}
-function toActivationDispatch(d) {
-  return {
-    dispatchId: d.dispatch_id,
-    role: d.role,
-    issueNumber: d.issue_number,
-    repository: d.repository
-  };
-}
-
-// src/workspace/inbox.ts
-var import_node_crypto5 = require("node:crypto");
-var import_promises4 = require("node:fs/promises");
-var nodePath4 = __toESM(require("node:path"));
-var RENAME_MAX_ATTEMPTS = 5;
-function sleep(ms) {
-  return new Promise((resolve4) => setTimeout(resolve4, ms));
-}
-function tempPathFor(file) {
-  const random = Math.random().toString(36).slice(2, 10);
-  return `${file}.tmp-${process.pid.toString(36)}-${random}`;
-}
-async function renameOverExisting(tmp, target) {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await (0, import_promises4.rename)(tmp, target);
-      return;
+      fd = await (0, import_promises3.open)(file, "wx");
     } catch (err) {
       const code = err.code;
-      const recoverable = code === "EPERM" || code === "EACCES" || code === "EBUSY";
-      if (!recoverable || attempt >= RENAME_MAX_ATTEMPTS) {
-        try {
-          await (0, import_promises4.unlink)(tmp);
-        } catch {
-        }
-        throw err;
+      if (code !== "EEXIST") {
+        return { ok: false, reason: `lock file could not be created: ${err.message}`, holder: null };
+      }
+      const existing = await readLock(file);
+      const age = await lockAgeMs(file, now().getTime());
+      const stale = existing === null || !isAlive(existing.pid) || age > MAX_LOCK_AGE_MS;
+      if (!stale) {
+        return { ok: false, reason: "workspace busy: lock held by a live process", holder: existing };
       }
       try {
-        await (0, import_promises4.unlink)(target);
+        await (0, import_promises3.unlink)(file);
       } catch {
       }
-      await sleep(10 * attempt);
+      continue;
     }
+    try {
+      await fd.writeFile(JSON.stringify(contents, null, 2) + "\n", "utf8");
+    } finally {
+      await fd.close();
+    }
+    return { ok: true };
   }
+  return { ok: false, reason: "workspace busy: lock held by a live process", holder: await readLock(file) };
 }
-async function atomicWriteText(file, content) {
-  await (0, import_promises4.mkdir)(nodePath4.dirname(file), { recursive: true });
-  const tmp = tempPathFor(file);
-  await (0, import_promises4.writeFile)(tmp, content, "utf8");
-  await renameOverExisting(tmp, file);
-}
-async function atomicWriteJson(file, value) {
-  await atomicWriteText(file, `${JSON.stringify(value, null, 2)}
-`);
-}
-async function writeInbox(paths, build) {
-  const dir = inboxDispatchDir(paths, build.dispatch.dispatch_id);
-  await (0, import_promises4.mkdir)(dir, { recursive: true });
-  await atomicWriteText(nodePath4.join(dir, "TASK.md"), build.task);
-  if (build.plan !== null) {
-    await atomicWriteText(nodePath4.join(dir, "PLAN.md"), build.plan);
-  }
-  if (build.feedback !== null) {
-    await atomicWriteText(nodePath4.join(dir, "FEEDBACK.md"), build.feedback);
-  }
-  await atomicWriteJson(nodePath4.join(dir, "context.json"), build.context);
-  await atomicWriteJson(nodePath4.join(dir, "dispatch.json"), build.dispatch);
-}
-async function writeCurrent(paths, pointer) {
-  await atomicWriteJson(paths.current, pointer);
-}
-async function readInboxDispatch(paths, dispatchId) {
-  let file;
+async function releaseLock(file, holder) {
+  const existing = await readLock(file);
+  if (existing === null) return false;
+  if (existing.pid !== process.pid || existing.holder !== holder) return false;
   try {
-    file = nodePath4.join(inboxDispatchDir(paths, dispatchId), "dispatch.json");
+    await (0, import_promises3.unlink)(file);
+    return true;
   } catch {
-    return null;
+    return false;
   }
-  let text;
-  try {
-    text = await (0, import_promises4.readFile)(file, "utf8");
-  } catch {
-    return null;
-  }
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const parsed = validateDispatch(raw);
-  return parsed.ok ? parsed.value : null;
-}
-async function readCurrent(paths) {
-  let text;
-  try {
-    text = await (0, import_promises4.readFile)(paths.current, "utf8");
-  } catch {
-    return null;
-  }
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const parsed = validateCurrent(raw);
-  return parsed.ok ? parsed.value : null;
-}
-async function readInboxContext(paths, dispatchId) {
-  let file;
-  try {
-    file = nodePath4.join(inboxDispatchDir(paths, dispatchId), "context.json");
-  } catch {
-    return null;
-  }
-  let text;
-  try {
-    text = await (0, import_promises4.readFile)(file, "utf8");
-  } catch {
-    return null;
-  }
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const parsed = validateContext(raw);
-  return parsed.ok ? parsed.value : null;
-}
-function sha256Hex(content) {
-  return (0, import_node_crypto5.createHash)("sha256").update(content, "utf8").digest("hex");
-}
-function inputSnapshotSha256(content) {
-  return sha256Hex(
-    JSON.stringify({ task: content.task, plan: content.plan, feedback: content.feedback })
-  );
-}
-
-// src/workspace/outbox.ts
-var import_promises5 = require("node:fs/promises");
-var nodePath5 = __toESM(require("node:path"));
-async function readOutboxMarkdown(paths, dispatchId, name) {
-  let file;
-  try {
-    file = nodePath5.join(outboxDispatchDir(paths, dispatchId), name);
-  } catch {
-    return null;
-  }
-  let size;
-  try {
-    const info = await (0, import_promises5.stat)(file);
-    if (!info.isFile()) return null;
-    size = info.size;
-  } catch {
-    return null;
-  }
-  if (size > MAX_FILE_BYTES) {
-    throw new OversizedFileError(file, size, MAX_FILE_BYTES);
-  }
-  let content;
-  try {
-    content = await (0, import_promises5.readFile)(file, "utf8");
-  } catch {
-    return null;
-  }
-  if (content.length === 0) return null;
-  return content;
-}
-async function listOutboxDispatchIds(paths) {
-  return listDispatchDirs(paths.outbox);
-}
-function receiptFile(paths, dispatchId) {
-  return nodePath5.join(paths.receipts, `${dispatchId}.json`);
-}
-async function readReceipt(paths, dispatchId) {
-  if (!validateDispatchDirName(dispatchId)) return null;
-  let text;
-  try {
-    text = await (0, import_promises5.readFile)(receiptFile(paths, dispatchId), "utf8");
-  } catch {
-    return null;
-  }
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const parsed = validateReceipt(raw);
-  return parsed.ok ? parsed.value : null;
-}
-async function writeReceipt(paths, receipt) {
-  if (!validateDispatchDirName(receipt.dispatch_id)) {
-    throw new Error(`invalid dispatch id: ${JSON.stringify(receipt.dispatch_id)}`);
-  }
-  await atomicWriteJson(receiptFile(paths, receipt.dispatch_id), receipt);
-}
-async function listReceipts(paths) {
-  let entries;
-  try {
-    entries = await (0, import_promises5.readdir)(paths.receipts, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const receipts = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const dispatchId = entry.name.slice(0, -".json".length);
-    const receipt = await readReceipt(paths, dispatchId);
-    if (receipt !== null) receipts.push(receipt);
-  }
-  return receipts.sort((a, b) => a.dispatch_id.localeCompare(b.dispatch_id));
 }
 
 // src/gate/protocol.ts
@@ -17801,7 +16532,7 @@ var STATE_TO_LABEL = Object.fromEntries(
 );
 var TRANSITIONS = [
   { from: null, to: STATES.planning },
-  // T0: /ai-plan by Trusted Human, or Producer CREATE
+  // T0: /ai-plan by Trusted Human
   { from: STATES.planning, to: STATES.review },
   // T1: plan marker comment
   { from: STATES.review, to: STATES.ready },
@@ -17818,13 +16549,11 @@ var TRANSITIONS = [
 var COMMANDS = {
   aiPlan: "/ai-plan",
   approve: "/approve",
-  choose: "/choose",
   change: "/change",
   cancel: "/cancel"
 };
 var ALL_COMMANDS = Object.values(COMMANDS);
 var MARKERS = {
-  append: "<!-- ai-workflow:append:v1 -->",
   plan: "<!-- ai-workflow:plan:v1 -->",
   executionTracker: "<!-- ai-workflow:execution-tracker:v1 -->",
   completionReport: "<!-- ai-workflow:completion-report:v1 -->"
@@ -17883,23 +16612,9 @@ function inspectCommentMarkers(body) {
 }
 
 // src/protocol/epoch.ts
-var import_node_crypto6 = require("node:crypto");
 var EPOCH_BODY_PATTERN = /^wf_[0-9a-z]{12}$/;
 function isWorkflowEpoch(value) {
   return typeof value === "string" && EPOCH_BODY_PATTERN.test(value);
-}
-function newWorkflowEpoch() {
-  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
-  let epoch = "wf_";
-  while (epoch.length < 3 + 12) {
-    const bytes = (0, import_node_crypto6.randomBytes)(16);
-    for (const byte of bytes) {
-      if (epoch.length >= 3 + 12) break;
-      if (byte >= 252) continue;
-      epoch += alphabet[byte % 36];
-    }
-  }
-  return epoch;
 }
 
 // src/protocol/records.ts
@@ -17922,17 +16637,6 @@ function approvalOperationId(repositoryId, issueNumber, epoch, planCommentId) {
 }
 function feedbackOperationId(repositoryId, issueNumber, epoch, feedbackCommentId) {
   return `feedback:${repositoryId}:${issueNumber}:${epoch}:${feedbackCommentId}`;
-}
-function submitOperationId(submissionId) {
-  return `submit:${submissionId}`;
-}
-function buildRecordBody(record) {
-  return `${recordMarkerFor(record.kind)}
-
-\`\`\`json
-${JSON.stringify(record, null, 2)}
-\`\`\`
-`;
 }
 function recordMarkerFor(kind) {
   switch (kind) {
@@ -18184,14 +16888,14 @@ function validateFeedbackRecord(commentId, raw) {
   const eventId = str(raw, "event_id", /^fe\d+$/, errors);
   const feedbackCommentId = num(raw, "feedback_comment_id", errors);
   const feedbackKind = raw["feedback_kind"];
-  if (feedbackKind !== "choose" && feedbackKind !== "change") {
-    errors.push(`feedback_kind: expected "choose"|"change", got ${JSON.stringify(feedbackKind)}`);
+  if (feedbackKind !== "change") {
+    errors.push(`feedback_kind: expected "change", got ${JSON.stringify(feedbackKind)}`);
   }
   const gateLogin = str(raw, "gate_login", LOGIN, errors);
   const gateUserId = num(raw, "gate_user_id", errors);
   const createdAt = str(raw, "created_at", ISO_DATE, errors);
   const operationId = str(raw, "operation_id", OPERATION_ID, errors);
-  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || eventId === null || feedbackCommentId === null || gateLogin === null || gateUserId === null || createdAt === null || operationId === null || feedbackKind !== "choose" && feedbackKind !== "change") {
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || eventId === null || feedbackCommentId === null || gateLogin === null || gateUserId === null || createdAt === null || operationId === null || feedbackKind !== "change") {
     return { ok: false, reason: `invalid feedback record: ${errors.join("; ")}` };
   }
   if (eventId !== `fe${feedbackCommentId}`) {
@@ -18238,13 +16942,6 @@ function approvalRecordsConflict(records) {
     }
   }
   return { conflict: false, reason: null };
-}
-function sourceIdComment(operationId) {
-  return `<!-- gateflow:source-id: ${operationId} -->`;
-}
-var SOURCE_ID_PATTERN = /<!--\s*gateflow:source-id:\s*(submit:sub_[0-9a-z]{16})\s*-->/;
-function findSourceIdInBody(body) {
-  return SOURCE_ID_PATTERN.exec(body)?.[1] ?? null;
 }
 function parseRecords(kind, comments) {
   const records = [];
@@ -18296,7 +16993,7 @@ function parseTrackerStatus(body) {
 }
 
 // src/github/comments.ts
-var DISPATCH_ID_COMMENT_PATTERN = /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:consumer|executor)_\S+) -->/;
+var DISPATCH_ID_COMMENT_PATTERN = /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:plan|execute|consumer|executor)_\S+) -->/;
 var STATUS_LINE_PATTERN = /^\*\*Status:\*\*\s*(.*)$/;
 function findDispatchIdInComment(body) {
   return DISPATCH_ID_COMMENT_PATTERN.exec(body)?.[1] ?? null;
@@ -18316,11 +17013,11 @@ function buildTrackerCommentBody(opts) {
   const head = [
     MARKERS.executionTracker,
     "",
-    dispatchIdComment(opts.dispatchId),
+    dispatchIdComment(opts.taskId),
     "",
     `**Status:** ${opts.status}`
   ].join("\n");
-  const progress = opts.progressMarkdown.trim();
+  const progress = (opts.progressMarkdown ?? "").trim();
   return progress.length > 0 ? `${head}
 
 ${progress}
@@ -18376,7 +17073,6 @@ function findCompletionReportComments(comments, dispatchId) {
   }
   return reports;
 }
-var CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
 var CHANGE_PATTERN = /^\/change (.+)$/;
 function isTrustedAuthor(comment, trustedHumans, repoOwner) {
   const login = comment.user.toLowerCase();
@@ -18455,22 +17151,21 @@ function acceptedFeedbackEvents(view, comments, trustedHumans, repoOwner) {
     const comment = byId.get(record.feedback_comment_id);
     if (comment === void 0) continue;
     if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) continue;
-    const trimmed = comment.body.trim();
-    if (record.feedback_kind === "choose" && CHOOSE_PATTERN.exec(trimmed) === null) continue;
-    if (record.feedback_kind === "change" && CHANGE_PATTERN.exec(trimmed) === null) continue;
-    accepted.push({ comment, kind: record.feedback_kind });
+    if (record.feedback_kind !== "change") continue;
+    if (CHANGE_PATTERN.exec(comment.body.trim()) === null) continue;
+    accepted.push({ comment, kind: "change" });
   }
   return accepted;
 }
-async function publishPlanComment(client, ref2, planMarkdown, dispatchId) {
-  return client.addIssueComment(ref2, buildPlanCommentBody(planMarkdown, dispatchId));
+async function publishPlanComment(client, ref2, planMarkdown, taskId) {
+  return client.addIssueComment(ref2, buildPlanCommentBody(planMarkdown, taskId));
 }
 async function publishTrackerComment(client, ref2, opts) {
   const body = buildTrackerCommentBody({
-    dispatchId: opts.dispatchId,
+    taskId: opts.taskId,
     issueNumber: opts.issueNumber,
     status: "In Progress",
-    progressMarkdown: opts.progressMarkdown
+    progressMarkdown: ""
   });
   return client.addIssueComment(ref2, body);
 }
@@ -18503,19 +17198,19 @@ async function updateTracker(client, ref2, commentId, currentBody, opts) {
   const status = opts.status ?? (current === "Blocked" ? "Blocked" : "In Progress");
   const progressMarkdown = opts.progressMarkdown ?? extractProgressTail(currentBody);
   const body = buildTrackerCommentBody({
-    dispatchId,
+    taskId: dispatchId,
     issueNumber: ref2.issueNumber,
     status,
     progressMarkdown
   });
   await client.updateIssueComment(ref2, commentId, body);
 }
-async function publishCompletionReport(client, ref2, reportMarkdown, dispatchId) {
-  return client.addIssueComment(ref2, buildCompletionReportBody(reportMarkdown, dispatchId));
+async function publishCompletionReport(client, ref2, reportMarkdown, taskId) {
+  return client.addIssueComment(ref2, buildCompletionReportBody(reportMarkdown, taskId));
 }
 
 // src/protocol/plan.ts
-var import_node_crypto7 = require("node:crypto");
+var import_node_crypto5 = require("node:crypto");
 var DROPPED_LINE_PATTERNS = [
   /^<!--\s*ai-workflow:[a-z-]+:v\d+\s*-->$/,
   // workflow markers (plan/tracker/report/append)
@@ -18531,18 +17226,18 @@ function canonicalPlanContent(planCommentBody) {
   }).join("\n");
   return kept.trim();
 }
-function sha256Hex2(content) {
-  return (0, import_node_crypto7.createHash)("sha256").update(content, "utf8").digest("hex");
+function sha256Hex(content) {
+  return (0, import_node_crypto5.createHash)("sha256").update(content, "utf8").digest("hex");
 }
 function planSha256(planCommentBody) {
-  return sha256Hex2(canonicalPlanContent(planCommentBody));
+  return sha256Hex(canonicalPlanContent(planCommentBody));
 }
 
 // src/driver/intent.ts
 function aiLabels(labels) {
   return labels.filter((label) => label.startsWith("ai:"));
 }
-function consumerRound(feedbackCount) {
+function planRound(feedbackCount) {
   return String(1 + feedbackCount).padStart(2, "0");
 }
 function deriveIntents(issue, comments, ctx) {
@@ -18561,10 +17256,10 @@ function deriveIntents(issue, comments, ctx) {
     case "ai:planning": {
       return [
         {
-          role: "consumer",
+          mode: "plan",
           issueNumber: issue.number,
           reason: feedbackCount > 0 ? "feedback_applied" : "planning",
-          revision: consumerRound(feedbackCount),
+          revision: planRound(feedbackCount),
           epoch,
           planCommentId: null,
           approvalCommentId: null,
@@ -18580,10 +17275,10 @@ function deriveIntents(issue, comments, ctx) {
       if (!newerFeedback) return [];
       return [
         {
-          role: "consumer",
+          mode: "plan",
           issueNumber: issue.number,
           reason: "feedback_applied",
-          revision: consumerRound(feedbackCount),
+          revision: planRound(feedbackCount),
           epoch,
           planCommentId: null,
           approvalCommentId: null,
@@ -18605,7 +17300,7 @@ function deriveIntents(issue, comments, ctx) {
       if (approval === void 0) return [];
       return [
         {
-          role: "executor",
+          mode: "execute",
           issueNumber: issue.number,
           reason: "approved_plan",
           revision: `p${plan.id}`,
@@ -18620,14 +17315,18 @@ function deriveIntents(issue, comments, ctx) {
       return [];
   }
 }
-var GOAL_CONSUMER = "\u5206\u6790\u4EFB\u52A1\u5E76\u4EA7\u51FA\u53EF\u6267\u884C\u7684 Execution Plan\uFF08\u5199\u5165 outbox/PLAN.md\uFF09\uFF0C\u5B8C\u6210\u540E\u5199 result.json\uFF08result=plan_ready\uFF09";
-var GOAL_EXECUTOR = "\u4E25\u683C\u6309\u7167 PLAN.md \u6267\u884C\u5E76\u901A\u8FC7\u771F\u5B9E\u9A8C\u8BC1\uFF0C\u5B8C\u6210\u540E\u5199 REPORT.md \u4E0E result.json\uFF08result=completed\uFF09";
-function buildTaskMarkdown(issue, role) {
+var GOAL_PLAN = "\u5206\u6790\u4EFB\u52A1\u5E76\u4EA7\u51FA\u53EF\u6267\u884C\u7684\u6267\u884C\u8BA1\u5212\uFF08\u5199\u5165\u672C\u76EE\u5F55 plan.md\uFF09\uFF0C\u5B8C\u6210\u540E\u5199 result.json\uFF08status=completed, report=plan.md\uFF09";
+var GOAL_EXECUTE = "\u4E25\u683C\u6309\u7167\u5DF2\u6279\u51C6\u7684 plan.md \u6267\u884C\u5E76\u901A\u8FC7\u771F\u5B9E\u9A8C\u8BC1\uFF0C\u5B8C\u6210\u540E\u5199 report.md \u4E0E result.json\uFF08status=completed, validation=passed\uFF09";
+function buildTaskMarkdown(issue, mode) {
   const body = issue.body.length > 0 ? issue.body : "(no body)";
-  const goal = role === "executor" ? GOAL_EXECUTOR : GOAL_CONSUMER;
+  const goal = mode === "execute" ? GOAL_EXECUTE : GOAL_PLAN;
   return `# ${issue.title}
 
 ${body}
+
+## Mode
+
+${mode}
 
 ## Goal
 
@@ -18642,21 +17341,9 @@ function formatTimestamp(iso) {
 }
 function feedbackEntryText(entry) {
   const trimmed = entry.comment.body.trim();
-  if (entry.kind === "choose") {
-    const match = /^\/choose (\S+) (\S+)$/.exec(trimmed);
-    const question = match?.[1];
-    const answer = match?.[2];
-    if (question !== void 0 && answer !== void 0) {
-      return `Q: ${question} \u2192 A: ${answer}`;
-    }
-  } else {
-    const match = /^\/change (.+)$/.exec(trimmed);
-    const text = match?.[1];
-    if (text !== void 0) {
-      return text;
-    }
-  }
-  return trimmed;
+  const match = /^\/change (.+)$/.exec(trimmed);
+  const text = match?.[1];
+  return text !== void 0 ? text : trimmed;
 }
 function buildFeedbackMarkdown(entries) {
   if (entries.length === 0) return null;
@@ -18681,40 +17368,15 @@ function parseRepositorySlug(repository) {
   if (owner === void 0 || name === void 0) return null;
   return { owner, name };
 }
-async function bootstrapEpochIfNeeded(client, ref2, repositoryInfo, issue, records) {
-  const labels = aiLabels(issue.labels);
-  if (!(labels.length === 1 && labels[0] === "ai:planning")) return null;
-  if (records.epoch !== null) return null;
-  if (records.suspect.some((entry) => entry.reason.includes("workflow_epoch"))) return null;
-  const identity = await client.getAuthenticatedUser();
-  const epoch = newWorkflowEpoch();
-  const record = {
-    schema: 2,
-    kind: "workflow_epoch",
-    repository_id: repositoryInfo.id,
-    issue_number: issue.number,
-    workflow_epoch: epoch,
-    created_at: (/* @__PURE__ */ new Date()).toISOString(),
-    issued_by: identity.login,
-    operation_id: epochOperationId(repositoryInfo.id, issue.number, epoch)
-  };
-  await client.addIssueComment(ref2, buildRecordBody(record));
-  return client.listComments(ref2);
-}
 async function discoverIssue(client, repository, issue, config, repositoryInfo) {
   const slug = parseRepositorySlug(repository);
   if (slug === null) {
     throw new Error(`invalid repository slug: ${JSON.stringify(repository)}`);
   }
   const ref2 = { owner: slug.owner, repo: slug.name, issueNumber: issue.number };
-  let comments = await client.listComments(ref2);
+  const comments = await client.listComments(ref2);
   const gateLogins = new Set(config.gateLogins.map((login) => login.toLowerCase()));
-  let records = readIssueRecords(comments, gateLogins);
-  const bootstrapped = await bootstrapEpochIfNeeded(client, ref2, repositoryInfo, issue, records);
-  if (bootstrapped !== null) {
-    comments = bootstrapped;
-    records = readIssueRecords(comments, gateLogins);
-  }
+  const records = readIssueRecords(comments, gateLogins);
   const ctx = {
     repositoryId: repositoryInfo.id,
     repoOwner: slug.owner,
@@ -18749,16 +17411,600 @@ async function discoverWork(client, repository, config, repositoryInfo, log) {
   return discoveries;
 }
 
-// src/driver/dedup.ts
-var import_promises6 = require("node:fs/promises");
-function shouldDispatch(existing, maxAttempts) {
+// src/workspace/tasks.ts
+var import_node_crypto6 = require("node:crypto");
+var import_promises4 = require("node:fs/promises");
+var nodePath4 = __toESM(require("node:path"));
+
+// src/workspace/validation.ts
+var REASON_MAX = 1e3;
+var REPOSITORY_MAX = 256;
+var MAX_FILE_BYTES = 512 * 1024;
+var OversizedFileError = class extends Error {
+  /** Path of the offending file. */
+  file;
+  /** Actual size in bytes. */
+  size;
+  /** Allowed maximum in bytes. */
+  maxBytes;
+  constructor(file, size, maxBytes) {
+    super(`file exceeds ${maxBytes} bytes: ${file} (${size} bytes)`);
+    this.name = "OversizedFileError";
+    this.file = file;
+    this.size = size;
+    this.maxBytes = maxBytes;
+  }
+};
+var ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+var SHA256_PATTERN = /^[0-9a-f]{64}$/i;
+var EPOCH_SHAPE = /^wf_[0-9a-z]{12}$/;
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function fail(what, message) {
+  return { ok: false, errors: [`${what}: ${message}`] };
+}
+function checkUnknownKeys(raw, allowed, what, errors) {
+  for (const key of Object.keys(raw)) {
+    if (!allowed.includes(key)) {
+      errors.push(`${what}: unknown key "${key}"`);
+    }
+  }
+}
+function checkRequiredKeys(raw, required, what, errors) {
+  for (const key of required) {
+    if (!(key in raw)) {
+      errors.push(`${what}: missing required key "${key}"`);
+    }
+  }
+}
+function checkSchema(value, what, errors) {
+  if (value === void 0) return;
+  if (value !== WORKSPACE_SCHEMA_VERSION) {
+    errors.push(`${what}: schema must be ${WORKSPACE_SCHEMA_VERSION}, got ${JSON.stringify(value)}`);
+  }
+}
+function checkString(value, what, errors, opts = {}) {
+  if (value === void 0) return;
+  if (typeof value !== "string") {
+    errors.push(`${what}: must be a string, got ${typeof value}`);
+    return;
+  }
+  if (opts.min !== void 0 && value.length < opts.min) {
+    errors.push(`${what}: must be at least ${opts.min} character(s)`);
+  }
+  if (opts.max !== void 0 && value.length > opts.max) {
+    errors.push(`${what}: exceeds maximum length of ${opts.max}`);
+  }
+}
+function checkPositiveInt(value, what, errors) {
+  if (value === void 0) return;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    errors.push(`${what}: must be a positive integer, got ${JSON.stringify(value)}`);
+  }
+}
+function checkNull(value, what, errors) {
+  if (value === void 0) return;
+  if (value !== null) {
+    errors.push(`${what}: must be null, got ${JSON.stringify(value)}`);
+  }
+}
+function checkIsoDate(value, what, errors) {
+  if (value === void 0) return;
+  if (typeof value !== "string" || !ISO_DATE_PATTERN.test(value) || Number.isNaN(Date.parse(value))) {
+    errors.push(`${what}: must be an ISO 8601 date string, got ${JSON.stringify(value)}`);
+  }
+}
+function checkHumanOnly(value, what, errors) {
+  const normalized = value.toLowerCase();
+  for (const word of HUMAN_ONLY_STATUSES) {
+    if (normalized === word) {
+      errors.push(
+        `${what}: human-only value "${value}" is reserved for humans and must never appear in agent files`
+      );
+      return;
+    }
+  }
+}
+function checkTaskId(value, what, errors) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "string" || parseTaskId(value) === null) {
+    errors.push(`${what}: must match the frozen task_id format, got ${JSON.stringify(value)}`);
+    return void 0;
+  }
+  return value;
+}
+function checkMode(value, what, errors) {
+  if (value === void 0) return void 0;
+  if (value !== "plan" && value !== "execute") {
+    errors.push(`${what}: must be "plan" or "execute", got ${JSON.stringify(value)}`);
+    return void 0;
+  }
+  return value;
+}
+var TASK_FILE_KEYS = [
+  "schema",
+  "task_id",
+  "repository",
+  "repository_id",
+  "issue_number",
+  "workflow_epoch",
+  "mode",
+  "reason",
+  "created_at",
+  "plan_comment_id",
+  "approval_comment_id",
+  "input"
+];
+function validateTaskFile(raw) {
+  const what = "task";
+  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
+  const errors = [];
+  checkUnknownKeys(raw, TASK_FILE_KEYS, what, errors);
+  checkRequiredKeys(raw, TASK_FILE_KEYS, what, errors);
+  checkSchema(raw["schema"], what, errors);
+  const mode = checkMode(raw["mode"], `${what}.mode`, errors);
+  const taskId = checkTaskId(raw["task_id"], `${what}.task_id`, errors);
+  if (taskId !== void 0 && mode !== void 0) {
+    const parsed = parseTaskId(taskId);
+    if (parsed !== null && parsed.mode !== mode) {
+      errors.push(`${what}.task_id: mode component "${parsed.mode}" does not match mode "${mode}"`);
+    }
+    if (parsed !== null && typeof raw["workflow_epoch"] === "string") {
+      const expected = `wf_${parsed.epochCode}`;
+      if (raw["workflow_epoch"] !== expected) {
+        errors.push(
+          `${what}.workflow_epoch "${String(raw["workflow_epoch"])}" does not match the task_id epoch code (expected "${expected}")`
+        );
+      }
+    }
+  }
+  checkString(raw["repository"], `${what}.repository`, errors, { min: 1, max: REPOSITORY_MAX });
+  checkPositiveInt(raw["repository_id"], `${what}.repository_id`, errors);
+  checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
+  if (raw["workflow_epoch"] !== void 0) {
+    if (typeof raw["workflow_epoch"] !== "string" || !EPOCH_SHAPE.test(raw["workflow_epoch"])) {
+      errors.push(
+        `${what}.workflow_epoch: must be a workflow epoch ("wf_" + 12 base36 chars), got ${JSON.stringify(raw["workflow_epoch"])}`
+      );
+    }
+  }
+  checkIsoDate(raw["created_at"], `${what}.created_at`, errors);
+  if (mode === "plan") {
+    if (raw["reason"] !== void 0 && raw["reason"] !== "planning" && raw["reason"] !== "feedback_applied") {
+      errors.push(
+        `${what}.reason: plan-mode reason must be "planning" or "feedback_applied", got ${JSON.stringify(raw["reason"])}`
+      );
+    }
+    checkNull(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
+    checkNull(raw["approval_comment_id"], `${what}.approval_comment_id`, errors);
+  } else if (mode === "execute") {
+    if (raw["reason"] !== void 0 && raw["reason"] !== "approved_plan") {
+      errors.push(`${what}.reason: execute-mode reason must be "approved_plan", got ${JSON.stringify(raw["reason"])}`);
+    }
+    checkPositiveInt(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
+    checkPositiveInt(raw["approval_comment_id"], `${what}.approval_comment_id`, errors);
+  }
+  const input = raw["input"];
+  if (input !== void 0) {
+    if (!isRecord2(input)) {
+      errors.push(`${what}.input: expected a JSON object`);
+    } else {
+      const inputWhat = `${what}.input`;
+      checkUnknownKeys(input, ["task", "plan", "feedback"], inputWhat, errors);
+      checkRequiredKeys(input, ["task", "plan", "feedback"], inputWhat, errors);
+      if (input["task"] !== void 0 && input["task"] !== "task.md") {
+        errors.push(`${inputWhat}.task: must be "task.md", got ${JSON.stringify(input["task"])}`);
+      }
+      if (mode === "execute") {
+        if (input["plan"] !== void 0 && input["plan"] !== "plan.md") {
+          errors.push(`${inputWhat}.plan: execute input.plan must be "plan.md", got ${JSON.stringify(input["plan"])}`);
+        }
+      } else if (mode === "plan") {
+        if (input["plan"] !== void 0 && input["plan"] !== null) {
+          errors.push(`${inputWhat}.plan: plan-mode input.plan must be null, got ${JSON.stringify(input["plan"])}`);
+        }
+      }
+      if (input["feedback"] !== void 0 && input["feedback"] !== null && input["feedback"] !== "feedback.md") {
+        errors.push(`${inputWhat}.feedback: must be "feedback.md" or null, got ${JSON.stringify(input["feedback"])}`);
+      }
+    }
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: raw };
+}
+var RESULT_KEYS = ["schema", "task_id", "mode", "status", "report", "validation", "reason"];
+var RESULT_REQUIRED = ["schema", "task_id", "mode", "status"];
+var RESULT_STATUSES = ["completed", "blocked", "question", "failed"];
+function validateResult(raw) {
+  const what = "result";
+  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
+  const errors = [];
+  checkUnknownKeys(raw, RESULT_KEYS, what, errors);
+  checkRequiredKeys(raw, RESULT_REQUIRED, what, errors);
+  checkSchema(raw["schema"], what, errors);
+  checkMode(raw["mode"], `${what}.mode`, errors);
+  checkTaskId(raw["task_id"], `${what}.task_id`, errors);
+  const status = raw["status"];
+  if (status !== void 0) {
+    if (typeof status !== "string") {
+      errors.push(`${what}.status: must be a string, got ${typeof status}`);
+    } else {
+      checkHumanOnly(status, `${what}.status`, errors);
+      if (!RESULT_STATUSES.includes(status)) {
+        errors.push(`${what}.status: "${status}" is not a valid result status`);
+      }
+    }
+  }
+  if (raw["report"] !== void 0 && raw["report"] !== "plan.md" && raw["report"] !== "report.md") {
+    errors.push(`${what}.report: must be "plan.md" or "report.md", got ${JSON.stringify(raw["report"])}`);
+  }
+  if (raw["validation"] !== void 0 && raw["validation"] !== "passed" && raw["validation"] !== "failed") {
+    errors.push(`${what}.validation: must be "passed" or "failed", got ${JSON.stringify(raw["validation"])}`);
+  }
+  checkString(raw["reason"], `${what}.reason`, errors, { min: 1, max: REASON_MAX });
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: raw };
+}
+function validateResultForTask(raw, expected) {
+  const shape = validateResult(raw);
+  if (!shape.ok) return shape;
+  const value = shape.value;
+  const errors = [];
+  if (value.task_id !== expected.taskId) {
+    errors.push(`result: task_id "${value.task_id}" does not match expected "${expected.taskId}"`);
+  }
+  if (value.mode !== expected.mode) {
+    errors.push(`result: mode "${value.mode}" does not match expected "${expected.mode}"`);
+  }
+  checkHumanOnly(value.status, "result.status", errors);
+  if (expected.mode === "plan" && value.status === "completed") {
+    if (value.report === void 0) {
+      errors.push("result: report is required when a plan task reports status=completed");
+    } else if (value.report !== "plan.md") {
+      errors.push(`result: a plan task's report must be "plan.md", got ${JSON.stringify(value.report)}`);
+    }
+    if (value.validation !== void 0) {
+      errors.push("result: validation is only allowed when an execute task reports status=completed");
+    }
+  } else if (expected.mode === "execute" && value.status === "completed") {
+    if (value.report === void 0) {
+      errors.push("result: report is required when an execute task reports status=completed");
+    } else if (value.report !== "report.md") {
+      errors.push(`result: an execute task's report must be "report.md", got ${JSON.stringify(value.report)}`);
+    }
+    if (value.validation === void 0) {
+      errors.push("result: validation is required when an execute task reports status=completed");
+    }
+  } else {
+    if (value.report !== void 0) {
+      errors.push("result: report is only allowed when status is completed");
+    }
+    if (value.validation !== void 0) {
+      errors.push("result: validation is only allowed when an execute task reports status=completed");
+    }
+  }
+  const reasonExpected = value.status === "blocked" || value.status === "question" || value.status === "failed";
+  if (reasonExpected) {
+    if (value.reason === void 0 || value.reason.trim().length === 0) {
+      errors.push(`result: a non-empty reason is required when status is "${value.status}"`);
+    }
+  } else if (value.reason !== void 0) {
+    errors.push("result: reason is only allowed when status is blocked, question or failed");
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value };
+}
+var CURRENT_KEYS = ["schema", "task_id", "mode", "issue_number", "updated_at"];
+function validateCurrent(raw) {
+  const what = "current";
+  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
+  const errors = [];
+  checkUnknownKeys(raw, CURRENT_KEYS, what, errors);
+  checkRequiredKeys(raw, CURRENT_KEYS, what, errors);
+  checkSchema(raw["schema"], what, errors);
+  checkTaskId(raw["task_id"], `${what}.task_id`, errors);
+  checkMode(raw["mode"], `${what}.mode`, errors);
+  checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
+  checkIsoDate(raw["updated_at"], `${what}.updated_at`, errors);
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: raw };
+}
+var TASK_RECORD_KEYS = [
+  "task_id",
+  "status",
+  "attempts",
+  "mode",
+  "issue_number",
+  "workflow_epoch",
+  "input_snapshot_sha256",
+  "plan_comment_id",
+  "approval_comment_id",
+  "tracker_comment_id",
+  "published_comment_id",
+  "last_notice_key",
+  "last_sync_at",
+  "error"
+];
+var TASK_RECORD_REQUIRED = ["task_id", "status", "attempts", "mode", "issue_number", "workflow_epoch"];
+function validateTaskRecord(rawObj, what, errors) {
+  if (!isRecord2(rawObj)) {
+    errors.push(`${what}: expected a JSON object`);
+    return;
+  }
+  const raw = rawObj;
+  checkUnknownKeys(raw, TASK_RECORD_KEYS, what, errors);
+  checkRequiredKeys(raw, TASK_RECORD_REQUIRED, what, errors);
+  checkTaskId(raw["task_id"], `${what}.task_id`, errors);
+  const status = raw["status"];
+  if (status !== void 0 && !TASK_STATES.includes(status)) {
+    errors.push(`${what}.status: must be one of ${TASK_STATES.join("|")}, got ${JSON.stringify(status)}`);
+  }
+  checkPositiveInt(raw["attempts"], `${what}.attempts`, errors);
+  checkMode(raw["mode"], `${what}.mode`, errors);
+  checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
+  if (raw["workflow_epoch"] !== void 0) {
+    if (typeof raw["workflow_epoch"] !== "string" || !EPOCH_SHAPE.test(raw["workflow_epoch"])) {
+      errors.push(`${what}.workflow_epoch: malformed epoch string`);
+    }
+  }
+  if (raw["input_snapshot_sha256"] !== void 0 && (typeof raw["input_snapshot_sha256"] !== "string" || !SHA256_PATTERN.test(raw["input_snapshot_sha256"]))) {
+    errors.push(`${what}.input_snapshot_sha256: must be a 64-character hex sha256`);
+  }
+  checkPositiveInt(raw["plan_comment_id"], `${what}.plan_comment_id`, errors);
+  checkPositiveInt(raw["approval_comment_id"], `${what}.approval_comment_id`, errors);
+  checkPositiveInt(raw["tracker_comment_id"], `${what}.tracker_comment_id`, errors);
+  checkPositiveInt(raw["published_comment_id"], `${what}.published_comment_id`, errors);
+  checkString(raw["last_notice_key"], `${what}.last_notice_key`, errors, { min: 1, max: 64 });
+  if (typeof raw["last_notice_key"] === "string" && !/^[0-9a-f]{16}$/.test(raw["last_notice_key"])) {
+    errors.push(`${what}.last_notice_key: must be a 16-character lowercase hex sha256 prefix`);
+  }
+  checkIsoDate(raw["last_sync_at"], `${what}.last_sync_at`, errors);
+  const error = raw["error"];
+  if (error !== void 0 && error !== null) {
+    checkString(error, `${what}.error`, errors, { min: 1, max: 2e3 });
+  }
+}
+var STATE_KEYS = ["schema", "updated_at", "tasks"];
+var STATE_REQUIRED = ["schema", "updated_at", "tasks"];
+function validateDriverState(raw) {
+  const what = "driver state";
+  if (!isRecord2(raw)) return fail(what, "expected a JSON object");
+  const errors = [];
+  checkUnknownKeys(raw, STATE_KEYS, what, errors);
+  checkRequiredKeys(raw, STATE_REQUIRED, what, errors);
+  checkSchema(raw["schema"], what, errors);
+  checkIsoDate(raw["updated_at"], `${what}.updated_at`, errors);
+  const tasks = raw["tasks"];
+  if (tasks !== void 0) {
+    if (!isRecord2(tasks)) {
+      errors.push(`${what}.tasks: expected a JSON object`);
+    } else {
+      for (const [taskId, entry] of Object.entries(tasks)) {
+        if (!isRecord2(entry)) {
+          errors.push(`${what}.tasks.${taskId}: expected a JSON object`);
+          continue;
+        }
+        validateTaskRecord(entry, `${what}.tasks.${taskId}`, errors);
+        if (taskId !== entry["task_id"]) {
+          errors.push(`${what}.tasks.${taskId}: key does not match task_id ${JSON.stringify(entry["task_id"])}`);
+        }
+      }
+    }
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: raw };
+}
+
+// src/workspace/tasks.ts
+var RENAME_MAX_ATTEMPTS = 5;
+function sleep(ms) {
+  return new Promise((resolve4) => setTimeout(resolve4, ms));
+}
+function tempPathFor(file) {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `${file}.tmp-${process.pid.toString(36)}-${random}`;
+}
+async function renameOverExisting(tmp, target) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await (0, import_promises4.rename)(tmp, target);
+      return;
+    } catch (err) {
+      const code = err.code;
+      const recoverable = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+      if (!recoverable || attempt >= RENAME_MAX_ATTEMPTS) {
+        try {
+          await (0, import_promises4.unlink)(tmp);
+        } catch {
+        }
+        throw err;
+      }
+      try {
+        await (0, import_promises4.unlink)(target);
+      } catch {
+      }
+      await sleep(10 * attempt);
+    }
+  }
+}
+async function atomicWriteText(file, content) {
+  await (0, import_promises4.mkdir)(nodePath4.dirname(file), { recursive: true });
+  const tmp = tempPathFor(file);
+  await (0, import_promises4.writeFile)(tmp, content, "utf8");
+  await renameOverExisting(tmp, file);
+}
+async function atomicWriteJson(file, value) {
+  await atomicWriteText(file, `${JSON.stringify(value, null, 2)}
+`);
+}
+async function writeTaskDir(paths, build) {
+  const dir = taskDir(paths, build.taskFile.task_id);
+  await (0, import_promises4.mkdir)(dir, { recursive: true });
+  await atomicWriteText(nodePath4.join(dir, "task.md"), build.task);
+  if (build.plan !== null) {
+    await atomicWriteText(nodePath4.join(dir, "plan.md"), build.plan);
+  }
+  if (build.feedback !== null) {
+    await atomicWriteText(nodePath4.join(dir, "feedback.md"), build.feedback);
+  }
+  await atomicWriteJson(nodePath4.join(dir, "task.json"), build.taskFile);
+}
+function sha256Hex2(content) {
+  return (0, import_node_crypto6.createHash)("sha256").update(content, "utf8").digest("hex");
+}
+function inputSnapshotSha256(content) {
+  return sha256Hex2(
+    JSON.stringify({ task: content.task, plan: content.plan, feedback: content.feedback })
+  );
+}
+async function readTaskFile(paths, taskId) {
+  let file;
+  try {
+    file = nodePath4.join(taskDir(paths, taskId), "task.json");
+  } catch {
+    return null;
+  }
+  let text;
+  try {
+    text = await (0, import_promises4.readFile)(file, "utf8");
+  } catch {
+    return null;
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = validateTaskFile(raw);
+  return parsed.ok ? parsed.value : null;
+}
+async function readCurrent(paths) {
+  let text;
+  try {
+    text = await (0, import_promises4.readFile)(paths.current, "utf8");
+  } catch {
+    return null;
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = validateCurrent(raw);
+  return parsed.ok ? parsed.value : null;
+}
+async function writeCurrent(paths, pointer) {
+  await atomicWriteJson(paths.current, pointer);
+}
+async function readTaskFileByName(paths, taskId, name) {
+  let file;
+  try {
+    file = nodePath4.join(taskDir(paths, taskId), name);
+  } catch {
+    return null;
+  }
+  let size;
+  try {
+    const info = await (0, import_promises4.stat)(file);
+    if (!info.isFile()) return null;
+    size = info.size;
+  } catch {
+    return null;
+  }
+  if (size > MAX_FILE_BYTES) {
+    throw new OversizedFileError(file, size, MAX_FILE_BYTES);
+  }
+  let content;
+  try {
+    content = await (0, import_promises4.readFile)(file, "utf8");
+  } catch {
+    return null;
+  }
+  if (content.length === 0) return null;
+  return content;
+}
+function readInputMarkdown(paths, taskId, name) {
+  return readTaskFileByName(paths, taskId, name);
+}
+function readOutputMarkdown(paths, taskId, name) {
+  return readTaskFileByName(paths, taskId, name);
+}
+async function readResultJson(paths, taskId) {
+  let file;
+  try {
+    file = nodePath4.join(taskDir(paths, taskId), "result.json");
+  } catch {
+    return null;
+  }
+  let text;
+  try {
+    text = await (0, import_promises4.readFile)(file, "utf8");
+  } catch {
+    return null;
+  }
+  if (Buffer.byteLength(text, "utf8") > MAX_FILE_BYTES) {
+    return { raw: null, error: `result.json exceeds the ${MAX_FILE_BYTES}-byte limit` };
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed === null) {
+      return { raw: null, error: "result.json is not a JSON object" };
+    }
+    return { raw: parsed, error: null };
+  } catch (err) {
+    return { raw: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// src/workspace/driver-state.ts
+var import_promises5 = require("node:fs/promises");
+function emptyDriverState() {
+  return { schema: 3, updated_at: "1970-01-01T00:00:00Z", tasks: {} };
+}
+async function readDriverState(paths) {
+  let text;
+  try {
+    text = await (0, import_promises5.readFile)(paths.state, "utf8");
+  } catch {
+    return emptyDriverState();
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return emptyDriverState();
+  }
+  const parsed = validateDriverState(raw);
+  return parsed.ok ? parsed.value : emptyDriverState();
+}
+async function writeDriverState(paths, state) {
+  await atomicWriteJson(paths.state, {
+    ...state,
+    updated_at: (/* @__PURE__ */ new Date()).toISOString()
+  });
+}
+function getTaskRecord(state, taskId) {
+  return state.tasks[taskId] ?? null;
+}
+function withTaskRecord(state, record) {
+  return { ...state, tasks: { ...state.tasks, [record.task_id]: record } };
+}
+function withoutTaskRecord(state, taskId) {
+  const tasks = { ...state.tasks };
+  delete tasks[taskId];
+  return { ...state, tasks };
+}
+function shouldPrepare(existing, maxAttempts) {
   if (existing === null) {
     return { ok: true, reason: "new" };
   }
   switch (existing.status) {
-    case "dispatched":
+    case "prepared":
     case "publishing":
-      return { ok: false, reason: "already-dispatched" };
+      return { ok: false, reason: "already-prepared" };
     case "published":
       return { ok: false, reason: "published" };
     case "accepted":
@@ -18772,537 +18018,263 @@ function shouldDispatch(existing, maxAttempts) {
       return { ok: false, reason: "retry-limit" };
   }
 }
-async function clearReceipt(paths, dispatchId) {
-  if (!validateDispatchDirName(dispatchId)) {
-    return false;
-  }
-  try {
-    await (0, import_promises6.unlink)(`${paths.receipts}/${dispatchId}.json`);
-    return true;
-  } catch (err) {
-    if (err.code === "ENOENT") {
-      return false;
-    }
-    throw err;
-  }
+
+// src/driver/prompts.ts
+function buildTaskPrompt(info) {
+  const modeLine = info.mode === "plan" ? "\u672C\u4EFB\u52A1\u662F\u3010\u89C4\u5212\u3011\uFF1A\u9605\u8BFB\u771F\u5B9E\u4ED3\u5E93\uFF0C\u4EA7\u51FA\u53EF\u6267\u884C\u7684\u6267\u884C\u8BA1\u5212\uFF0C\u5199\u5165\u4EFB\u52A1\u76EE\u5F55\u4E2D\u7684 plan.md\u3002" : "\u672C\u4EFB\u52A1\u662F\u3010\u6267\u884C\u3011\uFF1A\u4E25\u683C\u6309\u7167\u5DF2\u6279\u51C6\u7684 plan.md \u5B8C\u6210\u5F00\u53D1\u4E0E\u771F\u5B9E\u9A8C\u8BC1\uFF0C\u5B8C\u6210\u540E\u5199 report.md\u3002";
+  return [
+    "\u8BF7\u4F7F\u7528 gateflow Skill\uFF0C\u5904\u7406\u5F53\u524D\u5DE5\u4F5C\u533A\u7684 GateFlow \u4EFB\u52A1\uFF1A",
+    "",
+    `- \u4EFB\u52A1\u76EE\u5F55\uFF1A.gateflow/tasks/${info.taskId}/`,
+    `- GitHub Issue\uFF1A#${info.issueNumber} ${info.issueTitle}`,
+    `- \u4EFB\u52A1\u6765\u6E90\uFF1A${info.reason}`,
+    "",
+    `1. \u8BFB\u53D6\u4EFB\u52A1\u76EE\u5F55\u4E2D\u7684 task.json \u4E0E task.md\u3002${modeLine}`,
+    "2. \u53EA\u5728\u4EFB\u52A1\u76EE\u5F55\u5185\u5DE5\u4F5C\uFF1A\u8F93\u5165\u6587\u4EF6\uFF08task.md\u3001plan.md\u3001feedback.md\uFF09\u4E0D\u8981\u4FEE\u6539\uFF1B",
+    "   \u9700\u8981\u4E86\u89E3\u4ED3\u5E93\u5B9E\u73B0\u65F6\u76F4\u63A5\u9605\u8BFB\u4ED3\u5E93\u6587\u4EF6\u3002",
+    "3. \u5B8C\u6210\u540E\u5199 result.json \u58F0\u660E\u7ED3\u679C\uFF08\u6309 task.json \u4E2D\u7684 mode \u586B status \u4E0E report\uFF09\u3002",
+    "   \u4E0D\u8981\u8BD5\u56FE\u76F4\u63A5\u4FEE\u6539 GitHub \u5DE5\u4F5C\u6D41\u72B6\u6001\uFF08\u4E0D\u53D1\u8BC4\u8BBA\u3001\u4E0D\u6253\u6807\u7B7E\u3001\u4E0D\u6267\u884C\u547D\u4EE4\uFF09\u3002",
+    "4. \u5B8C\u6210\u540E\u5728\u7EC8\u7AEF\u8FD0\u884C\uFF1Agateflow sync",
+    "",
+    "\u73B0\u5728\u5F00\u59CB\u3002"
+  ].join("\n");
 }
 
-// src/driver/workspace-lock.ts
-var import_promises7 = require("node:fs/promises");
-var nodePath6 = __toESM(require("node:path"));
-function executorLockFile(paths) {
-  return nodePath6.join(paths.locks, "executor.lock");
-}
-function driverLockFile(paths) {
-  return nodePath6.join(paths.locks, "driver.lock");
-}
-var DRIVER_LOCK_HOLDER = "gateflow-driver";
-var MAX_LOCK_AGE_MS = 6 * 60 * 60 * 1e3;
-function isAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    const code = err.code;
-    return code === "EPERM";
-  }
-}
-async function readLock(file) {
-  try {
-    const raw = await (0, import_promises7.readFile)(file, "utf8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const candidate = parsed;
-    if (typeof candidate.pid !== "number" || typeof candidate.holder !== "string") return null;
-    return candidate;
-  } catch {
-    return null;
-  }
-}
-async function lockAgeMs(file, nowMs) {
-  try {
-    const raw = await (0, import_promises7.readFile)(file, "utf8");
-    const parsed = JSON.parse(raw);
-    const at = typeof parsed.acquired_at === "string" ? Date.parse(parsed.acquired_at) : NaN;
-    if (Number.isNaN(at)) return MAX_LOCK_AGE_MS + 1;
-    return nowMs - at;
-  } catch {
-    return MAX_LOCK_AGE_MS + 1;
-  }
-}
-async function acquireLock(file, holder, dispatchId, now = () => /* @__PURE__ */ new Date()) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const contents = {
-      pid: process.pid,
-      holder,
-      acquired_at: now().toISOString(),
-      ...dispatchId !== void 0 ? { dispatch_id: dispatchId } : {}
-    };
-    let fd;
-    try {
-      fd = await (0, import_promises7.open)(file, "wx");
-    } catch (err) {
-      const code = err.code;
-      if (code !== "EEXIST") {
-        return { ok: false, reason: `lock file could not be created: ${err.message}`, holder: null };
-      }
-      const existing = await readLock(file);
-      const age = await lockAgeMs(file, now().getTime());
-      const stale = existing === null || !isAlive(existing.pid) || age > MAX_LOCK_AGE_MS;
-      if (!stale) {
-        return { ok: false, reason: "workspace busy: lock held by a live process", holder: existing };
-      }
-      try {
-        await (0, import_promises7.unlink)(file);
-      } catch {
-      }
-      continue;
-    }
-    try {
-      await fd.writeFile(JSON.stringify(contents, null, 2) + "\n", "utf8");
-    } finally {
-      await fd.close();
-    }
-    return { ok: true };
-  }
-  return { ok: false, reason: "workspace busy: lock held by a live process", holder: await readLock(file) };
-}
-async function releaseLock(file, holder, dispatchId) {
-  const existing = await readLock(file);
-  if (existing === null) return false;
-  if (existing.pid !== process.pid || existing.holder !== holder) return false;
-  if (dispatchId !== void 0 && existing.dispatch_id !== dispatchId) return false;
-  try {
-    await (0, import_promises7.unlink)(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// src/driver/dispatch.ts
+// src/driver/prepare.ts
 function errorMessage(err) {
   return err instanceof Error ? err.message : String(err);
 }
-async function dispatchIntent(deps, repositoryInfo, discovery, intent) {
+async function prepareTask(deps, repositoryInfo, discovery, intent) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   const now = deps.now ?? (() => /* @__PURE__ */ new Date());
   const { id: repositoryId, owner, name } = repositoryInfo;
   const issueNumber = intent.issueNumber;
   const repository = `${owner}/${name}`;
-  const dispatchId = intent.role === "consumer" ? makeConsumerDispatchId(repositoryId, issueNumber, intent.epoch, Number(intent.revision)) : makeExecutorDispatchId(repositoryId, issueNumber, intent.epoch, intent.planCommentId ?? 0);
-  const existing = await readReceipt(paths, dispatchId);
-  const verdict = shouldDispatch(existing, deps.config.driver.maxAttempts);
-  if (!verdict.ok) {
-    deps.log.info(`skip ${dispatchId}: ${verdict.reason}`);
-    return { dispatched: false, dispatchId, reason: verdict.reason };
+  const taskId = intent.mode === "plan" ? makePlanTaskId(repositoryId, issueNumber, intent.epoch, Number(intent.revision)) : makeExecuteTaskId(repositoryId, issueNumber, intent.epoch, intent.planCommentId ?? 0);
+  const state = await readDriverState(paths);
+  const existing = getTaskRecord(state, taskId);
+  const verdict = shouldPrepare(existing, deps.config.driver.maxAttempts);
+  if (!verdict.ok && verdict.reason !== "already-prepared") {
+    deps.log.info(`skip ${taskId}: ${verdict.reason}`);
+    return { prepared: false, taskId, reason: verdict.reason, issueNumber, mode: intent.mode };
   }
-  const task = buildTaskMarkdown(discovery.issue, intent.role);
+  const task = buildTaskMarkdown(discovery.issue, intent.mode);
   const feedback = buildFeedbackMarkdown(discovery.feedback);
   let plan = null;
-  if (intent.role === "executor") {
+  if (intent.mode === "execute") {
     const planComment = intent.planCommentId !== null ? discovery.comments.find((comment) => comment.id === intent.planCommentId) ?? null : null;
     if (planComment === null) {
-      deps.log.warning(`skip ${dispatchId}: approved plan comment vanished mid-cycle`);
-      return { dispatched: false, dispatchId, reason: "plan-comment-not-found" };
+      deps.log.warning(`skip ${taskId}: approved plan comment vanished mid-cycle`);
+      return { prepared: false, taskId, reason: "plan-comment-not-found", issueNumber, mode: intent.mode };
     }
     plan = canonicalPlanContent(planComment.body);
   }
-  let lockAcquired = false;
-  if (intent.role === "executor") {
-    if (existing !== null && existing.dispatch_id === dispatchId) {
-      await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
-    }
-    const lock = await acquireLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId, now);
-    if (!lock.ok) {
-      deps.log.warning(
-        `skip ${dispatchId}: workspace-executor-busy (holder ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : "unknown"})`
-      );
-      return { dispatched: false, dispatchId, reason: "workspace-executor-busy" };
-    }
-    lockAcquired = true;
-  }
   const snapshot = inputSnapshotSha256({ task, plan, feedback });
-  const existingDispatch = await readInboxDispatch(paths, dispatchId);
-  if (existingDispatch !== null) {
-    const existingContext = await readInboxContext(paths, dispatchId);
-    const existingSnapshot = existingContext?.input_snapshot_sha256;
-    if (existingSnapshot !== void 0 && existingSnapshot !== snapshot) {
-      if (lockAcquired) await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
-      deps.log.warning(
-        `skip ${dispatchId}: input snapshot changed since the inbox was built (refusing to overwrite a possibly-running task)`
-      );
-      return { dispatched: false, dispatchId, reason: "input-changed" };
-    }
+  const existingRecordSnapshot = existing?.input_snapshot_sha256;
+  if (existingRecordSnapshot !== void 0 && existingRecordSnapshot !== snapshot && (existing?.status === "prepared" || existing?.status === "publishing" || existing?.status === "failed")) {
+    deps.log.warning(
+      `skip ${taskId}: input snapshot changed since the task was prepared (refusing to overwrite a possibly-running task)`
+    );
+    return { prepared: false, taskId, reason: "input-changed", issueNumber, mode: intent.mode };
   }
   const createdAt = now().toISOString();
-  const dispatch = {
-    schema: 2,
-    dispatch_id: dispatchId,
+  const taskFile = {
+    schema: 3,
+    task_id: taskId,
     repository,
     repository_id: repositoryId,
     issue_number: issueNumber,
     workflow_epoch: intent.epoch,
-    role: intent.role,
+    mode: intent.mode,
     reason: intent.reason,
     created_at: createdAt,
     plan_comment_id: intent.planCommentId,
     approval_comment_id: intent.approvalCommentId,
     input: {
-      task: "TASK.md",
-      plan: plan !== null ? "PLAN.md" : null,
-      feedback: feedback !== null ? "FEEDBACK.md" : null
+      task: "task.md",
+      plan: plan !== null ? "plan.md" : null,
+      feedback: feedback !== null ? "feedback.md" : null
     }
   };
-  const context = {
-    schema: 2,
-    dispatch_id: dispatchId,
-    workflow_epoch: intent.epoch,
-    ...intent.role === "executor" && intent.planCommentId !== null && plan !== null ? { plan_comment_id: intent.planCommentId, plan_sha256: intent.planSha256 ?? sha256Hex(plan) } : {},
-    feedback_count: discovery.feedback.length,
-    input_snapshot_sha256: snapshot
-  };
-  const build = { dispatch, context, task, plan, feedback };
-  await writeInbox(paths, build);
+  await writeTaskDir(paths, { taskFile, task, plan, feedback });
   await writeCurrent(paths, {
-    schema: 2,
-    dispatch_id: dispatchId,
-    role: intent.role,
+    schema: 3,
+    task_id: taskId,
+    mode: intent.mode,
     issue_number: issueNumber,
     updated_at: createdAt
   });
-  await writeReceipt(paths, {
-    ...existing ?? {},
-    dispatch_id: dispatchId,
-    status: "dispatched",
-    attempts: (existing?.attempts ?? 0) + 1,
-    workflow_epoch: intent.epoch,
-    plan_comment_id: intent.planCommentId ?? void 0,
-    approval_comment_id: intent.approvalCommentId ?? void 0,
-    input_snapshot_sha256: snapshot,
-    error: null
-  });
-  const agentName = intent.role === "consumer" ? deps.config.routing.consumer : deps.config.routing.executor;
-  const adapter = resolveAdapterForAgent(
-    agentName ?? "__none__",
-    deps.config.agents,
-    deps.config.activation.fallback
+  await writeDriverState(
+    paths,
+    withTaskRecord(state, {
+      ...existing ?? {},
+      task_id: taskId,
+      status: existing?.status === "publishing" ? "publishing" : "prepared",
+      attempts: (existing?.attempts ?? 0) + 1,
+      mode: intent.mode,
+      issue_number: issueNumber,
+      workflow_epoch: intent.epoch,
+      input_snapshot_sha256: snapshot,
+      plan_comment_id: intent.planCommentId ?? void 0,
+      approval_comment_id: intent.approvalCommentId ?? void 0,
+      error: null
+    })
   );
-  let activation = {
-    adapter: adapter.name,
-    state: "failed",
-    detail: "activation not attempted",
-    at: createdAt
-  };
-  try {
-    const result = await adapter.notify(
-      toActivationDispatch({
-        dispatch_id: dispatchId,
-        role: intent.role,
-        issue_number: issueNumber,
-        repository
-      }),
-      deps.projectRoot
-    );
-    activation = {
-      adapter: adapter.name,
-      state: result.state,
-      detail: result.detail,
-      at: now().toISOString()
-    };
-    if (result.state === "failed") {
-      deps.log.warning(`activation '${adapter.name}' failed for ${dispatchId}: ${result.detail}`);
-    } else {
-      deps.log.info(`activation '${adapter.name}' ${result.state} for ${dispatchId}: ${result.detail}`);
-    }
-  } catch (err) {
-    activation = {
-      adapter: adapter.name,
-      state: "failed",
-      detail: errorMessage(err),
-      at: now().toISOString()
-    };
-    deps.log.warning(`activation adapter threw for ${dispatchId} (dispatch stays valid): ${errorMessage(err)}`);
-  }
-  const currentReceipt = await readReceipt(paths, dispatchId);
-  await writeReceipt(paths, {
-    ...currentReceipt ?? {},
-    dispatch_id: dispatchId,
-    status: currentReceipt?.status ?? "dispatched",
-    attempts: currentReceipt?.attempts ?? 1,
-    activation
+  const prompt = buildTaskPrompt({
+    taskId,
+    mode: intent.mode,
+    issueNumber,
+    issueTitle: discovery.issue.title,
+    reason: intent.reason
   });
-  deps.log.info(`dispatched ${dispatchId} (${intent.role}/${intent.reason}) for issue #${issueNumber}`);
-  return { dispatched: true, dispatchId, reason: verdict.reason };
+  deps.log.info(
+    `prepared ${taskId} (${intent.mode}/${intent.reason}) for issue #${issueNumber}`
+  );
+  return {
+    prepared: true,
+    taskId,
+    reason: verdict.reason,
+    prompt,
+    issueNumber,
+    mode: intent.mode,
+    issueTitle: discovery.issue.title
+  };
 }
-async function processIntents(deps, repositoryInfo) {
-  const repository = `${repositoryInfo.owner}/${repositoryInfo.name}`;
-  const discoveries = await discoverWork(deps.client, repository, deps.config, repositoryInfo, deps.log);
-  const outcomes = [];
+async function prepareCurrentTask(deps, repositoryInfo, discoveries, opts = {}) {
+  const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
+  const pending = [];
   for (const discovery of discoveries) {
     for (const intent of discovery.intents) {
-      try {
-        outcomes.push(await dispatchIntent(deps, repositoryInfo, discovery, intent));
-      } catch (err) {
-        deps.log.error(
-          `dispatch failed for issue #${discovery.issue.number} (${intent.role}/${intent.revision}): ${errorMessage(err)}`
-        );
-      }
+      pending.push({ discovery, intent });
     }
   }
-  return outcomes;
-}
-
-// src/workspace/submit.ts
-var import_node_crypto8 = require("node:crypto");
-var import_promises8 = require("node:fs/promises");
-var nodePath7 = __toESM(require("node:path"));
-var SUBMIT_JSON = "submit.json";
-var SUBMIT_TASK = "TASK.md";
-var SUBMIT_ERROR = "error.json";
-function newSubmissionId() {
-  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
-  let id = "sub_";
-  while (id.length < 4 + 16) {
-    const bytes = (0, import_node_crypto8.randomBytes)(16);
-    for (const byte of bytes) {
-      if (id.length >= 4 + 16) break;
-      if (byte >= 252) continue;
-      id += alphabet[byte % 36];
-    }
-  }
-  return id;
-}
-async function readIfExists(file) {
-  let info;
-  try {
-    info = await (0, import_promises8.stat)(file);
-    if (!info.isFile()) return null;
-  } catch {
-    return null;
-  }
-  try {
-    return { text: await (0, import_promises8.readFile)(file, "utf8"), size: info.size };
-  } catch {
-    return null;
-  }
-}
-async function inspectSubmit(paths) {
-  const submitJson = await readIfExists(nodePath7.join(paths.submit, SUBMIT_JSON));
-  const task = await readIfExists(nodePath7.join(paths.submit, SUBMIT_TASK));
-  if (submitJson === null && task === null) return { status: "empty" };
-  if (submitJson === null) {
-    return { status: "invalid", error: `${SUBMIT_JSON} is missing while ${SUBMIT_TASK} exists` };
-  }
-  if (task === null) {
-    return { status: "invalid", error: `${SUBMIT_TASK} is missing while ${SUBMIT_JSON} exists` };
-  }
-  let raw;
-  try {
-    raw = JSON.parse(submitJson.text);
-  } catch (err) {
+  if (pending.length === 0) {
     return {
-      status: "invalid",
-      error: `${SUBMIT_JSON} is not valid JSON: ${err.message}`
+      prepared: false,
+      taskId: null,
+      reason: "no pending task: run /ai-plan (or /change \u2192 re-plan, /approve \u2192 execute) on GitHub first"
     };
   }
-  const parsed = validateSubmit(raw);
-  if (!parsed.ok) {
-    return { status: "invalid", error: `${SUBMIT_JSON} failed validation: ${parsed.errors.join("; ")}` };
-  }
-  if (task.text.length === 0) {
-    return { status: "invalid", error: `${SUBMIT_TASK} is empty` };
-  }
-  if (task.size > MAX_FILE_BYTES) {
-    return { status: "invalid", error: `${SUBMIT_TASK} exceeds ${MAX_FILE_BYTES} bytes` };
-  }
-  let request2 = parsed.value;
-  if (request2.submission_id === void 0) {
-    request2 = { ...request2, submission_id: newSubmissionId() };
-    try {
-      await atomicWriteJson(nodePath7.join(paths.submit, SUBMIT_JSON), request2);
-    } catch (err) {
+  const state = await readDriverState(paths);
+  const unfinished = Object.values(state.tasks).filter(
+    (record) => record.status === "prepared" || record.status === "publishing"
+  );
+  let chosen;
+  if (opts.issue !== void 0) {
+    chosen = pending.find((entry) => entry.intent.issueNumber === opts.issue);
+    if (chosen === void 0) {
       return {
-        status: "invalid",
-        error: `could not persist the injected submission_id: ${err.message}`
+        prepared: false,
+        taskId: null,
+        reason: `issue #${opts.issue} has no pending task (its state may be review/working/done, or it is not in the workflow)`
       };
     }
-  }
-  return { status: "ready", request: request2, task: task.text };
-}
-async function markSubmitProcessed(paths) {
-  await (0, import_promises8.mkdir)(paths.submit, { recursive: true });
-  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const dirName = `processed-${stamp}`;
-  const targetDir = nodePath7.join(paths.submit, dirName);
-  await (0, import_promises8.mkdir)(targetDir, { recursive: true });
-  const entries = await (0, import_promises8.readdir)(paths.submit, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    if (entry.name === SUBMIT_ERROR) continue;
-    try {
-      await (0, import_promises8.rename)(nodePath7.join(paths.submit, entry.name), nodePath7.join(targetDir, entry.name));
-    } catch {
-    }
-  }
-  return dirName;
-}
-async function writeSubmitError(paths, error) {
-  await (0, import_promises8.mkdir)(paths.submit, { recursive: true });
-  await atomicWriteJson(nodePath7.join(paths.submit, SUBMIT_ERROR), {
-    error,
-    created_at: (/* @__PURE__ */ new Date()).toISOString()
-  });
-}
-
-// src/driver/submit.ts
-var SUBMIT_LABELS = ["ai:planning"];
-function errorMessage2(err) {
-  return err instanceof Error ? err.message : String(err);
-}
-function buildSubmitIssueBody(task, request2) {
-  return `${task}
-
-<!-- ai-workflow
-schema: 2
-source: producer
-kind: ${request2.kind}
-maturity_hint: ${request2.maturity_hint}
--->
-
-${sourceIdComment(submitOperationId(request2.submission_id))}
-
-> Submitted via GateFlow local submit (.gateflow/submit).
-`;
-}
-async function findIssueBySourceId(deps, owner, repo, operationId) {
-  const issues = await deps.client.listIssues({ owner, repo, state: "all" });
-  for (const issue of issues) {
-    if (findSourceIdInBody(issue.body) === operationId) {
-      return issue.number;
-    }
-  }
-  return null;
-}
-async function processSubmit(deps, repositoryInfo) {
-  const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
-  const inspection = await inspectSubmit(paths);
-  if (inspection.status === "empty") {
-    return { action: "empty", detail: "no pending submission" };
-  }
-  if (inspection.status === "invalid") {
-    await writeSubmitError(paths, inspection.error);
-    deps.log.warning(`submit rejected: ${inspection.error}`);
-    return { action: "invalid", detail: inspection.error };
-  }
-  const { request: request2, task } = inspection;
-  const operationId = submitOperationId(request2.submission_id);
-  try {
-    const existing = await findIssueBySourceId(deps, repositoryInfo.owner, repositoryInfo.repo, operationId);
-    if (existing !== null) {
-      await markSubmitProcessed(paths);
-      deps.log.warning(
-        `submit reconciled: issue #${existing} already carries ${operationId}; adopted instead of re-creating`
-      );
-      return { action: "adopted", detail: `adopted existing issue #${existing}`, issueNumber: existing };
-    }
-    const { number } = await deps.client.createIssue(
-      { owner: repositoryInfo.owner, repo: repositoryInfo.repo },
-      {
-        title: request2.title,
-        body: buildSubmitIssueBody(task, request2),
-        labels: [...SUBMIT_LABELS]
+  } else {
+    const current = unfinished.sort((a, b) => a.issue_number - b.issue_number)[0];
+    if (current !== void 0) {
+      chosen = pending.find((entry) => entry.intent.issueNumber === current.issue_number);
+      if (chosen === void 0) {
+        return {
+          prepared: false,
+          taskId: current.task_id,
+          reason: `the current task ${current.task_id} (issue #${current.issue_number}) is still unfinished (prepare \u2192 AI \u2192 sync). Finish it, run \`gateflow retry ` + current.task_id + "`, or select explicitly with --issue."
+        };
       }
-    );
-    await markSubmitProcessed(paths);
-    deps.log.info(`submit created issue #${number} (${request2.kind}/${request2.maturity_hint})`);
-    return { action: "created", detail: `issue #${number} created`, issueNumber: number };
+    } else {
+      chosen = pending.sort((a, b) => a.intent.issueNumber - b.intent.issueNumber)[0];
+    }
+  }
+  if (chosen === void 0) {
+    return { prepared: false, taskId: null, reason: "no pending task matched the selection" };
+  }
+  try {
+    return await prepareTask(deps, repositoryInfo, chosen.discovery, chosen.intent);
   } catch (err) {
-    const message = errorMessage2(err);
     deps.log.error(
-      `submit issue creation failed (left unprocessed; next cycle reconciles by ${operationId} first): ${message}`
+      `preparation failed for issue #${chosen.intent.issueNumber} (${chosen.intent.mode}/${chosen.intent.revision}): ${errorMessage(err)}`
     );
-    return { action: "error", detail: message };
+    return {
+      prepared: false,
+      taskId: null,
+      reason: `preparation failed: ${errorMessage(err)}`,
+      issueNumber: chosen.intent.issueNumber,
+      mode: chosen.intent.mode
+    };
   }
 }
-
-// src/driver/sync.ts
-var import_promises9 = require("node:fs/promises");
-var nodePath8 = __toESM(require("node:path"));
 
 // src/driver/preflight.ts
-async function runPreflight(client, repositoryInfo, dispatch, identity) {
-  const parsed = parseDispatchId(dispatch.dispatch_id);
+async function runPreflight(client, repositoryInfo, task, identity) {
+  const parsed = parseTaskId(task.task_id);
   if (parsed === null) {
-    return { ok: false, reason: `dispatch id "${dispatch.dispatch_id}" violates the frozen grammar`, obsolete: true };
+    return { ok: false, reason: `task id "${task.task_id}" violates the frozen grammar`, obsolete: true };
   }
-  if (parsed.repositoryId !== dispatch.repository_id || parsed.issueNumber !== dispatch.issue_number) {
-    return { ok: false, reason: "dispatch id components disagree with the dispatch document", obsolete: true };
+  if (parsed.repositoryId !== task.repository_id || parsed.issueNumber !== task.issue_number) {
+    return { ok: false, reason: "task id components disagree with the task document", obsolete: true };
   }
-  if (parsed.epochCode !== dispatch.workflow_epoch.slice(3)) {
-    return { ok: false, reason: "dispatch id epoch code disagrees with the dispatch epoch", obsolete: true };
+  if (parsed.epochCode !== task.workflow_epoch.slice(3)) {
+    return { ok: false, reason: "task id epoch code disagrees with the task epoch", obsolete: true };
   }
-  if (dispatch.repository_id !== repositoryInfo.id) {
-    return { ok: false, reason: `dispatch targets repository ${dispatch.repository_id}, driver operates on ${repositoryInfo.id}`, obsolete: true };
+  if (task.repository_id !== repositoryInfo.id) {
+    return { ok: false, reason: `task targets repository ${task.repository_id}, driver operates on ${repositoryInfo.id}`, obsolete: true };
   }
   const ref2 = {
     owner: repositoryInfo.owner,
     repo: repositoryInfo.name,
-    issueNumber: dispatch.issue_number
+    issueNumber: task.issue_number
   };
   const issue = await client.getIssue(ref2);
   if (issue === null) {
-    return { ok: false, reason: `issue #${dispatch.issue_number} does not exist`, obsolete: true };
+    return { ok: false, reason: `issue #${task.issue_number} does not exist`, obsolete: true };
   }
   if (issue.state === "closed") {
-    return { ok: false, reason: `issue #${dispatch.issue_number} is closed (cancel/closure invalidates the dispatch)`, obsolete: true };
+    return { ok: false, reason: `issue #${task.issue_number} is closed (cancel/closure invalidates the task)`, obsolete: true };
   }
   const labels = aiLabels(issue.labels);
   if (labels.length === 0) {
-    return { ok: false, reason: `issue #${dispatch.issue_number} carries no ai:* label (workflow exited \u2014 cancel invalidates the dispatch)`, obsolete: true };
+    return { ok: false, reason: `issue #${task.issue_number} carries no ai:* label (workflow exited \u2014 cancel invalidates the task)`, obsolete: true };
   }
   if (labels.length > 1) {
-    return { ok: false, reason: `issue #${dispatch.issue_number} carries multiple ai:* labels [${labels.join(", ")}] (corrupted state \u2014 refusing to guess)`, obsolete: false };
+    return { ok: false, reason: `issue #${task.issue_number} carries multiple ai:* labels [${labels.join(", ")}] (corrupted state \u2014 refusing to guess)`, obsolete: false };
   }
   const comments = await client.listComments(ref2);
   const view = readIssueRecords(comments, identity.gateLogins);
   if (view.suspect.length > 0) {
     return {
       ok: false,
-      reason: `suspect authorization record(s) on #${dispatch.issue_number} (fail closed): ` + view.suspect.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", "),
+      reason: `suspect authorization record(s) on #${task.issue_number} (fail closed): ` + view.suspect.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", "),
       obsolete: false
     };
   }
   if (view.epoch === null) {
-    return { ok: false, reason: `no workflow_epoch record on #${dispatch.issue_number} (fail closed)`, obsolete: false };
+    return { ok: false, reason: `no workflow_epoch record on #${task.issue_number} (fail closed)`, obsolete: false };
   }
-  if (view.epoch.record.workflow_epoch !== dispatch.workflow_epoch) {
+  if (view.epoch.record.workflow_epoch !== task.workflow_epoch) {
     return {
       ok: false,
-      reason: `dispatch epoch ${dispatch.workflow_epoch} is superseded by current epoch ${view.epoch.record.workflow_epoch} (old dispatch invalid)`,
+      reason: `task epoch ${task.workflow_epoch} is superseded by current epoch ${view.epoch.record.workflow_epoch} (old task invalid)`,
       obsolete: true
     };
   }
   let planCommentId = null;
   let planHash = null;
-  if (dispatch.role === "executor") {
+  if (task.mode === "execute") {
     const plan = findLatestPlanComment(comments);
-    if (plan === null || plan.id !== dispatch.plan_comment_id) {
+    if (plan === null || plan.id !== task.plan_comment_id) {
       return {
         ok: false,
-        reason: `approved plan comment ${String(dispatch.plan_comment_id)} is no longer the current plan`,
+        reason: `approved plan comment ${String(task.plan_comment_id)} is no longer the current plan`,
         obsolete: true
       };
     }
     const hash = planSha256(plan.body);
     const candidates = view.approvals.filter(
-      (entry) => entry.record.workflow_epoch === dispatch.workflow_epoch && entry.record.plan_comment_id === dispatch.plan_comment_id && entry.record.plan_sha256 === hash && approvalRecordAnchorFailure(entry.record, comments, identity.trustedHumans, identity.repoOwner) === null
+      (entry) => entry.record.workflow_epoch === task.workflow_epoch && entry.record.plan_comment_id === task.plan_comment_id && entry.record.plan_sha256 === hash && approvalRecordAnchorFailure(entry.record, comments, identity.trustedHumans, identity.repoOwner) === null
     );
     if (candidates.length === 0) {
       return {
         ok: false,
-        reason: `no valid Gate-issued approval record binds (epoch, plan ${String(dispatch.plan_comment_id)}, hash)`,
+        reason: `no valid Gate-issued approval record binds (epoch, plan ${String(task.plan_comment_id)}, hash)`,
         obsolete: true
       };
     }
@@ -19328,115 +18300,107 @@ async function runPreflight(client, repositoryInfo, dispatch, identity) {
 }
 
 // src/driver/sync.ts
-function errorMessage3(err) {
+function errorMessage2(err) {
   return err instanceof Error ? err.message : String(err);
 }
-function noticeBody(role, what, dispatchId, reason) {
-  return `[gateflow] ${role} ${what} (dispatch ${dispatchId}): ${reason}`;
+function noticeBody(mode, what, taskId, reason) {
+  return `[gateflow] ${mode} ${what} (task ${taskId}): ${reason}`;
 }
 function noticeKey(body) {
-  return sha256Hex(body).slice(0, 16);
+  return sha256Hex2(body).slice(0, 16);
 }
-function receiptBase(receipt, dispatchId) {
+function recordBase(record, taskId) {
   return {
-    ...receipt ?? {},
-    dispatch_id: dispatchId,
-    status: receipt?.status ?? "dispatched",
-    attempts: receipt?.attempts ?? 1
+    ...record ?? {},
+    task_id: taskId,
+    status: record?.status ?? "prepared",
+    attempts: record?.attempts ?? 1,
+    mode: record?.mode ?? "plan",
+    issue_number: record?.issue_number ?? 0,
+    workflow_epoch: record?.workflow_epoch ?? ""
   };
 }
-async function releaseExecutorLockIfTerminal(paths, dispatch, status) {
-  if (dispatch.role !== "executor") return;
-  if (status === "accepted" || status === "obsolete" || status === "failed") {
-    await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatch.dispatch_id);
-  }
-}
-async function readMarkdownCapped(paths, dispatchId, name) {
+async function readOutputCapped(paths, taskId, name) {
   try {
-    return { content: await readOutboxMarkdown(paths, dispatchId, name), error: null };
+    return { content: await readOutputMarkdown(paths, taskId, name), error: null };
   } catch (err) {
     if (err instanceof OversizedFileError) {
-      return { content: null, error: errorMessage3(err) };
+      return { content: null, error: errorMessage2(err) };
     }
     throw err;
   }
 }
-function resolveTrackerFrom(comments, dispatchId, receipt) {
-  if (receipt?.tracker_comment_id !== void 0) {
-    const found = comments.find((comment) => comment.id === receipt.tracker_comment_id);
+async function inputBindingFailure(paths, taskId, task, record) {
+  if (record.input_snapshot_sha256 === void 0) {
+    return "the driver-state record carries no input snapshot (stale state; re-run `gateflow run`)";
+  }
+  const taskMd = await readInputMarkdown(paths, taskId, "task.md");
+  if (taskMd === null) {
+    return "task.md is missing or empty \u2014 the task inputs were modified";
+  }
+  let plan = null;
+  if (task.mode === "execute") {
+    plan = await readInputMarkdown(paths, taskId, "plan.md");
+    if (plan === null) {
+      return "plan.md is missing or empty \u2014 the approved plan input was modified";
+    }
+  }
+  const feedback = await readInputMarkdown(paths, taskId, "feedback.md");
+  const snapshot = inputSnapshotSha256({ task: taskMd, plan, feedback });
+  if (snapshot !== record.input_snapshot_sha256) {
+    return "the input files no longer match the snapshot recorded at preparation time (refusing to sync from modified inputs)";
+  }
+  return null;
+}
+function resolveTrackerFrom(comments, taskId, record) {
+  if (record?.tracker_comment_id !== void 0) {
+    const found = comments.find((comment) => comment.id === record.tracker_comment_id);
     if (found !== void 0) return found;
   }
-  return findTrackerComment(comments, dispatchId);
+  return findTrackerComment(comments, taskId);
 }
-function validateOrDetail(raw, validate, dispatchId, role) {
-  if (raw === null) return [null, null];
-  const outcome = validate(raw, { dispatchId, role });
-  if (!outcome.ok) {
-    return [null, outcome.errors.join("; ")];
-  }
-  return [outcome.value, null];
-}
-async function readOutboxJsonStrict(paths, dispatchId, fileName) {
-  let file;
-  try {
-    file = nodePath8.join(outboxDispatchDir(paths, dispatchId), fileName);
-  } catch {
-    return null;
-  }
-  let text;
-  try {
-    text = await (0, import_promises9.readFile)(file, "utf8");
-  } catch {
-    return null;
-  }
-  if (Buffer.byteLength(text, "utf8") > MAX_FILE_BYTES) {
-    return { raw: null, error: `${fileName} exceeds the ${MAX_FILE_BYTES}-byte limit` };
-  }
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed === null) {
-      return { raw: null, error: `${fileName} is not a JSON object` };
-    }
-    return { raw: parsed, error: null };
-  } catch (err) {
-    return { raw: null, error: errorMessage3(err) };
-  }
-}
-async function syncDispatch(deps, repositoryInfo, dispatchId) {
+async function syncTask(deps, repositoryInfo, taskId) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   const now = deps.now ?? (() => /* @__PURE__ */ new Date());
   const nowIso = now().toISOString();
-  const inboxDispatch = await readInboxDispatch(paths, dispatchId);
-  if (inboxDispatch === null) {
+  const task = await readTaskFile(paths, taskId);
+  if (task === null) {
     return {
-      dispatchId,
+      taskId,
       action: "rejected",
-      detail: "no valid inbox dispatch.json for this id (unknown dispatch, docs \xA78.3)"
+      detail: "no valid task.json for this id (unknown task \u2014 run `gateflow run` first)"
     };
   }
-  const role = inboxDispatch.role;
-  const rawStatus = await readOutboxJsonStrict(paths, dispatchId, "status.json");
-  if (rawStatus !== null && rawStatus.error !== null) {
-    deps.log.warning(`rejected ${dispatchId}: unparseable status.json \u2014 ${rawStatus.error}`);
-    return { dispatchId, action: "rejected", detail: `unparseable status.json: ${rawStatus.error}` };
+  const state = await readDriverState(paths);
+  const record = getTaskRecord(state, taskId);
+  if (record === null) {
+    return {
+      taskId,
+      action: "rejected",
+      detail: "no driver-state record for this task (never prepared here \u2014 run `gateflow run` first)"
+    };
   }
-  const rawResult = await readOutboxJsonStrict(paths, dispatchId, "result.json");
+  const rawResult = await readResultJson(paths, taskId);
   if (rawResult !== null && rawResult.error !== null) {
-    deps.log.warning(`rejected ${dispatchId}: unparseable result.json \u2014 ${rawResult.error}`);
-    return { dispatchId, action: "rejected", detail: `unparseable result.json: ${rawResult.error}` };
+    deps.log.warning(`rejected ${taskId}: unparseable result.json \u2014 ${rawResult.error}`);
+    return { taskId, action: "rejected", detail: `unparseable result.json: ${rawResult.error}` };
   }
-  const [status, statusError] = validateOrDetail(rawStatus?.raw ?? null, validateOutboxStatus, dispatchId, role);
-  if (statusError !== null) {
-    deps.log.warning(`rejected ${dispatchId}: invalid status.json \u2014 ${statusError}`);
-    return { dispatchId, action: "rejected", detail: `invalid status.json: ${statusError}` };
+  let result = null;
+  if (rawResult !== null) {
+    const checked = validateResultForTask(rawResult.raw, { taskId, mode: task.mode });
+    if (!checked.ok) {
+      const detail = checked.errors.join("; ");
+      deps.log.warning(`rejected ${taskId}: invalid result.json \u2014 ${detail}`);
+      return { taskId, action: "rejected", detail: `invalid result.json: ${detail}` };
+    }
+    result = checked.value;
   }
-  const [result, resultError] = validateOrDetail(rawResult?.raw ?? null, validateOutboxResult, dispatchId, role);
-  if (resultError !== null) {
-    deps.log.warning(`rejected ${dispatchId}: invalid result.json \u2014 ${resultError}`);
-    return { dispatchId, action: "rejected", detail: `invalid result.json: ${resultError}` };
+  const binding = await inputBindingFailure(paths, taskId, task, record);
+  if (binding !== null) {
+    deps.log.warning(`rejected ${taskId}: ${binding}`);
+    return { taskId, action: "rejected", detail: binding };
   }
-  const receipt = await readReceipt(paths, dispatchId);
-  const preflight = await runPreflight(deps.client, repositoryInfo, inboxDispatch, {
+  const preflight = await runPreflight(deps.client, repositoryInfo, task, {
     gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
     trustedHumans: /* @__PURE__ */ new Set([
       repositoryInfo.owner.toLowerCase(),
@@ -19446,52 +18410,287 @@ async function syncDispatch(deps, repositoryInfo, dispatchId) {
   });
   if (!preflight.ok) {
     if (preflight.obsolete) {
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        status: "obsolete",
-        error: preflight.reason,
-        last_sync_at: nowIso
+      await writeDriverState(paths, {
+        ...withTaskRecord(state, {
+          ...recordBase(record, taskId),
+          status: "obsolete",
+          error: preflight.reason,
+          last_sync_at: nowIso
+        })
       });
-      await releaseExecutorLockIfTerminal(paths, inboxDispatch, "obsolete");
-      deps.log.warning(`obsolete ${dispatchId}: ${preflight.reason}`);
-      return { dispatchId, action: "obsolete", detail: preflight.reason };
+      deps.log.warning(`obsolete ${taskId}: ${preflight.reason}`);
+      return { taskId, action: "obsolete", detail: preflight.reason };
     }
-    deps.log.warning(`blocked ${dispatchId} (preflight): ${preflight.reason}`);
-    return { dispatchId, action: "rejected", detail: `preflight: ${preflight.reason}` };
+    deps.log.warning(`blocked ${taskId} (preflight): ${preflight.reason}`);
+    return { taskId, action: "rejected", detail: `preflight: ${preflight.reason}` };
   }
   const snapshot = preflight.snapshot;
-  if (receipt?.status === "published" && receipt.published_comment_id !== void 0) {
-    const isConsumerPlanAccepted = role === "consumer" && snapshot.view.approvals.some(
-      (entry) => entry.record.workflow_epoch === snapshot.epoch && entry.record.plan_comment_id === receipt.published_comment_id
+  if (record.status === "published" && record.published_comment_id !== void 0) {
+    const isPlanAccepted = task.mode === "plan" && snapshot.view.approvals.some(
+      (entry) => entry.record.workflow_epoch === snapshot.epoch && entry.record.plan_comment_id === record.published_comment_id
     );
-    const isExecutorReportAccepted = role === "executor" && snapshot.aiState === "ai:done";
-    if (isConsumerPlanAccepted || isExecutorReportAccepted) {
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        status: "accepted",
-        last_sync_at: nowIso
+    const isReportAccepted = task.mode === "execute" && snapshot.aiState === "ai:done";
+    if (isPlanAccepted || isReportAccepted) {
+      await writeDriverState(paths, {
+        ...withTaskRecord(state, {
+          ...recordBase(record, taskId),
+          status: "accepted",
+          last_sync_at: nowIso
+        })
       });
-      await releaseExecutorLockIfTerminal(paths, inboxDispatch, "accepted");
-      return { dispatchId, action: "accepted", detail: `Gate accepted the ${role} output (${snapshot.aiState})` };
+      return { taskId, action: "accepted", detail: `Gate accepted the ${task.mode} output (${snapshot.aiState})` };
     }
   }
-  if (receipt?.status === "published" || receipt?.status === "accepted") {
+  if (record.status === "published" || record.status === "accepted") {
     return {
-      dispatchId,
+      taskId,
       action: "skipped",
-      detail: `receipt already ${receipt.status} \u2014 later result overwrites are not accepted (docs \xA78.4)`
+      detail: `record already ${record.status} \u2014 later result overwrites are not accepted`
     };
   }
-  if (role === "consumer") {
-    return syncConsumer(deps, ref(repositoryInfo, inboxDispatch.issue_number), paths, dispatchId, receipt, status, result, snapshot, nowIso);
+  if (task.mode === "plan") {
+    return syncPlanMode(deps, ref(repositoryInfo, task.issue_number), paths, state, taskId, task, record, result, snapshot, nowIso);
   }
-  return syncExecutor(deps, ref(repositoryInfo, inboxDispatch.issue_number), paths, dispatchId, inboxDispatch, receipt, status, result, snapshot, nowIso);
+  return syncExecuteMode(deps, ref(repositoryInfo, task.issue_number), paths, state, taskId, task, record, result, snapshot, nowIso);
 }
 function ref(repositoryInfo, issueNumber) {
   return { owner: repositoryInfo.owner, repo: repositoryInfo.name, issueNumber };
 }
-function reconcileMarkerComment(comments, dispatchId, localContent, kind) {
-  const mine = kind === "plan" ? findPlanComments(comments).filter((plan) => plan.dispatchId === dispatchId) : findCompletionReportComments(comments, dispatchId);
+async function persistRecord(paths, state, record) {
+  await writeDriverState(paths, withTaskRecord(state, record));
+}
+async function syncPlanMode(deps, issueRef, paths, state, taskId, task, record, result, snapshot, nowIso) {
+  if (result !== null) {
+    if (result.status === "completed") {
+      if (snapshot.aiState !== "ai:planning" && snapshot.aiState !== "ai:review") {
+        return {
+          taskId,
+          action: "unchanged",
+          detail: `plan publication requires ai:planning|ai:review, current state is ${snapshot.aiState}`
+        };
+      }
+      const plan = await readOutputCapped(paths, taskId, "plan.md");
+      if (plan.error !== null) {
+        return { taskId, action: "rejected", detail: `plan.md rejected: ${plan.error}` };
+      }
+      if (plan.content === null) {
+        return { taskId, action: "rejected", detail: "status=completed but plan.md is missing or empty" };
+      }
+      const reconciliation = reconcileMarkerComment(snapshot.comments, taskId, plan.content, "plan");
+      if (reconciliation.verdict === "conflict") {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: "failed",
+          error: reconciliation.detail,
+          last_sync_at: nowIso
+        });
+        deps.log.error(`conflict ${taskId}: ${reconciliation.detail}`);
+        return { taskId, action: "rejected", detail: reconciliation.detail };
+      }
+      let commentId;
+      if (reconciliation.verdict === "adopt") {
+        commentId = reconciliation.comment.id;
+        deps.log.info(`reconciled ${taskId}: adopting existing plan comment #${commentId}`);
+      } else {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: "publishing",
+          last_sync_at: nowIso
+        });
+        const published = await publishPlanComment(deps.client, issueRef, plan.content, taskId);
+        commentId = published.id;
+      }
+      await persistRecord(paths, state, {
+        ...recordBase(record, taskId),
+        status: "published",
+        published_comment_id: commentId,
+        last_sync_at: nowIso,
+        error: null
+      });
+      return {
+        taskId,
+        action: "plan-published",
+        detail: `plan comment #${commentId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`
+      };
+    }
+    const body = noticeBody("plan", result.status, taskId, result.reason ?? "(no reason given)");
+    const key = noticeKey(body);
+    if (record.last_notice_key === key) {
+      return { taskId, action: "unchanged", detail: "notice already posted for this result" };
+    }
+    await deps.client.addIssueComment(issueRef, body);
+    await persistRecord(paths, state, {
+      ...recordBase(record, taskId),
+      last_notice_key: key,
+      last_sync_at: nowIso
+    });
+    return { taskId, action: "notice", detail: `plan ${result.status} notice posted` };
+  }
+  return {
+    taskId,
+    action: "unchanged",
+    detail: "no result.json yet; the agent has not reported a terminal result"
+  };
+}
+async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, record, result, snapshot, nowIso) {
+  if (result !== null) {
+    if (result.status === "completed") {
+      if (result.validation !== "passed") {
+        return {
+          taskId,
+          action: "rejected",
+          detail: `status=completed requires validation="passed", got ${JSON.stringify(result.validation ?? null)}`
+        };
+      }
+      if (snapshot.aiState !== "ai:ready" && snapshot.aiState !== "ai:working" && snapshot.aiState !== "ai:blocked") {
+        return {
+          taskId,
+          action: "unchanged",
+          detail: `completion report requires ai:ready|ai:working|ai:blocked, current state is ${snapshot.aiState}`
+        };
+      }
+      const report = await readOutputCapped(paths, taskId, "report.md");
+      if (report.error !== null) {
+        return { taskId, action: "rejected", detail: `report.md rejected: ${report.error}` };
+      }
+      if (report.content === null) {
+        return { taskId, action: "rejected", detail: "status=completed but report.md is missing or empty" };
+      }
+      let tracker2 = resolveTrackerFrom(snapshot.comments, taskId, record);
+      let trackerId2 = tracker2?.id;
+      if (tracker2 === null) {
+        const created = await publishTrackerComment(deps.client, issueRef, {
+          taskId,
+          issueNumber: issueRef.issueNumber
+        });
+        trackerId2 = created.id;
+        tracker2 = {
+          id: created.id,
+          user: "gateflow-driver",
+          body: buildTrackerCommentBody({ taskId, issueNumber: issueRef.issueNumber, status: "In Progress", progressMarkdown: "" }),
+          createdAt: nowIso,
+          updatedAt: nowIso
+        };
+        deps.log.info(`repaired ${taskId}: lawful tracker #${created.id} created before report publication`);
+      }
+      if (snapshot.aiState === "ai:blocked") {
+        await updateTracker(deps.client, issueRef, tracker2.id, tracker2.body, { status: "In Progress" });
+        deps.log.info(`resumed ${taskId}: tracker #${tracker2.id} set back to In Progress before the report (T5)`);
+      }
+      const reconciliation = reconcileMarkerComment(snapshot.comments, taskId, report.content, "report");
+      if (reconciliation.verdict === "conflict") {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: "failed",
+          error: reconciliation.detail,
+          last_sync_at: nowIso
+        });
+        deps.log.error(`conflict ${taskId}: ${reconciliation.detail}`);
+        return { taskId, action: "rejected", detail: reconciliation.detail };
+      }
+      let reportId;
+      if (reconciliation.verdict === "adopt") {
+        reportId = reconciliation.comment.id;
+        deps.log.info(`reconciled ${taskId}: adopting existing report comment #${reportId}`);
+      } else {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: "publishing",
+          last_sync_at: nowIso
+        });
+        const published = await publishCompletionReport(deps.client, issueRef, report.content, taskId);
+        reportId = published.id;
+      }
+      await persistRecord(paths, state, {
+        ...recordBase(record, taskId),
+        status: "published",
+        published_comment_id: reportId,
+        tracker_comment_id: trackerId2,
+        last_sync_at: nowIso,
+        error: null
+      });
+      return {
+        taskId,
+        action: "completed",
+        detail: `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`
+      };
+    }
+    if (snapshot.aiState !== "ai:working" && snapshot.aiState !== "ai:blocked") {
+      return {
+        taskId,
+        action: "unchanged",
+        detail: `blocked-state reporting requires ai:working|ai:blocked, current state is ${snapshot.aiState}`
+      };
+    }
+    const pendingBody = noticeBody("execute", result.status, taskId, result.reason ?? "(no reason given)");
+    const pendingKey = noticeKey(pendingBody);
+    if (record.last_notice_key === pendingKey) {
+      return {
+        taskId,
+        action: "unchanged",
+        detail: "blocked notice already posted for this task"
+      };
+    }
+    let tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+    let trackerId;
+    if (tracker !== null) {
+      await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: "Blocked" });
+      trackerId = tracker.id;
+    } else {
+      const created = await publishTrackerComment(deps.client, issueRef, {
+        taskId,
+        issueNumber: issueRef.issueNumber
+      });
+      const createdBody = buildTrackerCommentBody({
+        taskId,
+        issueNumber: issueRef.issueNumber,
+        status: "In Progress",
+        progressMarkdown: ""
+      });
+      await updateTracker(deps.client, issueRef, created.id, createdBody, { status: "Blocked" });
+      trackerId = created.id;
+    }
+    const body = pendingBody;
+    await deps.client.addIssueComment(issueRef, body);
+    await persistRecord(paths, state, {
+      ...recordBase(record, taskId),
+      tracker_comment_id: trackerId,
+      last_notice_key: noticeKey(body),
+      last_sync_at: nowIso
+    });
+    return { taskId, action: "notice", detail: `execute ${result.status}: tracker #${trackerId} set to Blocked, notice posted` };
+  }
+  if (snapshot.aiState === "ai:ready") {
+    const tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+    if (tracker === null) {
+      const created = await publishTrackerComment(deps.client, issueRef, {
+        taskId,
+        issueNumber: issueRef.issueNumber
+      });
+      await persistRecord(paths, state, {
+        ...recordBase(record, taskId),
+        tracker_comment_id: created.id,
+        last_sync_at: nowIso
+      });
+      return { taskId, action: "tracker-created", detail: `tracker comment #${created.id} created (execution started)` };
+    }
+    if (record.tracker_comment_id !== tracker.id) {
+      await persistRecord(paths, state, {
+        ...recordBase(record, taskId),
+        tracker_comment_id: tracker.id,
+        last_sync_at: nowIso
+      });
+      return { taskId, action: "tracker-created", detail: `recovered existing tracker comment #${tracker.id}` };
+    }
+  }
+  return {
+    taskId,
+    action: "unchanged",
+    detail: "no result.json yet; the agent is still working"
+  };
+}
+function reconcileMarkerComment(comments, taskId, localContent, kind) {
+  const mine = kind === "plan" ? findPlanComments(comments).filter((plan) => plan.dispatchId === taskId) : findCompletionReportComments(comments, taskId);
   if (mine.length === 0) return { verdict: "absent" };
   const latest = mine[mine.length - 1];
   if (latest === void 0) return { verdict: "absent" };
@@ -19500,484 +18699,111 @@ function reconcileMarkerComment(comments, dispatchId, localContent, kind) {
   if (remoteHash !== localHash) {
     return {
       verdict: "conflict",
-      detail: `remote ${kind} comment #${latest.id} exists for ${dispatchId} with DIFFERENT content (fail closed: no overwrite, no duplicate)`
+      detail: `remote ${kind} comment #${latest.id} exists for ${taskId} with DIFFERENT content (fail closed: no overwrite, no duplicate)`
     };
   }
   return { verdict: "adopt", comment: latest };
 }
-async function syncConsumer(deps, issueRef, paths, dispatchId, receipt, status, result, snapshot, nowIso) {
-  if (result !== null) {
-    if (result.result === "plan_ready") {
-      if (snapshot.aiState !== "ai:planning" && snapshot.aiState !== "ai:review") {
-        return {
-          dispatchId,
-          action: "unchanged",
-          detail: `plan publication requires ai:planning|ai:review, current state is ${snapshot.aiState}`
-        };
-      }
-      const plan = await readMarkdownCapped(paths, dispatchId, "PLAN.md");
-      if (plan.error !== null) {
-        return { dispatchId, action: "rejected", detail: `PLAN.md rejected: ${plan.error}` };
-      }
-      if (plan.content === null) {
-        return { dispatchId, action: "rejected", detail: "result=plan_ready but PLAN.md is missing or empty" };
-      }
-      const reconciliation = reconcileMarkerComment(snapshot.comments, dispatchId, plan.content, "plan");
-      if (reconciliation.verdict === "conflict") {
-        await writeReceipt(paths, {
-          ...receiptBase(receipt, dispatchId),
-          status: "failed",
-          error: reconciliation.detail,
-          last_sync_at: nowIso
-        });
-        deps.log.error(`conflict ${dispatchId}: ${reconciliation.detail}`);
-        return { dispatchId, action: "rejected", detail: reconciliation.detail };
-      }
-      let commentId;
-      if (reconciliation.verdict === "adopt") {
-        commentId = reconciliation.comment.id;
-        deps.log.info(`reconciled ${dispatchId}: adopting existing plan comment #${commentId}`);
-      } else {
-        await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: "publishing", last_sync_at: nowIso });
-        const published = await publishPlanComment(deps.client, issueRef, plan.content, dispatchId);
-        commentId = published.id;
-      }
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        status: "published",
-        published_comment_id: commentId,
-        last_sync_at: nowIso,
-        error: null
-      });
-      return {
-        dispatchId,
-        action: "plan-published",
-        detail: `plan comment #${commentId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`
-      };
-    }
-    const body = noticeBody("consumer", result.result, dispatchId, result.reason ?? "(no reason given)");
-    const key = noticeKey(body);
-    if (receipt?.last_notice_key === key) {
-      return { dispatchId, action: "unchanged", detail: "notice already posted for this result" };
-    }
-    await deps.client.addIssueComment(issueRef, body);
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      last_notice_key: key,
-      last_sync_at: nowIso
-    });
-    return { dispatchId, action: "notice", detail: `consumer ${result.result} notice posted` };
-  }
-  if (status !== null && status.state === "blocked") {
-    const body = noticeBody("consumer", "blocked", dispatchId, status.summary ?? status.phase ?? "(blocked, no summary)");
-    const key = noticeKey(body);
-    if (receipt?.last_notice_key === key) {
-      return {
-        dispatchId,
-        action: "unchanged",
-        detail: "consumer blocked notice already posted for this dispatch"
-      };
-    }
-    await deps.client.addIssueComment(issueRef, body);
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      last_notice_key: key,
-      last_sync_at: nowIso
-    });
-    return { dispatchId, action: "notice", detail: "consumer blocked notice posted" };
-  }
-  return {
-    dispatchId,
-    action: "unchanged",
-    detail: "no terminal result yet; consumer working/failed status is not echoed to GitHub"
-  };
-}
-async function syncExecutor(deps, issueRef, paths, dispatchId, inboxDispatch, receipt, status, result, snapshot, nowIso) {
-  const now = deps.now ?? (() => /* @__PURE__ */ new Date());
-  if (result !== null) {
-    if (result.result === "completed") {
-      if (result.validation !== "passed") {
-        return {
-          dispatchId,
-          action: "rejected",
-          detail: `result=completed requires validation="passed", got ${JSON.stringify(result.validation ?? null)}`
-        };
-      }
-      if (snapshot.aiState !== "ai:working") {
-        return {
-          dispatchId,
-          action: "unchanged",
-          detail: `completion report requires ai:working, current state is ${snapshot.aiState}`
-        };
-      }
-      const report = await readMarkdownCapped(paths, dispatchId, "REPORT.md");
-      if (report.error !== null) {
-        return { dispatchId, action: "rejected", detail: `REPORT.md rejected: ${report.error}` };
-      }
-      if (report.content === null) {
-        return { dispatchId, action: "rejected", detail: "result=completed but REPORT.md is missing or empty" };
-      }
-      let tracker3 = resolveTrackerFrom(snapshot.comments, dispatchId, receipt);
-      let trackerId2 = tracker3?.id;
-      if (tracker3 === null) {
-        const progress2 = await readMarkdownCapped(paths, dispatchId, "PROGRESS.md");
-        const created = await publishTrackerComment(deps.client, issueRef, {
-          dispatchId,
-          issueNumber: issueRef.issueNumber,
-          progressMarkdown: progress2.content ?? ""
-        });
-        trackerId2 = created.id;
-        await writeReceipt(paths, {
-          ...receiptBase(receipt, dispatchId),
-          status: receipt?.status ?? "dispatched",
-          tracker_comment_id: created.id,
-          last_sync_at: nowIso
-        });
-        deps.log.info(`repaired ${dispatchId}: lawful tracker #${created.id} created before report publication`);
-      }
-      const reconciliation = reconcileMarkerComment(
-        snapshot.comments,
-        dispatchId,
-        report.content,
-        "report"
-      );
-      if (reconciliation.verdict === "conflict") {
-        await writeReceipt(paths, {
-          ...receiptBase(receipt, dispatchId),
-          status: "failed",
-          error: reconciliation.detail,
-          last_sync_at: nowIso
-        });
-        await releaseExecutorLockIfTerminal(paths, inboxDispatch, "failed");
-        deps.log.error(`conflict ${dispatchId}: ${reconciliation.detail}`);
-        return { dispatchId, action: "rejected", detail: reconciliation.detail };
-      }
-      let reportId;
-      if (reconciliation.verdict === "adopt") {
-        reportId = reconciliation.comment.id;
-        deps.log.info(`reconciled ${dispatchId}: adopting existing report comment #${reportId}`);
-      } else {
-        await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: "publishing", last_sync_at: nowIso });
-        const published = await publishCompletionReport(deps.client, issueRef, report.content, dispatchId);
-        reportId = published.id;
-      }
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        status: "published",
-        published_comment_id: reportId,
-        tracker_comment_id: trackerId2,
-        last_sync_at: nowIso,
-        error: null
-      });
-      return {
-        dispatchId,
-        action: "completed",
-        detail: `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`
-      };
-    }
-    if (snapshot.aiState !== "ai:working" && snapshot.aiState !== "ai:blocked") {
-      return {
-        dispatchId,
-        action: "unchanged",
-        detail: `blocked-state reporting requires ai:working|ai:blocked, current state is ${snapshot.aiState}`
-      };
-    }
-    const { tracker: tracker2 } = await resolveTracker(deps, issueRef, dispatchId, receipt);
-    let trackerId;
-    if (tracker2 !== null) {
-      await updateTracker(deps.client, issueRef, tracker2.id, tracker2.body, { status: "Blocked" });
-      trackerId = tracker2.id;
-    } else {
-      const progress2 = await readMarkdownCapped(paths, dispatchId, "PROGRESS.md");
-      const created = await publishTrackerComment(deps.client, issueRef, {
-        dispatchId,
-        issueNumber: issueRef.issueNumber,
-        progressMarkdown: progress2.content ?? ""
-      });
-      const createdBody = buildTrackerCommentBody({
-        dispatchId,
-        issueNumber: issueRef.issueNumber,
-        status: "In Progress",
-        progressMarkdown: progress2.content ?? ""
-      });
-      await updateTracker(deps.client, issueRef, created.id, createdBody, { status: "Blocked" });
-      trackerId = created.id;
-    }
-    const body = noticeBody("executor", result.result, dispatchId, result.reason ?? "(no reason given)");
-    await deps.client.addIssueComment(issueRef, body);
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      status: receipt?.status ?? "dispatched",
-      tracker_comment_id: trackerId,
-      last_notice_key: noticeKey(body),
-      last_sync_at: nowIso
-    });
-    return { dispatchId, action: "notice", detail: `executor ${result.result}: tracker #${trackerId} set to Blocked, notice posted` };
-  }
-  if (status === null) {
-    return { dispatchId, action: "unchanged", detail: "no status.json or result.json in the outbox yet" };
-  }
-  const trackerStateAllowed = status.state === "blocked" ? snapshot.aiState === "ai:working" || snapshot.aiState === "ai:blocked" : snapshot.aiState === "ai:ready" || snapshot.aiState === "ai:working" || snapshot.aiState === "ai:blocked";
-  if (!trackerStateAllowed) {
-    return {
-      dispatchId,
-      action: "unchanged",
-      detail: `tracker lifecycle requires ai:ready|ai:working|ai:blocked, current state is ${snapshot.aiState}`
-    };
-  }
-  const progress = await readMarkdownCapped(paths, dispatchId, "PROGRESS.md");
-  if (progress.error !== null) {
-    return { dispatchId, action: "rejected", detail: `PROGRESS.md rejected: ${progress.error}` };
-  }
-  const progressMd = progress.content;
-  const progressSha = progressMd === null ? null : sha256Hex(progressMd);
-  const { tracker } = await resolveTracker(deps, issueRef, dispatchId, receipt);
-  if (tracker === null) {
-    const created = await publishTrackerComment(deps.client, issueRef, {
-      dispatchId,
-      issueNumber: issueRef.issueNumber,
-      progressMarkdown: progressMd ?? ""
-    });
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      tracker_comment_id: created.id,
-      last_progress_sha256: progressSha ?? sha256Hex(""),
-      last_sync_at: nowIso
-    });
-    if (status.state === "blocked") {
-      const createdBody = buildTrackerCommentBody({
-        dispatchId,
-        issueNumber: issueRef.issueNumber,
-        status: "In Progress",
-        progressMarkdown: progressMd ?? ""
-      });
-      await updateTracker(deps.client, issueRef, created.id, createdBody, { status: "Blocked" });
-      await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), tracker_comment_id: created.id, last_sync_at: nowIso });
-      return { dispatchId, action: "blocked", detail: `tracker #${created.id} created and set to Blocked` };
-    }
-    return { dispatchId, action: "tracker-created", detail: `tracker comment #${created.id} created` };
-  }
-  if (receipt?.tracker_comment_id !== tracker.id) {
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      tracker_comment_id: tracker.id,
-      last_sync_at: nowIso
-    });
-    return { dispatchId, action: "tracker-created", detail: `recovered existing tracker comment #${tracker.id}` };
-  }
-  if (status.state === "blocked") {
-    await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: "Blocked" });
-    await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), tracker_comment_id: tracker.id, last_sync_at: nowIso });
-    return { dispatchId, action: "blocked", detail: `tracker #${tracker.id} set to Blocked` };
-  }
-  if (status.state === "working" && findTrackerStatus(tracker.body) === "Blocked") {
-    await updateTracker(deps.client, issueRef, tracker.id, tracker.body, {
-      status: "In Progress",
-      ...progressMd !== null ? { progressMarkdown: progressMd } : {}
-    });
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      tracker_comment_id: tracker.id,
-      last_sync_at: nowIso,
-      ...progressSha !== null ? { last_progress_sha256: progressSha } : {}
-    });
-    return { dispatchId, action: "resumed", detail: `tracker #${tracker.id} set back to In Progress` };
-  }
-  if (status.state === "working" && progressSha !== null && progressSha !== receipt?.last_progress_sha256) {
-    const lastSyncMs = Date.parse(receipt?.last_sync_at ?? "1970-01-01T00:00:00Z");
-    const windowMs = deps.config.driver.progressSyncSeconds * 1e3;
-    if (now().getTime() - lastSyncMs >= windowMs) {
-      await updateTracker(deps.client, issueRef, tracker.id, tracker.body, {
-        status: "In Progress",
-        progressMarkdown: progressMd ?? ""
-      });
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        tracker_comment_id: tracker.id,
-        last_progress_sha256: progressSha,
-        last_sync_at: nowIso
-      });
-      return { dispatchId, action: "tracker-updated", detail: `tracker #${tracker.id} progress updated` };
-    }
-  }
-  return {
-    dispatchId,
-    action: "unchanged",
-    detail: "tracker is current (progress unchanged or debounce window not elapsed)"
-  };
-}
-async function resolveTracker(deps, issueRef, dispatchId, receipt) {
-  const comments = await deps.client.listComments(issueRef);
-  return { comments, tracker: resolveTrackerFrom(comments, dispatchId, receipt) };
-}
 async function syncAll(deps, repositoryInfo) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
-  const dispatchIds = await listOutboxDispatchIds(paths);
+  const taskIds = await listTaskDirs(paths.tasks);
   const outcomes = [];
-  for (const dispatchId of dispatchIds) {
+  for (const taskId of taskIds) {
     try {
-      outcomes.push(await syncDispatch(deps, repositoryInfo, dispatchId));
+      outcomes.push(await syncTask(deps, repositoryInfo, taskId));
     } catch (err) {
-      deps.log.error(`sync failed for ${dispatchId}: ${errorMessage3(err)}`);
+      deps.log.error(`sync failed for ${taskId}: ${errorMessage2(err)}`);
     }
   }
-  return outcomes;
+  return { outcomes, state: await readDriverState(paths) };
+}
+async function clearTask(paths, taskId) {
+  const state = await readDriverState(paths);
+  if (getTaskRecord(state, taskId) === null) {
+    return false;
+  }
+  await writeDriverState(paths, withoutTaskRecord(state, taskId));
+  return true;
 }
 
 // src/driver/driver.ts
-function errorMessage4(err) {
-  return err instanceof Error ? err.message : String(err);
-}
-function sleep2(ms) {
-  return new Promise((resolve4) => setTimeout(resolve4, ms));
-}
 function assertUsableRepository(config, repositoryInfo) {
   if (config.requireExplicitHumans && repositoryInfo.ownerType !== "User" && config.trustedHumans.length === 0) {
     throw new Error(
-      `repository owner "${repositoryInfo.owner}" has GitHub type "${repositoryInfo.ownerType}"; Driver refuses to run on an Organization-owned repository without an explicit \`trusted_humans\` allowlist in gateflow.config.yml (fail closed, hardening GF-H10).`
+      `repository owner "${repositoryInfo.owner}" has GitHub type "${repositoryInfo.ownerType}"; Driver refuses to run on an Organization-owned repository without an explicit \`trusted_humans\` allowlist in gateflow.config.yml (fail closed, GF-H10).`
     );
   }
 }
-async function runOnce(deps) {
-  const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
-  await ensureWorkspace(paths);
-  const repositoryInfo = await deps.client.getRepository();
-  assertUsableRepository(deps.config, repositoryInfo);
-  const submit = await processSubmit(deps, {
-    owner: repositoryInfo.owner,
-    repo: repositoryInfo.name,
-    id: repositoryInfo.id
-  });
-  const dispatched = await processIntents(deps, repositoryInfo);
-  const synced = await syncAll(deps, repositoryInfo);
-  return {
-    ...submit.action === "empty" ? {} : { submit },
-    dispatched,
-    synced
-  };
-}
-async function startDriver(deps) {
+async function withDriverLock(deps, body) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   await ensureWorkspace(paths);
   const now = deps.now ?? (() => /* @__PURE__ */ new Date());
-  const lock = await acquireLock(driverLockFile(paths), DRIVER_LOCK_HOLDER, void 0, now);
+  const lock = await acquireLock(driverLockFile(paths), DRIVER_LOCK_HOLDER, now);
   if (!lock.ok) {
     throw new Error(
-      `another GateFlow driver instance appears to be running for this workspace (driver.lock held by ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : "an unknown process"}); refusing to start a second instance (single-writer rule, hardening \xA79)`
+      `another GateFlow driver instance appears to be running for this workspace (driver.lock held by ${lock.holder ? `${lock.holder.holder} pid ${lock.holder.pid}` : "an unknown process"}); refusing to run a second instance (single-writer rule)`
     );
   }
-  const repositoryInfo = await deps.client.getRepository();
-  assertUsableRepository(deps.config, repositoryInfo);
-  const pollMs = Math.max(1, deps.config.driver.pollIntervalSeconds) * 1e3;
-  const pending = /* @__PURE__ */ new Set();
-  let stopped = false;
-  let cycling = false;
-  let draining = false;
-  const watcher = watchOutbox(paths, { debounceMs: 500, pollIntervalMs: 2e3 }, (id) => {
-    try {
-      pending.add(id);
-    } catch {
-    }
-  });
-  const drain = async () => {
-    if (draining || cycling || stopped) return;
-    draining = true;
-    try {
-      while (!stopped && !cycling && pending.size > 0) {
-        const next = pending.values().next();
-        const id = next.value;
-        if (id === void 0) break;
-        pending.delete(id);
-        try {
-          const outcome = await syncDispatch(deps, repositoryInfo, id);
-          deps.log.info(`watcher sync ${outcome.dispatchId}: ${outcome.action} \u2014 ${outcome.detail}`);
-        } catch (err) {
-          deps.log.error(`watcher sync failed for ${id}: ${errorMessage4(err)}`);
-        }
-      }
-    } finally {
-      draining = false;
-    }
-  };
-  const idleTimer = setInterval(() => {
-    void drain();
-  }, 5e3);
-  idleTimer.unref();
-  const onSignal = () => {
-    if (stopped) return;
-    stopped = true;
-    deps.log.info("GateFlow driver shutting down (signal received)");
-    void watcher.close().catch(() => {
-    }).then(() => {
-      void releaseLock(driverLockFile(paths), DRIVER_LOCK_HOLDER);
-      process.exit(0);
-    });
-  };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
   try {
-    while (!stopped) {
-      cycling = true;
-      try {
-        const result = await runOnce(deps);
-        const dispatchedCount = result.dispatched.filter((o) => o.dispatched).length;
-        const submitNote = result.submit ? `, submit: ${result.submit.action}` : "";
-        deps.log.info(
-          `cycle complete: ${dispatchedCount} dispatched, ${result.synced.filter((o) => o.action !== "unchanged" && o.action !== "skipped").length} synced (of ${result.synced.length} outbox dirs)` + submitNote
-        );
-      } catch (err) {
-        deps.log.error(`cycle failed: ${errorMessage4(err)}`);
-      }
-      cycling = false;
-      await drain();
-      await sleep2(pollMs);
-    }
+    const repositoryInfo = await deps.client.getRepository();
+    assertUsableRepository(deps.config, repositoryInfo);
+    return await body(repositoryInfo);
   } finally {
-    stopped = true;
-    clearInterval(idleTimer);
-    process.removeListener("SIGINT", onSignal);
-    process.removeListener("SIGTERM", onSignal);
-    await watcher.close().catch(() => {
-    });
     await releaseLock(driverLockFile(paths), DRIVER_LOCK_HOLDER);
   }
 }
-
-// src/driver/retry.ts
-async function retryDispatch(paths, dispatchId) {
-  const cleared = await clearReceipt(paths, dispatchId);
-  if (cleared) {
-    await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatchId);
-  }
-  return cleared;
+async function runCommand(deps, opts = {}) {
+  return withDriverLock(deps, async (repositoryInfo) => {
+    const repository = `${repositoryInfo.owner}/${repositoryInfo.name}`;
+    const discoveries = await discoverWork(deps.client, repository, deps.config, repositoryInfo, deps.log);
+    return prepareCurrentTask(deps, repositoryInfo, discoveries, { issue: opts.issue });
+  });
+}
+async function syncCommand(deps) {
+  return withDriverLock(deps, async (repositoryInfo) => {
+    const { outcomes } = await syncAll(deps, repositoryInfo);
+    return { outcomes };
+  });
 }
 
 // src/cli.ts
 var import_meta = {};
-var USAGE = `gateflow driver \u2014 local GateFlow Driver
+var USAGE = `gateflow \u2014 local GateFlow driver (Manual Activation)
 
 Usage:
-  gateflow driver once   [--root <dir>] [--config <file>]   run one discovery+sync cycle
-  gateflow driver start  [--root <dir>] [--config <file>]   poll + watch until interrupted
-  gateflow driver status [--root <dir>] [--config <file>]   show local workspace state (offline)
-  gateflow driver retry <dispatchId> [--root <dir>]         clear a receipt so the next cycle re-dispatches
+  gateflow run    [--issue <n>] [--root <dir>] [--config <file>]
+                  discover GitHub state, prepare the active task, print the AI prompt
+  gateflow sync   [--root <dir>] [--config <file>]
+                  validate task results and publish them to GitHub
+  gateflow status [--root <dir>] [--config <file>]
+                  show local workspace state (offline)
+  gateflow retry  <task-id> [--root <dir>]
+                  clear a task's driver state so the next run re-prepares it (offline)
 
 Environment:
-  GITHUB_TOKEN          required for once/start; never written to disk
+  GITHUB_TOKEN          required for run/sync; never written to disk
   GATEFLOW_REPOSITORY   optional owner/name fallback for repository resolution`;
 function parseArgs(argv) {
   const positionals = [];
   let root = import_node_process.default.cwd();
   let config = "gateflow.config.yml";
+  let issue = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? "";
-    if (arg === "--root" || arg === "--config") {
+    if (arg === "--root" || arg === "--config" || arg === "--issue") {
       const value = argv[i + 1];
       if (value === void 0 || value.startsWith("--")) {
         return { ok: false, error: `flag ${arg} requires a value` };
       }
       if (arg === "--root") root = value;
-      else config = value;
+      else if (arg === "--config") config = value;
+      else {
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed) || parsed < 1) {
+          return { ok: false, error: `--issue must be a positive integer, got ${JSON.stringify(value)}` };
+        }
+        issue = parsed;
+      }
       i += 1;
       continue;
     }
@@ -19989,21 +18815,28 @@ function parseArgs(argv) {
       config = arg.slice("--config=".length);
       continue;
     }
+    if (arg.startsWith("--issue=")) {
+      const parsed = Number(arg.slice("--issue=".length));
+      if (!Number.isSafeInteger(parsed) || parsed < 1) {
+        return { ok: false, error: `--issue must be a positive integer, got ${JSON.stringify(arg.slice("--issue=".length))}` };
+      }
+      issue = parsed;
+      continue;
+    }
     if (arg.startsWith("--")) {
       return { ok: false, error: `unknown flag "${arg}"` };
     }
     positionals.push(arg);
   }
-  if (positionals[0] === "driver") positionals.shift();
   const command = positionals[0];
-  if (command !== "once" && command !== "start" && command !== "status" && command !== "retry") {
+  if (command !== "run" && command !== "sync" && command !== "status" && command !== "retry") {
     return { ok: false, error: `unknown command "${command ?? ""}"` };
   }
-  const dispatchId = positionals[1] ?? null;
-  if (command === "retry" && dispatchId === null) {
-    return { ok: false, error: "retry requires a <dispatchId> argument" };
+  const taskId = positionals[1] ?? null;
+  if (command === "retry" && taskId === null) {
+    return { ok: false, error: "retry requires a <task-id> argument" };
   }
-  return { ok: true, args: { command, dispatchId, root, config } };
+  return { ok: true, args: { command, taskId, issue, root, config } };
 }
 function createLogger3(paths) {
   const emit = (level, msg) => {
@@ -20014,8 +18847,8 @@ function createLogger3(paths) {
     } catch {
     }
     try {
-      (0, import_node_fs2.mkdirSync)(paths.logs, { recursive: true });
-      (0, import_node_fs2.appendFileSync)(`${paths.logs}/driver.log`, `${line}
+      (0, import_node_fs.mkdirSync)(paths.logs, { recursive: true });
+      (0, import_node_fs.appendFileSync)(`${paths.logs}/driver.log`, `${line}
 `, "utf8");
     } catch {
     }
@@ -20028,7 +18861,7 @@ function createLogger3(paths) {
 }
 function readGitRemoteUrl(projectRoot) {
   try {
-    const result = (0, import_node_child_process3.spawnSync)("git", ["remote", "get-url", "origin"], {
+    const result = (0, import_node_child_process.spawnSync)("git", ["remote", "get-url", "origin"], {
       cwd: projectRoot,
       encoding: "utf8"
     });
@@ -20039,13 +18872,12 @@ function readGitRemoteUrl(projectRoot) {
     return null;
   }
 }
-async function runOnline(args, mode) {
+async function onlineDeps(args) {
   const token = import_node_process.default.env.GITHUB_TOKEN;
   if (token === void 0 || token.length === 0) {
-    console.error(
-      `GITHUB_TOKEN is required for \`gateflow driver ${mode}\`. Export a token with repo access, e.g. \`export GITHUB_TOKEN=ghp_...\`.`
+    throw new ConfigError(
+      "GITHUB_TOKEN is required for `gateflow run` / `gateflow sync`. Export a token with repo access, e.g. `export GITHUB_TOKEN=ghp_...`."
     );
-    return 1;
   }
   const config = await loadConfig(args.root, args.config);
   const repository = resolveRepository(config, import_node_process.default.env, readGitRemoteUrl(args.root));
@@ -20059,22 +18891,30 @@ async function runOnline(args, mode) {
   const log = createLogger3(paths);
   const octokit = createOctokit(token);
   const client = createDriverGitHubClient(octokit, { owner, repo });
-  const deps = { client, config, projectRoot: args.root, log };
-  log.info(`gateflow driver ${mode}: repository=${repository} root=${args.root}`);
-  if (mode === "once") {
-    const result = await runOnce(deps);
-    const dispatched = result.dispatched.filter((o) => o.dispatched);
-    console.log(`dispatched: ${dispatched.length} of ${result.dispatched.length} intent(s)`);
-    for (const outcome of result.dispatched) {
-      console.log(`  ${outcome.dispatched ? "+" : "-"} ${outcome.dispatchId ?? "?"}: ${outcome.reason}`);
+  return { client, config, projectRoot: args.root, log };
+}
+async function runOnline(args, command) {
+  const deps = await onlineDeps(args);
+  deps.log.info(`gateflow ${command}: root=${args.root}`);
+  if (command === "run") {
+    const result2 = await runCommand(deps, { issue: args.issue ?? void 0 });
+    if (result2.taskId !== null) {
+      console.log(`task: ${result2.taskId} (${result2.mode ?? "?"}, issue #${result2.issueNumber ?? "?"})`);
     }
-    console.log(`synced: ${result.synced.length} outbox dispatch dir(s)`);
-    for (const outcome of result.synced) {
-      console.log(`  ${outcome.dispatchId}: ${outcome.action} \u2014 ${outcome.detail}`);
+    console.log(`result: ${result2.reason}`);
+    if (result2.prompt !== void 0) {
+      console.log("");
+      console.log("--- copy the prompt below into ChatGPT / ZCode ---");
+      console.log(result2.prompt);
+      console.log("--- end of prompt ---");
     }
     return 0;
   }
-  await startDriver(deps);
+  const result = await syncCommand(deps);
+  console.log(`synced: ${result.outcomes.length} task dir(s)`);
+  for (const outcome of result.outcomes) {
+    console.log(`  ${outcome.taskId}: ${outcome.action} \u2014 ${outcome.detail}`);
+  }
   return 0;
 }
 async function runStatus(args) {
@@ -20082,51 +18922,50 @@ async function runStatus(args) {
   const paths = resolveWorkspace(args.root, config.driver.workspaceDir);
   const current = await readCurrent(paths);
   if (current === null) {
-    console.log("current.json: (none)");
+    console.log("current task: (none \u2014 run `gateflow run`)");
   } else {
     console.log(
-      `current.json: ${current.dispatch_id} (role=${current.role}, issue=#${current.issue_number}, updated=${current.updated_at})`
+      `current task: ${current.task_id} (mode=${current.mode}, issue=#${current.issue_number}, updated=${current.updated_at})`
     );
   }
-  const receipts = await listReceipts(paths);
-  console.log(`receipts: ${receipts.length}`);
-  for (const receipt of receipts) {
+  const state = await readDriverState(paths);
+  const records = Object.values(state.tasks).sort((a, b) => a.task_id.localeCompare(b.task_id));
+  console.log(`driver state: ${records.length} task record(s)`);
+  for (const record of records) {
     console.log(
-      `  ${receipt.dispatch_id}  status=${receipt.status} attempts=${receipt.attempts} epoch=${receipt.workflow_epoch ?? "-"} published=${receipt.published_comment_id ?? "-"} activation=${receipt.activation ? receipt.activation.state : "-"} last_sync=${receipt.last_sync_at ?? "-"}${receipt.error !== void 0 && receipt.error !== null ? ` error=${receipt.error}` : ""}`
+      `  ${record.task_id}  status=${record.status} attempts=${record.attempts} issue=#${record.issue_number} epoch=${record.workflow_epoch}${record.published_comment_id !== void 0 ? ` published=#${record.published_comment_id}` : ""}${record.last_sync_at !== void 0 ? ` last_sync=${record.last_sync_at}` : ""}${record.error !== void 0 && record.error !== null ? ` error=${record.error}` : ""}`
     );
   }
-  const outboxIds = await listOutboxDispatchIds(paths);
-  console.log(`outbox dispatch dirs: ${outboxIds.length}`);
-  for (const id of outboxIds) {
-    console.log(`  ${id}`);
-  }
-  const submit = await inspectSubmit(paths);
-  if (submit.status === "empty") {
-    console.log("submit: (empty)");
-  } else if (submit.status === "invalid") {
-    console.log(`submit: INVALID \u2014 ${submit.error}`);
+  const pendingSync = records.filter((record) => record.status === "prepared" || record.status === "publishing");
+  if (pendingSync.length > 0) {
+    console.log("next step: work with your AI client, then run `gateflow sync`.");
+  } else if (current !== null) {
+    const record = state.tasks[current.task_id];
+    if (record !== void 0 && record.status === "published") {
+      console.log("next step: results published \u2014 wait for the Gate (or re-run sync to confirm acceptance).");
+    } else if (record !== void 0 && record.status === "accepted") {
+      console.log("next step: output accepted by the Gate \u2014 continue on GitHub (/approve or check ai:done).");
+    }
   } else {
-    console.log(`submit: ready \u2014 "${submit.request.title}" (${submit.request.kind}/${submit.request.maturity_hint})`);
+    console.log("next step: run `gateflow run` (or /ai-plan on GitHub to start a task).");
   }
   return 0;
 }
 async function runRetry(args) {
-  const dispatchId = args.dispatchId ?? "";
-  if (!DISPATCH_DIR_PATTERN.test(dispatchId)) {
-    console.error(
-      `invalid dispatch id: ${JSON.stringify(dispatchId)} (expected gf_r<id>_i<issue>_w<epoch-code>_<role>_<revision>)`
-    );
+  const taskId = args.taskId ?? "";
+  if (!TASK_ID_PATTERN.test(taskId)) {
+    console.error(`invalid task id: ${JSON.stringify(taskId)} (expected gf_r<id>_i<issue>_w<epoch>_<mode>_<rev>)`);
     return 1;
   }
   const config = await loadConfig(args.root, args.config);
   const paths = resolveWorkspace(args.root, config.driver.workspaceDir);
-  const cleared = await retryDispatch(paths, dispatchId);
+  const cleared = await clearTask(paths, taskId);
   if (cleared) {
     console.log(
-      `receipt cleared for ${dispatchId}. The dispatch will be re-dispatched on the next cycle if the issue state still warrants it.`
+      `driver state cleared for ${taskId}. The task will be re-prepared by \`gateflow run\` if the issue state still warrants it.`
     );
   } else {
-    console.log(`no receipt found for ${dispatchId} \u2014 nothing to clear.`);
+    console.log(`no driver-state record found for ${taskId} \u2014 nothing to clear.`);
   }
   return 0;
 }
@@ -20140,8 +18979,8 @@ ${USAGE}`);
   }
   try {
     switch (parsed.args.command) {
-      case "once":
-      case "start":
+      case "run":
+      case "sync":
         return await runOnline(parsed.args, parsed.args.command);
       case "status":
         return await runStatus(parsed.args);
@@ -20152,7 +18991,7 @@ ${USAGE}`);
     if (err instanceof ConfigError) {
       console.error(`config error: ${err.message}`);
     } else {
-      console.error(`gateflow driver failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`gateflow failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     return 1;
   }
@@ -20162,7 +19001,7 @@ var invokedDirectly = (() => {
   if (entry === void 0) return false;
   try {
     if (typeof __filename === "string") {
-      return nodePath9.resolve(entry) === nodePath9.resolve(__filename);
+      return nodePath5.resolve(entry) === nodePath5.resolve(__filename);
     }
     return (0, import_node_url.pathToFileURL)(entry).href === import_meta.url;
   } catch {

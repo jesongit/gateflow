@@ -3,21 +3,20 @@
  * Marker -> Validate -> Transition (docs/protocol.md sections 2, 3, 4, 7, 8).
  *
  * Hard rules enforced here:
- *  - Commands are a Trusted Human monopoly. Any of the five frozen commands
- *    from anyone else (including Trusted Agents) receives the 👎 reaction
- *    ("invalid owner command") and is otherwise ignored: no comment, no label
- *    write, no API read.
+ *  - Commands are a Trusted Human monopoly. Any of the four frozen commands
+ *    (/ai-plan, /approve, /change, /cancel) from anyone else (including
+ *    Trusted Agents) receives the 👎 reaction ("invalid owner command") and is
+ *    otherwise ignored: no comment, no label write, no API read.
  *  - A command that fails its state precondition is a logged no-op WITHOUT a
  *    reaction (Phase 1 feedback convention). A successfully accepted command
- *    (effect performed, or legal hand-off to the Consumer) gets the ✅
+ *    (effect performed, or legal hand-off to the planner) gets the ✅
  *    reaction. Reactions are best-effort feedback: never permission, never
  *    load-bearing; their failure is logged and ignored.
  *  - Markers are structural hints, never permission. A marker-triggered
  *    transition (T1 / T3 / T6) requires ALL of: a valid marker (unique,
  *    owning its line), a publisher in Trusted Human ∪ Trusted Agent, and a
  *    re-read state matching the transition's `from`. Invalid marker comments,
- *    markers from unknown actors, the append marker and the issue-body schema
- *    block never trigger anything.
+ *    markers from unknown actors and plain text never trigger anything.
  *  - An EDIT of the tracker marker comment while the issue sits in WORKING /
  *    BLOCKED is the T4 / T5 channel: the gate deterministically parses the
  *    tracker's `**Status:**` machine value (Blocked -> ai:blocked, In
@@ -27,13 +26,14 @@
  *  - SCHEMA 2 AUTHORIZATION (docs/plans/v1_hardening_decisions.md §4): the
  *    durable authorization facts are GATE-ISSUED RECORDS, never the human's
  *    command comments alone:
- *      /ai-plan (T0)        -> workflow_epoch record (reusing a Driver-
- *                              bootstrapped epoch when one already exists);
+ *      /ai-plan (T0)        -> workflow_epoch record (V1: the Gate is the
+ *                              only record issuer; re-running /ai-plan in
+ *                              PLANNING without a record re-issues it);
  *      /approve <plan-id>   -> approval record binding repo/issue/epoch/
  *                              plan-comment-id/plan-sha256/approver, written
  *                              AND verified BEFORE the T2 label swap;
- *      /choose, /change     -> feedback_accepted record (idempotent by
- *                              operation id) — the Consumer-revision source.
+ *      /change              -> feedback_accepted record (idempotent by
+ *                              operation id) — the planner-revision source.
  *    The Driver independently re-validates these records before dispatch and
  *    sync. A record write failure is a logged no-op WITHOUT a reaction and
  *    WITHOUT any label migration; a record write that succeeded while the
@@ -63,11 +63,10 @@ import {
   parseCommand,
   type ApproveArgs,
   type ChangeArgs,
-  type ChooseArgs,
   type ParsedCommand,
 } from './commands';
 import { validatePlanCommentForApproval } from './approvals';
-import { detectCommentMarker, inspectCommentMarkers, parseIssueSchemaBlock } from './markers';
+import { detectCommentMarker, inspectCommentMarkers } from './markers';
 import { isLegalTransition, readSnapshot, type WorkflowSnapshot } from './states';
 import { parseTrackerStatus } from './tracker';
 import { isTrustedAgent, isTrustedHuman, parseLoginList } from './permissions';
@@ -117,12 +116,6 @@ export interface GateInput {
   /** Present for issue_comment events. */
   commentId: number | undefined;
   commentBody: string | undefined;
-  /**
-   * Issue body when the event carries one (issues.* events). Only parsed for
-   * the schema metadata block (observability); optional because comment
-   * events and simplified callers legitimately omit it.
-   */
-  issueBody?: string | undefined;
   /** Raw `trusted-humans` action input (comma-separated allowlist). */
   trustedHumansInput: string;
   /** Raw `trusted-agents` action input (V0 default: empty). */
@@ -189,27 +182,12 @@ async function handleIssueEvent(
 ): Promise<void> {
   switch (input.eventAction) {
     case 'opened': {
-      // Observability only: the Producer schema block (kind / maturity_hint)
-      // is metadata for the Consumer, NEVER a transition or permission input.
-      const schema = parseIssueSchemaBlock(input.issueBody);
-      if (schema.status === 'valid') {
-        log.info(
-          `issues.opened on #${input.issueNumber}: no auto-labeling. Producer schema block: ` +
-            `kind=${schema.metadata.kind}, maturity_hint=${schema.metadata.maturityHint} ` +
-            '(metadata only, no transition). Producer-created issues already carry ' +
-            'ai:planning (T0); external issues stay plain until a Trusted Human runs /ai-plan.',
-        );
-      } else if (schema.status === 'invalid') {
-        log.warning(
-          `issues.opened on #${input.issueNumber}: issue body schema block invalid ` +
-            `(${schema.reason}); treated as a plain issue. No auto-labeling, no transition.`,
-        );
-      } else {
-        log.info(
-          `issues.opened on #${input.issueNumber}: no auto-labeling. No schema block. ` +
-            'External issues stay plain until a Trusted Human runs /ai-plan.',
-        );
-      }
+      // No auto-labeling: work enters the workflow exclusively via a Trusted
+      // Human running /ai-plan (V1: there is no Producer lifecycle).
+      log.info(
+        `issues.opened on #${input.issueNumber}: no auto-labeling. ` +
+          'The issue stays plain until a Trusted Human runs /ai-plan.',
+      );
       return;
     }
     case 'labeled':
@@ -299,9 +277,6 @@ async function handleCommand(
     case COMMANDS.approve:
       accepted = await applyApprove(ref, snapshot, parsed.args, input, client, log);
       break;
-    case COMMANDS.choose:
-      accepted = await applyChoose(ref, snapshot, parsed.args, input, client, log);
-      break;
     case COMMANDS.change:
       accepted = await applyChange(ref, snapshot, parsed.args, input, client, log);
       break;
@@ -341,15 +316,6 @@ async function handleMarkerComment(
     return;
   }
   const marker = inspection.marker;
-
-  // Producer APPEND: bookkeeping only, never a transition.
-  if (marker === MARKERS.append) {
-    log.info(
-      `append marker on #${ref.issueNumber} by "${input.actor}": discussion appended, ` +
-        'recorded only, no transition.',
-    );
-    return;
-  }
 
   // Publisher must be Trusted Human ∪ Trusted Agent (protocol 4.3). Everyone
   // else's markers are plain text: markers are never permission. Trusted
@@ -447,11 +413,14 @@ async function handleMarkerComment(
  * T0: outside -> PLANNING by adding ai:planning, then persisting the round's
  * workflow_epoch record (schema 2, docs/plans/v1_hardening_decisions.md
  * §4.1). The epoch is fresh CSPRNG randomness — never derived from
- * timestamps, comment counts or labels. This path only fires for genuinely
- * NEW rounds (the issue was outside the workflow), so any existing epoch
- * record belongs to an earlier round and is never reused; Producer-submitted
- * issues get their epoch from the Driver's bootstrap instead (the issue then
- * carries ai:planning from creation and never reaches T0).
+ * timestamps, comment counts or labels.
+ *
+ * SELF-HEAL (V1: the Gate is the ONLY record issuer): a T0 whose label was
+ * applied but whose epoch-record write failed would otherwise leave the issue
+ * stuck in PLANNING with no epoch (and therefore no Driver intents) forever.
+ * Re-running /ai-plan in that exact situation — PLANNING, zero epoch records,
+ * no unparsable records — re-issues the epoch record and heals the round.
+ * Any other in-workflow state is still rejected.
  */
 async function applyAiPlan(
   ref: IssueRef,
@@ -467,12 +436,15 @@ async function applyAiPlan(
     );
     return false;
   }
-  if (snapshot.status !== 'outside') {
-    log.warning(
-      `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow ` +
-        `(label ${snapshot.label}); no transition.`,
-    );
-    return false;
+  if (snapshot.status === 'in-workflow') {
+    if (snapshot.state !== STATES.planning) {
+      log.warning(
+        `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow ` +
+          `(label ${snapshot.label}); no transition.`,
+      );
+      return false;
+    }
+    return await healPlanningEpoch(ref, input, client, log);
   }
   if (!isLegalTransition(null, STATES.planning)) {
     log.warning('Frozen transition table rejects T0; no transition.');
@@ -482,9 +454,77 @@ async function applyAiPlan(
   log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
 
   // Schema 2: persist the new round's epoch. The label is already applied, so
-  // a failed record write is recoverable: the Driver bootstraps any planning
-  // issue that lacks an epoch record (docs/plans/v1_hardening_decisions.md
-  // §4.1). The command is still "accepted" (T0 happened).
+  // a failed record write is recoverable: re-running /ai-plan heals a
+  // PLANNING issue without an epoch record (the self-heal path above).
+  const published = await issueEpochRecord(ref, input, client, log);
+  if (!published.ok) {
+    log.warning(
+      `Epoch record publish failed after T0 on #${ref.issueNumber}; re-run /ai-plan to heal. ` +
+        `Reason: ${published.reason}`,
+    );
+  }
+  return true;
+}
+
+/**
+ * The PLANNING-state recovery path of /ai-plan. Fail closed on unparsable
+ * epoch records (tampering); heal ONLY a genuinely record-less round.
+ */
+async function healPlanningEpoch(
+  ref: IssueRef,
+  input: GateInput,
+  client: GitHubClient,
+  log: GateLogger,
+): Promise<boolean> {
+  let comments: Array<{ id: number; body: string }>;
+  try {
+    comments = await client.listComments(ref);
+  } catch (err) {
+    log.warning(
+      `/ai-plan self-heal on #${ref.issueNumber}: cannot list comments: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    return false;
+  }
+  const { records, invalid } = parseRecords('workflow_epoch', comments);
+  if (invalid.length > 0) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: unparsable workflow_epoch record(s) present ` +
+        `(fail closed): ${invalid.map((e) => `#${e.commentId} (${e.reason})`).join(', ')}.`,
+    );
+    return false;
+  }
+  if (records.length > 0) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow (PLANNING, epoch ` +
+        `${records[records.length - 1]?.record.workflow_epoch}); no transition.`,
+    );
+    return false;
+  }
+  const published = await issueEpochRecord(ref, input, client, log);
+  if (!published.ok) {
+    log.warning(
+      `/ai-plan self-heal on #${ref.issueNumber} failed (${published.reason}); ` + 'no reaction.',
+    );
+    return false;
+  }
+  log.info(
+    `/ai-plan self-heal on #${ref.issueNumber}: re-issued the missing epoch record ` +
+      `#${published.commentId} for epoch ${published.epoch}; no state migration (T0 already done).`,
+  );
+  return true;
+}
+
+/**
+ * Mint + publish a fresh workflow_epoch record. Never throws: infrastructure
+ * failures come back as { ok: false } so the caller can log a no-op.
+ */
+async function issueEpochRecord(
+  ref: IssueRef,
+  input: GateInput,
+  client: GitHubClient,
+  log: GateLogger,
+): Promise<{ ok: true; commentId: number; epoch: string } | { ok: false; reason: string }> {
   try {
     const identity = await client.getAuthenticatedUser();
     const epoch = newWorkflowEpoch();
@@ -499,24 +539,14 @@ async function applyAiPlan(
       operation_id: epochOperationId(input.repositoryId, ref.issueNumber, epoch),
     };
     const published = await publishRecord(client, ref, record, log);
-    if (published.ok) {
-      log.info(
-        `Epoch ${epoch} persisted as record comment #${published.commentId} ` +
-          `(issued by ${identity.login}).`,
-      );
-    } else {
-      log.warning(
-        `Epoch record publish failed after T0 on #${ref.issueNumber}; the Driver bootstrap ` +
-          `will reconcile a planning issue without an epoch record. Reason: ${published.reason}`,
-      );
-    }
+    if (!published.ok) return published;
+    return { ok: true, commentId: published.commentId, epoch };
   } catch (err) {
-    log.warning(
-      `Epoch bootstrap failed after T0 on #${ref.issueNumber} (Driver will reconcile): ` +
-        (err instanceof Error ? err.message : String(err)),
-    );
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+    };
   }
-  return true;
 }
 
 /**
@@ -793,21 +823,21 @@ async function applyApprove(
 }
 
 /**
- * Schema 2 acceptance channel shared by /choose and /change: after the frozen
- * format + REVIEW + identity preconditions pass, the gate persists a
- * feedback_accepted record (docs/plans/v1_hardening_decisions.md §4.3).
- * These records — not the raw comment count — are what Consumer revisions
- * are built from: rejected, duplicated, foreign-epoch and plain-text comments
- * never produce one. Idempotent by operation id; a publish failure is a
- * logged no-op WITHOUT a reaction (the acceptance did not happen).
+ * Schema 2 acceptance channel for /change: after the frozen format + REVIEW +
+ * identity preconditions pass, the gate persists a feedback_accepted record
+ * (docs/plans/v1_hardening_decisions.md §4.3). These records — not the raw
+ * comment count — are what planner revisions are built from: rejected,
+ * duplicated, foreign-epoch and plain-text comments never produce one.
+ * Idempotent by operation id; a publish failure is a logged no-op WITHOUT a
+ * reaction (the acceptance did not happen).
  */
 async function acceptFeedbackEvent(
   ref: IssueRef,
-  feedbackKind: 'choose' | 'change',
   input: GateInput,
   client: GitHubClient,
   log: GateLogger,
 ): Promise<boolean> {
+  const feedbackKind = 'change' as const;
   if (input.commentId === undefined) {
     log.warning(
       `/${feedbackKind} on #${ref.issueNumber}: event carries no comment id; the accepted ` +
@@ -872,49 +902,11 @@ async function acceptFeedbackEvent(
 }
 
 /**
- * /choose: a Trusted Human decision on an open question of the current plan.
- * The gate validates the strict format (done in commands.ts) and the REVIEW
- * precondition, persists the accepted-event record and forwards the arguments
- * verbatim to the Consumer as untrusted data. NO state migration (protocol
- * 3.2 / 3.3).
- */
-async function applyChoose(
-  ref: IssueRef,
-  snapshot: WorkflowSnapshot,
-  args: ChooseArgs,
-  input: GateInput,
-  client: GitHubClient,
-  log: GateLogger,
-): Promise<boolean> {
-  if (snapshot.status === 'ambiguous') {
-    log.warning(
-      `Invalid /choose on #${ref.issueNumber}: issue carries multiple ai:* labels ` +
-        `[${snapshot.labels.join(', ')}] (protocol violation); ignored.`,
-    );
-    return false;
-  }
-  if (snapshot.status !== 'in-workflow' || snapshot.state !== STATES.review) {
-    log.warning(
-      `Invalid /choose on #${ref.issueNumber}: /choose requires ${STATES.review} ` +
-        `(${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ` +
-        'ignored, not forwarded to the Consumer.',
-    );
-    return false;
-  }
-  const accepted = await acceptFeedbackEvent(ref, 'choose', input, client, log);
-  if (accepted) {
-    log.info(
-      `/choose on #${ref.issueNumber} accepted (REVIEW): question "${args.questionId}", ` +
-        `choice "${args.choice}" forwarded to the Consumer as untrusted data; no state migration.`,
-    );
-  }
-  return accepted;
-}
-
-/**
- * /change: a Trusted Human change request against the current plan. Same
- * policy as /choose: format + REVIEW precondition, accepted-event record,
- * free text forwarded verbatim as untrusted data, NO state migration.
+ * /change: a Trusted Human change request (or free-form decision) against the
+ * current plan. V1 merges /choose into this single feedback channel. The gate
+ * validates the format + REVIEW precondition, persists the accepted-event
+ * record and forwards the text verbatim to the planner as untrusted data.
+ * NO state migration (protocol 3.2 / 3.3).
  */
 async function applyChange(
   ref: IssueRef,
@@ -935,15 +927,15 @@ async function applyChange(
     log.warning(
       `Invalid /change on #${ref.issueNumber}: /change requires ${STATES.review} ` +
         `(${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ` +
-        'ignored, not forwarded to the Consumer.',
+        'ignored, not forwarded to the planner.',
     );
     return false;
   }
-  const accepted = await acceptFeedbackEvent(ref, 'change', input, client, log);
+  const accepted = await acceptFeedbackEvent(ref, input, client, log);
   if (accepted) {
     log.info(
       `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the ` +
-        `Consumer as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`,
+        `planner as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`,
     );
   }
   return accepted;

@@ -1,23 +1,23 @@
 /**
- * Driver-side GitHub access layer (docs/architecture-v1.md section 5,
- * `src/github/` â€” deliberately independent of the gate's src/gate/github.ts).
+ * Driver-side GitHub access layer (`src/github/` ¡ª deliberately independent
+ * of the gate's src/gate/github.ts).
  *
- * READ-MOSTLY BY DESIGN (docs/architecture-v1.md sections 2 and 6): the Gate
- * â€” a GitHub Action â€” owns ALL state transitions and every `ai:*` label
- * write. The local Driver therefore intentionally has NO label-write and NO
- * issue-edit methods here; it may only
- *   - read canonical state (repository identity, issue, comments), and
+ * READ-ONLY + COMMENTS BY DESIGN: the Gate ¡ª a GitHub Action ¡ª owns ALL state
+ * transitions and every `ai:*` label write. The local Driver therefore has NO
+ * label-write, NO issue create/edit/close and NO comment-deletion methods; it
+ * may only
+ *   - read canonical state (repository identity, issues, comments), and
  *   - publish protocol comments (plan / execution tracker / completion
  *     report) and edit its OWN tracker comment body.
  * Publishing logic itself lives in ./issue-sync.ts; this module is the raw
  * seam the rest of the Driver codes against so no business logic scatters
  * raw API calls.
  *
- * Like V0's gate/github.ts, the Octokit instance is typed STRUCTURALLY
- * (`OctokitRest`): only the endpoints used below are declared, so unit tests
- * pass plain fakes and the production code stays decoupled from octokit
- * internals. `createOctokit` is the only place that touches the real
- * `octokit` package; its result is structurally compatible with the seam.
+ * The Octokit instance is typed STRUCTURALLY (`OctokitRest`): only the
+ * endpoints used below are declared, so unit tests pass plain fakes and the
+ * production code stays decoupled from octokit internals. `createOctokit` is
+ * the only place that touches the real `octokit` package; its result is
+ * structurally compatible with the seam.
  */
 import { Octokit } from 'octokit';
 
@@ -28,23 +28,17 @@ export interface IssueRef {
   issueNumber: number;
 }
 
-/** Repository identity the Driver needs (dispatch_id embeds the `id`). */
+/** Repository identity the Driver needs (task ids embed the `id`). */
 export interface RepositoryInfo {
   owner: string;
   name: string;
   id: number;
   /**
    * GitHub owner TYPE as verified via the API ("User", "Organization", ...).
-   * The Organization fail-closed rule (hardening Â§8) reads this field â€” the
-   * configured slug is never used to decide identity semantics.
+   * The Organization fail-closed rule reads this field ¡ª the configured slug
+   * is never used to decide identity semantics.
    */
   ownerType: string;
-}
-
-/** The authenticated identity behind the Driver's token (the Driver identity). */
-export interface DriverIdentity {
-  id: number;
-  login: string;
 }
 
 /** Issue projection freshly read from canonical state (GitHub). */
@@ -66,25 +60,15 @@ export interface CommentDetail {
   updatedAt: string;
 }
 
-/** Reaction contents the Driver is allowed to use. */
-export type DriverReactionContent = '+1' | '-1' | 'eyes';
-
 /**
  * The only GitHub operations the Driver may perform. Note what is MISSING on
  * purpose: no label writes, no issue create/edit/close, no comment deletion,
- * no state mutation of any kind â€” those belong exclusively to the Gate.
- * (Single exception: `createIssue` below exists for Producer submit issue
- * INITIALIZATION, docs/workspace-protocol.md Â§9 â€” see its doc comment.)
+ * no reactions, no state mutation of any kind ¡ª those belong exclusively to
+ * the Gate.
  */
 export interface DriverGitHubClient {
   /** Fetches repository identity (owner login, name, database id, owner type). */
   getRepository(): Promise<RepositoryInfo>;
-  /**
-   * The authenticated user behind the Driver's token. Used to record
-   * `issued_by` on Driver-bootstrapped epoch records and to keep the Driver
-   * identity out of the Gate-record trust set (schema 2 hardening).
-   */
-  getAuthenticatedUser(): Promise<DriverIdentity>;
   /** Fetches one issue; null when it does not exist (404). */
   getIssue(ref: IssueRef): Promise<IssueDetail | null>;
   /** Lists ALL issue comments (paginated internally), ascending by id. */
@@ -93,36 +77,17 @@ export interface DriverGitHubClient {
   addIssueComment(ref: IssueRef, body: string): Promise<{ id: number }>;
   /** Edits the body of one existing issue comment (tracker updates). */
   updateIssueComment(ref: IssueRef, commentId: number, body: string): Promise<void>;
-  /** Adds a reaction to an issue comment (Driver feedback channel). */
-  addReaction(ref: IssueRef, commentId: number, content: DriverReactionContent): Promise<void>;
   /**
-   * Lists issues of the repository (paginated internally), ascending by
-   * issue number. `state` defaults to 'open' (discovery); submit
-   * reconciliation searches with 'all' to find created issues regardless of
-   * their current state.
+   * Lists the repository's OPEN issues (paginated internally), ascending by
+   * issue number. This is the discovery input.
    */
-  listIssues(ref: { owner: string; repo: string; state?: 'open' | 'closed' | 'all' }): Promise<IssueDetail[]>;
-  /**
-   * Creates a new issue. The ONE deliberate exception to "the Driver never
-   * creates issues" (docs/workspace-protocol.md Â§9, Producer submit): a
-   * valid `.gateflow/submit/` request becomes the seed issue, equivalent to
-   * V0's producer-created issue (the Gate's T0 CREATE path). The labels
-   * passed here (always `ai:planning`) are issue INITIALIZATION at creation
-   * time â€” the only label write the Driver ever performs; every subsequent
-   * label/state transition remains Gate-exclusive.
-   */
-  createIssue(
-    ref: { owner: string; repo: string },
-    input: { title: string; body: string; labels: string[] },
-  ): Promise<{ number: number }>;
+  listIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]>;
 }
 
 /**
- * Structural subset of Octokit used by the adapter below â€” ONLY the endpoints
- * the Driver is allowed to touch (six read/comment endpoints, plus
- * `rest.issues.create` for Producer submit initialization since V1). Kept in
- * sync with nothing: extra fields on the real Octokit are ignored, missing
- * methods on test fakes are never called.
+ * Structural subset of Octokit used by the adapter below ¡ª ONLY the endpoints
+ * the Driver is allowed to touch. Extra fields on the real Octokit are
+ * ignored, missing methods on test fakes are never called.
  */
 export interface OctokitRest {
   rest: {
@@ -137,9 +102,6 @@ export interface OctokitRest {
           id?: number;
         };
       }>;
-    };
-    users: {
-      getAuthenticated(params: {}): Promise<{ data: { id?: number; login?: string } }>;
     };
     issues: {
       get(params: {
@@ -174,7 +136,7 @@ export interface OctokitRest {
       list(params: {
         owner: string;
         repo: string;
-        state: 'open' | 'closed' | 'all';
+        state: 'open';
         per_page: number;
         page: number;
       }): Promise<{
@@ -198,23 +160,6 @@ export interface OctokitRest {
         repo: string;
         comment_id: number;
         body: string;
-      }): Promise<unknown>;
-      // Added when the Driver interface grew createIssue (Producer submit,
-      // docs/workspace-protocol.md Â§9); no existing endpoint changed.
-      create(params: {
-        owner: string;
-        repo: string;
-        title: string;
-        body: string;
-        labels: string[];
-      }): Promise<{ data: { number?: number } }>;
-    };
-    reactions: {
-      createForIssueComment(params: {
-        owner: string;
-        repo: string;
-        comment_id: number;
-        content: DriverReactionContent;
       }): Promise<unknown>;
     };
   };
@@ -290,11 +235,6 @@ class OctokitDriverClient implements DriverGitHubClient {
     };
   }
 
-  async getAuthenticatedUser(): Promise<DriverIdentity> {
-    const { data } = await this.octokit.rest.users.getAuthenticated({});
-    return { id: data.id ?? 0, login: data.login ?? 'unknown' };
-  }
-
   async getIssue(ref: IssueRef): Promise<IssueDetail | null> {
     try {
       const { data } = await this.octokit.rest.issues.get({
@@ -368,25 +308,13 @@ class OctokitDriverClient implements DriverGitHubClient {
     });
   }
 
-  async addReaction(ref: IssueRef, commentId: number, content: DriverReactionContent): Promise<void> {
-    await this.octokit.rest.reactions.createForIssueComment({
-      owner: ref.owner,
-      repo: ref.repo,
-      comment_id: commentId,
-      content,
-    });
-  }
-
-  async listIssues(
-    ref: { owner: string; repo: string; state?: 'open' | 'closed' | 'all' },
-  ): Promise<IssueDetail[]> {
-    const state = ref.state ?? 'open';
+  async listIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
     const issues: IssueDetail[] = [];
     for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
       const { data } = await this.octokit.rest.issues.list({
         owner: ref.owner,
         repo: ref.repo,
-        state,
+        state: 'open',
         per_page: ISSUES_PER_PAGE,
         page,
       });
@@ -408,28 +336,6 @@ class OctokitDriverClient implements DriverGitHubClient {
     }
     issues.sort((a, b) => a.number - b.number);
     return issues;
-  }
-
-  /**
-   * Backward-compatible alias for `listIssues({ state: 'open' })` â€” kept as
-   * the named discovery entry point used across the Driver.
-   */
-  async listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
-    return this.listIssues({ ...ref, state: 'open' });
-  }
-
-  async createIssue(
-    ref: { owner: string; repo: string },
-    input: { title: string; body: string; labels: string[] },
-  ): Promise<{ number: number }> {
-    const { data } = await this.octokit.rest.issues.create({
-      owner: ref.owner,
-      repo: ref.repo,
-      title: input.title,
-      body: input.body,
-      labels: [...input.labels],
-    });
-    return { number: data.number ?? 0 };
   }
 }
 

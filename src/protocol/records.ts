@@ -77,7 +77,7 @@ export interface ApprovalRecord {
   operation_id: string;
 }
 
-/** feedback_accepted record: the Gate accepted one /choose or /change. */
+/** feedback_accepted record: the Gate accepted one /change. */
 export interface FeedbackAcceptedRecord {
   schema: typeof RECORD_SCHEMA_VERSION;
   kind: 'feedback_accepted';
@@ -86,7 +86,7 @@ export interface FeedbackAcceptedRecord {
   workflow_epoch: string;
   event_id: string;
   feedback_comment_id: number;
-  feedback_kind: 'choose' | 'change';
+  feedback_kind: 'change';
   gate_login: string;
   gate_user_id: number;
   created_at: string;
@@ -140,11 +140,6 @@ export function feedbackOperationId(
   feedbackCommentId: number,
 ): string {
   return `feedback:${repositoryId}:${issueNumber}:${epoch}:${feedbackCommentId}`;
-}
-
-/** Producer submit source-id operation (`submit:<submission_id>`). */
-export function submitOperationId(submissionId: string): string {
-  return `submit:${submissionId}`;
 }
 
 /** Build the record comment body (marker line, blank, fenced JSON). */
@@ -402,8 +397,8 @@ function validateFeedbackRecord(commentId: number, raw: Obj): RecordParseResult 
   const eventId = str(raw, 'event_id', /^fe\d+$/, errors);
   const feedbackCommentId = num(raw, 'feedback_comment_id', errors);
   const feedbackKind = raw['feedback_kind'];
-  if (feedbackKind !== 'choose' && feedbackKind !== 'change') {
-    errors.push(`feedback_kind: expected "choose"|"change", got ${JSON.stringify(feedbackKind)}`);
+  if (feedbackKind !== 'change') {
+    errors.push(`feedback_kind: expected "change", got ${JSON.stringify(feedbackKind)}`);
   }
   const gateLogin = str(raw, 'gate_login', LOGIN, errors);
   const gateUserId = num(raw, 'gate_user_id', errors);
@@ -413,7 +408,7 @@ function validateFeedbackRecord(commentId: number, raw: Obj): RecordParseResult 
     errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null ||
     eventId === null || feedbackCommentId === null || gateLogin === null ||
     gateUserId === null || createdAt === null || operationId === null ||
-    (feedbackKind !== 'choose' && feedbackKind !== 'change')
+    feedbackKind !== 'change'
   ) {
     return { ok: false, reason: `invalid feedback record: ${errors.join('; ')}` };
   }
@@ -489,27 +484,6 @@ export function approvalRecordsConflict(
     }
   }
   return { conflict: false, reason: null };
-}
-
-/**
- * The `gateflow:source-id` HTML comment embedded in Producer-submitted issue
- * bodies (`submit:<submission_id>` Operation ID, docs/plans/
- * v1_hardening_decisions.md §7). Reconciliation finds a created issue by this
- * anchor instead of by title.
- */
-export function sourceIdComment(operationId: string): string {
-  return `<!-- gateflow:source-id: ${operationId} -->`;
-}
-
-const SOURCE_ID_PATTERN = /<!--\s*gateflow:source-id:\s*(submit:sub_[0-9a-z]{16})\s*-->/;
-
-/**
- * Extracts the source-id Operation ID from an issue body; null when absent
- * or when the anchor names a foreign operation kind (only `submit:` anchors
- * identify Producer submissions).
- */
-export function findSourceIdInBody(body: string): string | null {
-  return SOURCE_ID_PATTERN.exec(body)?.[1] ?? null;
 }
 
 /**

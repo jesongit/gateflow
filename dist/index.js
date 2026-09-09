@@ -24291,7 +24291,6 @@ function getOctokit(token, options, ...additionalPlugins) {
 }
 
 // src/gate/protocol.ts
-var SCHEMA_VERSION = 2;
 var LABELS = {
   planning: "ai:planning",
   review: "ai:review",
@@ -24322,7 +24321,7 @@ var STATE_TO_LABEL = Object.fromEntries(
 );
 var TRANSITIONS = [
   { from: null, to: STATES.planning },
-  // T0: /ai-plan by Trusted Human, or Producer CREATE
+  // T0: /ai-plan by Trusted Human
   { from: STATES.planning, to: STATES.review },
   // T1: plan marker comment
   { from: STATES.review, to: STATES.ready },
@@ -24339,25 +24338,16 @@ var TRANSITIONS = [
 var COMMANDS = {
   aiPlan: "/ai-plan",
   approve: "/approve",
-  choose: "/choose",
   change: "/change",
   cancel: "/cancel"
 };
 var ALL_COMMANDS = Object.values(COMMANDS);
 var MARKERS = {
-  append: "<!-- ai-workflow:append:v1 -->",
   plan: "<!-- ai-workflow:plan:v1 -->",
   executionTracker: "<!-- ai-workflow:execution-tracker:v1 -->",
   completionReport: "<!-- ai-workflow:completion-report:v1 -->"
 };
 var ALL_MARKERS = Object.values(MARKERS);
-var KINDS = ["feature", "bug", "refactor", "docs", "chore"];
-var MATURITY_HINTS = [
-  "requirement",
-  "direction",
-  "solution",
-  "execution_plan"
-];
 var LABEL_COLORS = {
   [LABELS.planning]: "d4c5f9",
   [LABELS.review]: "fef2c0",
@@ -24373,7 +24363,6 @@ var EXACT_COMMANDS = /* @__PURE__ */ new Set([
   COMMANDS.cancel
 ]);
 var APPROVE_PATTERN = /^\/approve (\d+)$/;
-var CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
 var CHANGE_PATTERN = /^\/change (.+)$/;
 function parseCommand(body) {
   if (body === null || body === void 0) {
@@ -24388,13 +24377,6 @@ function parseCommand(body) {
     return {
       command: COMMANDS.approve,
       args: { planCommentId: Number(approve[1] ?? "0") }
-    };
-  }
-  const choose = CHOOSE_PATTERN.exec(trimmed);
-  if (choose !== null) {
-    return {
-      command: COMMANDS.choose,
-      args: { questionId: choose[1] ?? "", choice: choose[2] ?? "" }
     };
   }
   const change = CHANGE_PATTERN.exec(trimmed);
@@ -24449,77 +24431,6 @@ function inspectCommentMarkers(body) {
     return { kind: "invalid", reason: "marker-not-line-exclusive" };
   }
   return { kind: "none" };
-}
-var SCHEMA_OPENER = "<!-- ai-workflow";
-var SCHEMA_CLOSER = "-->";
-var SCHEMA_KEYS = /* @__PURE__ */ new Set(["schema", "source", "kind", "maturity_hint"]);
-function parseIssueSchemaBlock(body) {
-  if (!body) {
-    return { status: "absent" };
-  }
-  const lines = body.split(/\r?\n/).map((line) => line.trim());
-  const openIdx = lines.indexOf(SCHEMA_OPENER);
-  if (openIdx === -1) {
-    return { status: "absent" };
-  }
-  let closeIdx = -1;
-  for (let i = openIdx + 1; i < lines.length; i += 1) {
-    if (lines[i] === SCHEMA_CLOSER) {
-      closeIdx = i;
-      break;
-    }
-  }
-  if (closeIdx === -1) {
-    return { status: "invalid", reason: 'schema block is not terminated by "-->"' };
-  }
-  const fields = /* @__PURE__ */ new Map();
-  for (let i = openIdx + 1; i < closeIdx; i += 1) {
-    const line = lines[i] ?? "";
-    if (line.length === 0) {
-      continue;
-    }
-    const match = /^([A-Za-z_]+):\s*(.*)$/.exec(line);
-    if (match === null) {
-      return { status: "invalid", reason: `unparseable schema line "${line}"` };
-    }
-    const key = match[1] ?? "";
-    const value = (match[2] ?? "").trim();
-    if (!SCHEMA_KEYS.has(key)) {
-      return { status: "invalid", reason: `unknown schema key "${key}"` };
-    }
-    if (fields.has(key)) {
-      return { status: "invalid", reason: `duplicate schema key "${key}"` };
-    }
-    fields.set(key, value);
-  }
-  const schema = fields.get("schema");
-  const source = fields.get("source");
-  const kind = fields.get("kind");
-  const maturityHint = fields.get("maturity_hint");
-  if (schema === void 0 || source === void 0 || kind === void 0 || maturityHint === void 0) {
-    return { status: "invalid", reason: "missing required schema key(s)" };
-  }
-  if (schema !== String(SCHEMA_VERSION)) {
-    return { status: "invalid", reason: `unsupported schema version "${schema}"` };
-  }
-  if (source !== "producer") {
-    return { status: "invalid", reason: `unsupported source "${source}"` };
-  }
-  if (!KINDS.includes(kind)) {
-    return { status: "invalid", reason: `unknown kind "${kind}"` };
-  }
-  if (!MATURITY_HINTS.includes(maturityHint)) {
-    return { status: "invalid", reason: `unknown maturity_hint "${maturityHint}"` };
-  }
-  return {
-    status: "valid",
-    metadata: {
-      schema: SCHEMA_VERSION,
-      source: "producer",
-      kind,
-      maturityHint
-    }
-  };
 }
 
 // src/gate/approvals.ts
@@ -24944,14 +24855,14 @@ function validateFeedbackRecord(commentId, raw) {
   const eventId = str(raw, "event_id", /^fe\d+$/, errors);
   const feedbackCommentId = num(raw, "feedback_comment_id", errors);
   const feedbackKind = raw["feedback_kind"];
-  if (feedbackKind !== "choose" && feedbackKind !== "change") {
-    errors.push(`feedback_kind: expected "choose"|"change", got ${JSON.stringify(feedbackKind)}`);
+  if (feedbackKind !== "change") {
+    errors.push(`feedback_kind: expected "change", got ${JSON.stringify(feedbackKind)}`);
   }
   const gateLogin = str(raw, "gate_login", LOGIN, errors);
   const gateUserId = num(raw, "gate_user_id", errors);
   const createdAt = str(raw, "created_at", ISO_DATE, errors);
   const operationId = str(raw, "operation_id", OPERATION_ID, errors);
-  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || eventId === null || feedbackCommentId === null || gateLogin === null || gateUserId === null || createdAt === null || operationId === null || feedbackKind !== "choose" && feedbackKind !== "change") {
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || eventId === null || feedbackCommentId === null || gateLogin === null || gateUserId === null || createdAt === null || operationId === null || feedbackKind !== "change") {
     return { ok: false, reason: `invalid feedback record: ${errors.join("; ")}` };
   }
   if (eventId !== `fe${feedbackCommentId}`) {
@@ -25074,20 +24985,9 @@ async function runGate(input, client, log) {
 async function handleIssueEvent(input, client, log) {
   switch (input.eventAction) {
     case "opened": {
-      const schema = parseIssueSchemaBlock(input.issueBody);
-      if (schema.status === "valid") {
-        log.info(
-          `issues.opened on #${input.issueNumber}: no auto-labeling. Producer schema block: kind=${schema.metadata.kind}, maturity_hint=${schema.metadata.maturityHint} (metadata only, no transition). Producer-created issues already carry ai:planning (T0); external issues stay plain until a Trusted Human runs /ai-plan.`
-        );
-      } else if (schema.status === "invalid") {
-        log.warning(
-          `issues.opened on #${input.issueNumber}: issue body schema block invalid (${schema.reason}); treated as a plain issue. No auto-labeling, no transition.`
-        );
-      } else {
-        log.info(
-          `issues.opened on #${input.issueNumber}: no auto-labeling. No schema block. External issues stay plain until a Trusted Human runs /ai-plan.`
-        );
-      }
+      log.info(
+        `issues.opened on #${input.issueNumber}: no auto-labeling. The issue stays plain until a Trusted Human runs /ai-plan.`
+      );
       return;
     }
     case "labeled":
@@ -25145,9 +25045,6 @@ async function handleCommand(parsed, input, ref, client, log) {
     case COMMANDS.approve:
       accepted = await applyApprove(ref, snapshot, parsed.args, input, client, log);
       break;
-    case COMMANDS.choose:
-      accepted = await applyChoose(ref, snapshot, parsed.args, input, client, log);
-      break;
     case COMMANDS.change:
       accepted = await applyChange(ref, snapshot, parsed.args, input, client, log);
       break;
@@ -25174,12 +25071,6 @@ async function handleMarkerComment(input, ref, client, log) {
     return;
   }
   const marker = inspection.marker;
-  if (marker === MARKERS.append) {
-    log.info(
-      `append marker on #${ref.issueNumber} by "${input.actor}": discussion appended, recorded only, no transition.`
-    );
-    return;
-  }
   const isHuman = isTrustedHuman(input.actor, input.repoOwner, input.trustedHumansInput);
   const isAgent = isTrustedAgent(input.actor, input.trustedAgentsInput);
   if (!isHuman && !isAgent) {
@@ -25263,11 +25154,14 @@ async function applyAiPlan(ref, snapshot, input, client, log) {
     );
     return false;
   }
-  if (snapshot.status !== "outside") {
-    log.warning(
-      `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow (label ${snapshot.label}); no transition.`
-    );
-    return false;
+  if (snapshot.status === "in-workflow") {
+    if (snapshot.state !== STATES.planning) {
+      log.warning(
+        `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow (label ${snapshot.label}); no transition.`
+      );
+      return false;
+    }
+    return await healPlanningEpoch(ref, input, client, log);
   }
   if (!isLegalTransition(null, STATES.planning)) {
     log.warning("Frozen transition table rejects T0; no transition.");
@@ -25275,6 +25169,50 @@ async function applyAiPlan(ref, snapshot, input, client, log) {
   }
   await client.addLabels(ref, [LABELS.planning]);
   log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
+  const published = await issueEpochRecord(ref, input, client, log);
+  if (!published.ok) {
+    log.warning(
+      `Epoch record publish failed after T0 on #${ref.issueNumber}; re-run /ai-plan to heal. Reason: ${published.reason}`
+    );
+  }
+  return true;
+}
+async function healPlanningEpoch(ref, input, client, log) {
+  let comments;
+  try {
+    comments = await client.listComments(ref);
+  } catch (err) {
+    log.warning(
+      `/ai-plan self-heal on #${ref.issueNumber}: cannot list comments: ` + (err instanceof Error ? err.message : String(err))
+    );
+    return false;
+  }
+  const { records, invalid } = parseRecords("workflow_epoch", comments);
+  if (invalid.length > 0) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: unparsable workflow_epoch record(s) present (fail closed): ${invalid.map((e) => `#${e.commentId} (${e.reason})`).join(", ")}.`
+    );
+    return false;
+  }
+  if (records.length > 0) {
+    log.warning(
+      `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow (PLANNING, epoch ${records[records.length - 1]?.record.workflow_epoch}); no transition.`
+    );
+    return false;
+  }
+  const published = await issueEpochRecord(ref, input, client, log);
+  if (!published.ok) {
+    log.warning(
+      `/ai-plan self-heal on #${ref.issueNumber} failed (${published.reason}); no reaction.`
+    );
+    return false;
+  }
+  log.info(
+    `/ai-plan self-heal on #${ref.issueNumber}: re-issued the missing epoch record #${published.commentId} for epoch ${published.epoch}; no state migration (T0 already done).`
+  );
+  return true;
+}
+async function issueEpochRecord(ref, input, client, log) {
   try {
     const identity = await client.getAuthenticatedUser();
     const epoch = newWorkflowEpoch();
@@ -25289,21 +25227,14 @@ async function applyAiPlan(ref, snapshot, input, client, log) {
       operation_id: epochOperationId(input.repositoryId, ref.issueNumber, epoch)
     };
     const published = await publishRecord(client, ref, record, log);
-    if (published.ok) {
-      log.info(
-        `Epoch ${epoch} persisted as record comment #${published.commentId} (issued by ${identity.login}).`
-      );
-    } else {
-      log.warning(
-        `Epoch record publish failed after T0 on #${ref.issueNumber}; the Driver bootstrap will reconcile a planning issue without an epoch record. Reason: ${published.reason}`
-      );
-    }
+    if (!published.ok) return published;
+    return { ok: true, commentId: published.commentId, epoch };
   } catch (err) {
-    log.warning(
-      `Epoch bootstrap failed after T0 on #${ref.issueNumber} (Driver will reconcile): ` + (err instanceof Error ? err.message : String(err))
-    );
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err)
+    };
   }
-  return true;
 }
 async function publishRecord(client, ref, record, log) {
   const body = buildRecordBody(record);
@@ -25484,7 +25415,8 @@ async function applyApprove(ref, snapshot, args, input, client, log) {
   );
   return true;
 }
-async function acceptFeedbackEvent(ref, feedbackKind, input, client, log) {
+async function acceptFeedbackEvent(ref, input, client, log) {
+  const feedbackKind = "change";
   if (input.commentId === void 0) {
     log.warning(
       `/${feedbackKind} on #${ref.issueNumber}: event carries no comment id; the accepted event cannot be anchored \u2014 fail closed, no record, no reaction.`
@@ -25543,27 +25475,6 @@ async function acceptFeedbackEvent(ref, feedbackKind, input, client, log) {
   );
   return true;
 }
-async function applyChoose(ref, snapshot, args, input, client, log) {
-  if (snapshot.status === "ambiguous") {
-    log.warning(
-      `Invalid /choose on #${ref.issueNumber}: issue carries multiple ai:* labels [${snapshot.labels.join(", ")}] (protocol violation); ignored.`
-    );
-    return false;
-  }
-  if (snapshot.status !== "in-workflow" || snapshot.state !== STATES.review) {
-    log.warning(
-      `Invalid /choose on #${ref.issueNumber}: /choose requires ${STATES.review} (${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ignored, not forwarded to the Consumer.`
-    );
-    return false;
-  }
-  const accepted = await acceptFeedbackEvent(ref, "choose", input, client, log);
-  if (accepted) {
-    log.info(
-      `/choose on #${ref.issueNumber} accepted (REVIEW): question "${args.questionId}", choice "${args.choice}" forwarded to the Consumer as untrusted data; no state migration.`
-    );
-  }
-  return accepted;
-}
 async function applyChange(ref, snapshot, args, input, client, log) {
   if (snapshot.status === "ambiguous") {
     log.warning(
@@ -25573,14 +25484,14 @@ async function applyChange(ref, snapshot, args, input, client, log) {
   }
   if (snapshot.status !== "in-workflow" || snapshot.state !== STATES.review) {
     log.warning(
-      `Invalid /change on #${ref.issueNumber}: /change requires ${STATES.review} (${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ignored, not forwarded to the Consumer.`
+      `Invalid /change on #${ref.issueNumber}: /change requires ${STATES.review} (${LABELS.review}), current state is ${describeSnapshot(snapshot)}; ignored, not forwarded to the planner.`
     );
     return false;
   }
-  const accepted = await acceptFeedbackEvent(ref, "change", input, client, log);
+  const accepted = await acceptFeedbackEvent(ref, input, client, log);
   if (accepted) {
     log.info(
-      `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the Consumer as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`
+      `/change on #${ref.issueNumber} accepted (REVIEW): change request forwarded to the planner as untrusted data, text preserved verbatim: "${args.text}"; no state migration.`
     );
   }
   return accepted;
@@ -25894,9 +25805,6 @@ function readGateInput() {
     issueNumber,
     commentId: payload.comment?.id,
     commentBody: payload.comment?.body,
-    // Observability only: the gate parses this for the Producer schema block
-    // (issues.opened); it never derives state or permissions from it.
-    issueBody: payload.issue?.body,
     trustedHumansInput: inputs.trustedHumans,
     trustedAgentsInput: inputs.trustedAgents,
     requireExplicitHumansInput: inputs.requireExplicitHumans

@@ -1,4 +1,4 @@
-# GateFlow V1 架构（冻结）
+﻿# GateFlow V1 架构（冻结）
 
 > 本文是 V1 重构的架构冻结文档。组件边界、职责与禁令以本文为准。
 > 通信协议细节见 [docs/workspace-protocol.md](workspace-protocol.md)；V0 Gate 协议见 [docs/protocol.md](protocol.md)。
@@ -144,3 +144,7 @@ Driver 从 GitHub Canonical State 可完整重建 DispatchIntent，因此未来 
 ## 7. 本轮明确不做
 
 独立 Web Server / SQLite / Redis / 消息队列 / Agent Registry / 复杂 Scheduler / Dashboard / Lease / 多 Agent 抢占 / Remote Control Plane。角色路由只需 `role → agent` 配置。
+
+---
+
+> **[HISTORICAL]** This document describes the schema-2 era architecture (inbox/outbox workspace, four skills, auto-dispatch and activation adapters). It has been superseded by the V1 simplification: the current architecture is defined by the README section 'V1 Architecture & Design Principles', and the workspace contract lives in workspace-protocol.md. Kept for design history only.

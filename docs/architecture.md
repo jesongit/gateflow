@@ -1,4 +1,4 @@
-# 架构（Architecture）
+﻿# 架构（Architecture）
 
 > ⚠️ **V0 架构文档（历史）— V1 架构见 [docs/architecture-v1.md](architecture-v1.md)。**
 >
@@ -148,3 +148,7 @@ GitHub Label     工作流状态机（6 个 ai:* 标签）
 GitHub PR        代码变更载体
 GitHub Timeline  一切操作的审计轨迹（天然由 GitHub 记录）
 ```
+
+---
+
+> **[HISTORICAL]** This document describes the schema-2 era architecture (inbox/outbox workspace, four skills, auto-dispatch and activation adapters). It has been superseded by the V1 simplification: the current architecture is defined by the README section 'V1 Architecture & Design Principles', and the workspace contract lives in workspace-protocol.md. Kept for design history only.

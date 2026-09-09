@@ -1,41 +1,42 @@
 /**
- * Outbox → GitHub sync engine — the security-critical path (docs/
- * architecture-v1.md §3, workspace-protocol.md §5, §8, hardening Phases 4+5).
+ * Task output → GitHub sync engine — the security-critical path (protocol
+ * schema 3; hardening phases 4+5 kept intact).
  *
- * FROZEN CONSTRAINTS enforced here, in order, for EVERY dispatch:
- * 1. UNKNOWN DISPATCH IDS ARE REJECTED (docs §8.3): an outbox directory with
- *    no valid inbox dispatch.json is never synced, no matter what it
- *    contains.
- * 2. REPLAY PROTECTION (docs §8.4): a receipt with status `published` or
- *    `accepted` means the result was already published; later overwrites of
- *    result.json are ignored (`skipped`).
- * 3. VALIDATION BEFORE ANY SYNC (docs §5): status.json and result.json must
- *    pass the frozen validators — schema, dispatch_id/role agreement, role
- *    whitelists and the human-only blacklist (`approve` / `ready` / `cancel`
- *    / `human-close` can never enter GitHub through an agent file).
- *    Invalid → `rejected`: log, never throw, never sync.
- * 4. PREFLIGHT BEFORE ANY STATE-RELEVANT WRITE (hardening Phase 4.1): the
- *    unified `runPreflight` re-reads canonical state and validates the
- *    dispatch's epoch/plan/approval binding. Obsolete dispatches (cancel,
- *    new epoch, plan change, closed issue) are refused and marked
- *    `obsolete`; unprovable states fail closed for this cycle.
- * 5. OPERATION RECONCILIATION (hardening Phase 5): every publish first
- *    searches for an existing remote object by its Operation identity —
- *    found + same content → adopt; found + different content → CONFLICT
- *    (receipt failed, never overwrite); absent → publish, confirm, then
- *    persist the receipt. API timeouts reconcile next cycle, never blind-retry.
- * 6. CONTENT FILES ARE PASSTHROUGH ONLY; NO STATE TRANSITIONS: the Driver
- *    publishes protocol comments — the Gate alone moves labels. `published`
- *    (remote object confirmed) and `accepted` (Gate observed the state
- *    migration) are distinct receipt states; an Agent's completed claim is
- *    never DONE.
+ * FROZEN CONSTRAINTS enforced here, in order, for EVERY task:
+ * 1. UNKNOWN TASK IDS ARE REJECTED: a task directory with no valid
+ *    task.json is never synced, no matter what it contains.
+ * 2. DRIVER-STATE PREREQUISITE: a task with no driver-state record was never
+ *    prepared by this Driver — it is never synced (recovery: `gateflow run`).
+ * 3. VALIDATION BEFORE ANY SYNC: result.json must pass the frozen validator
+ *    — schema, task_id/mode agreement, status whitelist and the human-only
+ *    blacklist (`approve` / `ready` / `cancel` / `human-close` can never
+ *    enter GitHub through an agent file). Invalid → `rejected`: log, never
+ *    throw, never sync.
+ * 4. INPUT BINDING BEFORE ANY SYNC: the input files (task.md, execute-mode
+ *    plan.md, feedback.md) must still hash to the snapshot recorded at
+ *    preparation time. A mismatch means the agent modified its inputs →
+ *    rejected, never published.
+ * 5. PREFLIGHT BEFORE ANY STATE-RELEVANT WRITE: the unified `runPreflight`
+ *    re-reads canonical state and validates the task's epoch/plan/approval
+ *    binding. Obsolete tasks (cancel, new epoch, plan change, closed issue)
+ *    are refused and marked `obsolete`; unprovable states fail closed for
+ *    this cycle.
+ * 6. OPERATION RECONCILIATION: every publish first searches for an existing
+ *    remote object by its Operation identity — found + same content →
+ *    adopt; found + different content → CONFLICT (record failed, never
+ *    overwrite); absent → publish, confirm, then persist the record. API
+ *    timeouts reconcile next cycle, never blind-retry.
+ * 7. CONTENT FILES ARE PASSTHROUGH ONLY; NO STATE TRANSITIONS: the Driver
+ *    publishes protocol comments — the Gate alone moves labels.
+ *    `published` (remote object confirmed) and `accepted` (Gate observed
+ *    the state migration) are distinct record states; an agent's completed
+ *    claim is never DONE.
  *
  * GitHub errors (network, auth, rate limit) are infrastructure failures and
  * propagate to the caller; only validation/rejected paths return without
  * throwing.
  */
-import type { CommentDetail, RepositoryInfo } from '../github/client';
-import type { IssueRef } from '../github/client';
+import type { RepositoryInfo, CommentDetail, IssueRef } from '../github/client';
 import {
   publishCompletionReport,
   publishPlanComment,
@@ -45,33 +46,27 @@ import {
   findCompletionReportComments,
   updateTracker,
 } from '../github/issue-sync';
-import { buildTrackerCommentBody, findTrackerStatus } from '../github/comments';
-import { readFile } from 'node:fs/promises';
-import * as nodePath from 'node:path';
-import type { Receipt, ResultFile, StatusFile } from '../workspace/protocol';
-import { resolveWorkspace } from '../workspace/paths';
+import { buildTrackerCommentBody } from '../github/comments';
+import type { TaskFile, TaskRecord, ResultFile, DriverStateFile } from '../workspace/protocol';
+import { resolveWorkspace, listTaskDirs } from '../workspace/paths';
 import type { WorkspacePaths } from '../workspace/paths';
-import { outboxDispatchDir } from '../workspace/paths';
-import { sha256Hex } from '../workspace/inbox';
-import { readInboxDispatch } from '../workspace/inbox';
+import { readTaskFile, readResultJson, readInputMarkdown, readOutputMarkdown, inputSnapshotSha256, sha256Hex } from '../workspace/tasks';
 import {
-  listOutboxDispatchIds,
-  readOutboxMarkdown,
-  readReceipt,
-  writeReceipt,
-} from '../workspace/outbox';
-import { OversizedFileError, MAX_FILE_BYTES, validateOutboxResult, validateOutboxStatus } from '../workspace/validation';
+  getTaskRecord,
+  readDriverState,
+  withTaskRecord,
+  writeDriverState,
+  withoutTaskRecord,
+} from '../workspace/driver-state';
+import { OversizedFileError, validateResultForTask } from '../workspace/validation';
 import { canonicalPlanContent } from '../protocol/plan';
 import { runPreflight, type SyncSnapshot } from './preflight';
-import { releaseLock, executorLockFile, DRIVER_LOCK_HOLDER } from './workspace-lock';
-import type { Dispatch } from '../workspace/protocol';
 import type { DriverDeps } from './driver';
 
-/** All sync actions (see module header + docs/workspace-protocol.md §3). */
+/** All sync actions. */
 export type SyncAction =
   | 'plan-published'
   | 'tracker-created'
-  | 'tracker-updated'
   | 'blocked'
   | 'resumed'
   | 'completed'
@@ -82,9 +77,9 @@ export type SyncAction =
   | 'obsolete'
   | 'unchanged';
 
-/** Result of syncing one dispatch directory. */
+/** Result of syncing one task directory. */
 export type SyncOutcome = {
-  dispatchId: string;
+  taskId: string;
   action: SyncAction;
   detail: string;
 };
@@ -94,8 +89,8 @@ function errorMessage(err: unknown): string {
 }
 
 /** Plain-text (marker-free) Driver notice; the Gate never parses these. */
-function noticeBody(role: string, what: string, dispatchId: string, reason: string): string {
-  return `[gateflow] ${role} ${what} (dispatch ${dispatchId}): ${reason}`;
+function noticeBody(mode: string, what: string, taskId: string, reason: string): string {
+  return `[gateflow] ${mode} ${what} (task ${taskId}): ${reason}`;
 }
 
 /** sha256 prefix identifying one notice payload (Operation dedup key). */
@@ -103,41 +98,30 @@ function noticeKey(body: string): string {
   return sha256Hex(body).slice(0, 16);
 }
 
-/** Receipt skeleton preserving prior cache fields, safe for validation. */
-function receiptBase(receipt: Receipt | null, dispatchId: string): Receipt {
+/** Record skeleton preserving prior cache fields. */
+function recordBase(record: TaskRecord | null, taskId: string): TaskRecord {
   return {
-    ...(receipt ?? {}),
-    dispatch_id: dispatchId,
-    status: receipt?.status ?? 'dispatched',
-    attempts: receipt?.attempts ?? 1,
+    ...(record ?? {}),
+    task_id: taskId,
+    status: record?.status ?? 'prepared',
+    attempts: record?.attempts ?? 1,
+    mode: record?.mode ?? 'plan',
+    issue_number: record?.issue_number ?? 0,
+    workflow_epoch: record?.workflow_epoch ?? '',
   };
 }
 
 /**
- * Terminal receipt states release the per-worktree executor lock (hardening
- * §9): accepted, obsolete, or failed (failed keeps context but the dispatch
- * needs explicit retry; holding the workspace hostage on a failed dispatch
- * would queue everything behind it forever).
+ * Read an output markdown file; oversize is a validation failure (null +
+ * flag).
  */
-async function releaseExecutorLockIfTerminal(
+async function readOutputCapped(
   paths: WorkspacePaths,
-  dispatch: { role: string; dispatch_id: string },
-  status: Receipt['status'],
-): Promise<void> {
-  if (dispatch.role !== 'executor') return;
-  if (status === 'accepted' || status === 'obsolete' || status === 'failed') {
-    await releaseLock(executorLockFile(paths), DRIVER_LOCK_HOLDER, dispatch.dispatch_id);
-  }
-}
-
-/** Read an outbox markdown file; oversize is a validation failure (null + flag). */
-async function readMarkdownCapped(
-  paths: WorkspacePaths,
-  dispatchId: string,
-  name: 'PLAN.md' | 'PROGRESS.md' | 'REPORT.md',
+  taskId: string,
+  name: 'plan.md' | 'report.md',
 ): Promise<{ content: string | null; error: string | null }> {
   try {
-    return { content: await readOutboxMarkdown(paths, dispatchId, name), error: null };
+    return { content: await readOutputMarkdown(paths, taskId, name), error: null };
   } catch (err) {
     if (err instanceof OversizedFileError) {
       return { content: null, error: errorMessage(err) };
@@ -147,130 +131,119 @@ async function readMarkdownCapped(
 }
 
 /**
- * Locate the tracker comment for a dispatch: the receipt's id first, then a
- * marker+dispatch-id scan (crash recovery, docs §2.6). Returns the comment
- * list too so callers avoid a second round-trip.
+ * Verify the task's input files still hash to the snapshot recorded at
+ * preparation time. Returns the detail when the binding is broken; null
+ * when it holds.
+ */
+async function inputBindingFailure(
+  paths: WorkspacePaths,
+  taskId: string,
+  task: TaskFile,
+  record: TaskRecord,
+): Promise<string | null> {
+  if (record.input_snapshot_sha256 === undefined) {
+    return 'the driver-state record carries no input snapshot (stale state; re-run `gateflow run`)';
+  }
+  const taskMd = await readInputMarkdown(paths, taskId, 'task.md');
+  if (taskMd === null) {
+    return 'task.md is missing or empty — the task inputs were modified';
+  }
+  let plan: string | null = null;
+  if (task.mode === 'execute') {
+    plan = await readInputMarkdown(paths, taskId, 'plan.md');
+    if (plan === null) {
+      return 'plan.md is missing or empty — the approved plan input was modified';
+    }
+  }
+  const feedback = await readInputMarkdown(paths, taskId, 'feedback.md');
+  const snapshot = inputSnapshotSha256({ task: taskMd, plan, feedback });
+  if (snapshot !== record.input_snapshot_sha256) {
+    return 'the input files no longer match the snapshot recorded at preparation time (refusing to sync from modified inputs)';
+  }
+  return null;
+}
+
+/**
+ * Locate the tracker comment for a task: the record's id first, then a
+ * marker+task-id scan (crash recovery). Returns the comment list too so
+ * callers avoid a second round-trip.
  */
 function resolveTrackerFrom(
   comments: CommentDetail[],
-  dispatchId: string,
-  receipt: Receipt | null,
+  taskId: string,
+  record: TaskRecord | null,
 ): CommentDetail | null {
-  if (receipt?.tracker_comment_id !== undefined) {
-    const found = comments.find((comment) => comment.id === receipt.tracker_comment_id);
+  if (record?.tracker_comment_id !== undefined) {
+    const found = comments.find((comment) => comment.id === record.tracker_comment_id);
     if (found !== undefined) return found;
   }
-  return findTrackerComment(comments, dispatchId);
-}
-
-/** Validate raw outbox JSON; returns [validated, rejectionDetail]. */
-function validateOrDetail<T>(
-  raw: unknown,
-  validate: (raw: unknown, expected: { dispatchId: string; role: 'consumer' | 'executor' }) => { ok: true; value: T } | { ok: false; errors: string[] },
-  dispatchId: string,
-  role: 'consumer' | 'executor',
-): [T | null, string | null] {
-  if (raw === null) return [null, null];
-  const outcome = validate(raw, { dispatchId, role });
-  if (!outcome.ok) {
-    return [null, outcome.errors.join('; ')];
-  }
-  return [outcome.value, null];
+  return findTrackerComment(comments, taskId);
 }
 
 /**
- * Read a raw outbox JSON file, distinguishing "absent" (null) from "present
- * but unparseable" ({ raw: null, error }) — docs §5 rule 1: unparseable
- * machine files are a validation failure (rejected), never a silent no-op.
+ * Sync one task: task.json check → driver-state check → result validation →
+ * INPUT BINDING → PREFLIGHT → acceptance observation (published → accepted)
+ * → replay check → mode-specific, operation-reconciled publication + record.
  */
-async function readOutboxJsonStrict(
-  paths: WorkspacePaths,
-  dispatchId: string,
-  fileName: 'status.json' | 'result.json',
-): Promise<{ raw: unknown; error: string | null } | null> {
-  let file: string;
-  try {
-    file = nodePath.join(outboxDispatchDir(paths, dispatchId), fileName);
-  } catch {
-    return null;
-  }
-  let text: string;
-  try {
-    text = await readFile(file, 'utf8');
-  } catch {
-    return null; // absent (or unreadable) → treated as absent
-  }
-  // Size bound before JSON.parse (docs §5.7): a hostile agent must not be
-  // able to force arbitrarily large allocations through a machine file.
-  if (Buffer.byteLength(text, 'utf8') > MAX_FILE_BYTES) {
-    return { raw: null, error: `${fileName} exceeds the ${MAX_FILE_BYTES}-byte limit` };
-  }
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (parsed === null) {
-      // JSON.parse('null') succeeds but `null` is never a valid machine file
-      // object; treat it as malformed instead of "absent" (docs §5 rule 1).
-      return { raw: null, error: `${fileName} is not a JSON object` };
-    }
-    return { raw: parsed, error: null };
-  } catch (err) {
-    return { raw: null, error: errorMessage(err) };
-  }
-}
-
-/**
- * Sync one dispatch directory: inbox check → validation → PREFLIGHT →
- * acceptance observation (published → accepted) → replay check →
- * role-specific, operation-reconciled publication + receipt.
- */
-export async function syncDispatch(
+export async function syncTask(
   deps: DriverDeps,
   repositoryInfo: RepositoryInfo,
-  dispatchId: string,
+  taskId: string,
 ): Promise<SyncOutcome> {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   const now = deps.now ?? (() => new Date());
   const nowIso = now().toISOString();
 
-  // (1) Unknown dispatch ids are rejected (docs §8.3).
-  const inboxDispatch = await readInboxDispatch(paths, dispatchId);
-  if (inboxDispatch === null) {
+  // (1) Unknown task ids are rejected.
+  const task = await readTaskFile(paths, taskId);
+  if (task === null) {
     return {
-      dispatchId,
+      taskId,
       action: 'rejected',
-      detail: 'no valid inbox dispatch.json for this id (unknown dispatch, docs §8.3)',
+      detail: 'no valid task.json for this id (unknown task — run `gateflow run` first)',
     };
   }
-  const role = inboxDispatch.role;
 
-  // (2) Validation before any sync (docs §5). Human-only values die here.
-  //     (The replay guard runs AFTER the acceptance observation so a
-  //     published-but-unconfirmed receipt can still advance to `accepted`;
-  //     a rejected validation here performs no GitHub write either way.)
-  const rawStatus = await readOutboxJsonStrict(paths, dispatchId, 'status.json');
-  if (rawStatus !== null && rawStatus.error !== null) {
-    deps.log.warning(`rejected ${dispatchId}: unparseable status.json — ${rawStatus.error}`);
-    return { dispatchId, action: 'rejected', detail: `unparseable status.json: ${rawStatus.error}` };
+  // (2) Driver-state prerequisite.
+  const state = await readDriverState(paths);
+  const record = getTaskRecord(state, taskId);
+  if (record === null) {
+    return {
+      taskId,
+      action: 'rejected',
+      detail: 'no driver-state record for this task (never prepared here — run `gateflow run` first)',
+    };
   }
-  const rawResult = await readOutboxJsonStrict(paths, dispatchId, 'result.json');
+
+  // (3) Validation before any sync. Human-only values die here. (The replay
+  // guard runs AFTER the acceptance observation so a published-but-
+  // unconfirmed record can still advance to `accepted`; a rejected
+  // validation performs no GitHub write either way.)
+  const rawResult = await readResultJson(paths, taskId);
   if (rawResult !== null && rawResult.error !== null) {
-    deps.log.warning(`rejected ${dispatchId}: unparseable result.json — ${rawResult.error}`);
-    return { dispatchId, action: 'rejected', detail: `unparseable result.json: ${rawResult.error}` };
+    deps.log.warning(`rejected ${taskId}: unparseable result.json — ${rawResult.error}`);
+    return { taskId, action: 'rejected', detail: `unparseable result.json: ${rawResult.error}` };
   }
-  const [status, statusError] = validateOrDetail(rawStatus?.raw ?? null, validateOutboxStatus, dispatchId, role);
-  if (statusError !== null) {
-    deps.log.warning(`rejected ${dispatchId}: invalid status.json — ${statusError}`);
-    return { dispatchId, action: 'rejected', detail: `invalid status.json: ${statusError}` };
+  let result: ResultFile | null = null;
+  if (rawResult !== null) {
+    const checked = validateResultForTask(rawResult.raw, { taskId, mode: task.mode });
+    if (!checked.ok) {
+      const detail = checked.errors.join('; ');
+      deps.log.warning(`rejected ${taskId}: invalid result.json — ${detail}`);
+      return { taskId, action: 'rejected', detail: `invalid result.json: ${detail}` };
+    }
+    result = checked.value;
   }
-  const [result, resultError] = validateOrDetail(rawResult?.raw ?? null, validateOutboxResult, dispatchId, role);
-  if (resultError !== null) {
-    deps.log.warning(`rejected ${dispatchId}: invalid result.json — ${resultError}`);
-    return { dispatchId, action: 'rejected', detail: `invalid result.json: ${resultError}` };
-  }
-  const receipt = await readReceipt(paths, dispatchId);
 
-  // (3) PREFLIGHT: current-task authorization before any GitHub write.
-  const preflight = await runPreflight(deps.client, repositoryInfo, inboxDispatch, {
+  // (4) Input binding: the agent must not have modified its inputs.
+  const binding = await inputBindingFailure(paths, taskId, task, record);
+  if (binding !== null) {
+    deps.log.warning(`rejected ${taskId}: ${binding}`);
+    return { taskId, action: 'rejected', detail: binding };
+  }
+
+  // (5) PREFLIGHT: current-task authorization before any GitHub write.
+  const preflight = await runPreflight(deps.client, repositoryInfo, task, {
     gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
     trustedHumans: new Set([
       repositoryInfo.owner.toLowerCase(),
@@ -280,90 +253,403 @@ export async function syncDispatch(
   });
   if (!preflight.ok) {
     if (preflight.obsolete) {
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        status: 'obsolete',
-        error: preflight.reason,
-        last_sync_at: nowIso,
+      await writeDriverState(paths, {
+        ...withTaskRecord(state, {
+          ...recordBase(record, taskId),
+          status: 'obsolete',
+          error: preflight.reason,
+          last_sync_at: nowIso,
+        }),
       });
-      await releaseExecutorLockIfTerminal(paths, inboxDispatch, 'obsolete');
-      deps.log.warning(`obsolete ${dispatchId}: ${preflight.reason}`);
-      return { dispatchId, action: 'obsolete', detail: preflight.reason };
+      deps.log.warning(`obsolete ${taskId}: ${preflight.reason}`);
+      return { taskId, action: 'obsolete', detail: preflight.reason };
     }
     // Fail closed for this cycle (tampering / unprovable state): keep the
-    // receipt as-is so the condition stays visible and re-checked.
-    deps.log.warning(`blocked ${dispatchId} (preflight): ${preflight.reason}`);
-    return { dispatchId, action: 'rejected', detail: `preflight: ${preflight.reason}` };
+    // record as-is so the condition stays visible and re-checked.
+    deps.log.warning(`blocked ${taskId} (preflight): ${preflight.reason}`);
+    return { taskId, action: 'rejected', detail: `preflight: ${preflight.reason}` };
   }
   const snapshot = preflight.snapshot;
 
-  // (4) Acceptance observation: a `published` receipt whose Gate acceptance
-  // is now visible moves to `accepted`. This is the ONLY path to `accepted`,
-  // it reads canonical state (never agent claims), and it MUST precede the
-  // replay guard — otherwise `published` could never advance.
-  //   - Consumer plan: the Gate issued an approval record for THIS dispatch's
-  //     plan comment (the only durable signal that the specific plan bytes
-  //     were accepted — a feedback-round re-plan never re-fires T1).
-  //   - Executor report: the Gate consumed the completion report (label done).
-  if (receipt?.status === 'published' && receipt.published_comment_id !== undefined) {
-    // Consumer plan: the Gate issued an approval record for the plan comment
-    // THIS dispatch published (the only durable signal that the specific plan
-    // bytes were accepted — a feedback-round re-plan never re-fires T1).
-    const isConsumerPlanAccepted =
-      role === 'consumer' &&
+  // (6) Acceptance observation: a `published` record whose Gate acceptance is
+  // now visible moves to `accepted`. This is the ONLY path to `accepted`; it
+  // reads canonical state (never agent claims) and MUST precede the replay
+  // guard — otherwise `published` could never advance.
+  //   - Plan: the Gate issued an approval record for THIS task's plan
+  //     comment (the only durable signal that the specific plan bytes were
+  //     accepted — a feedback-round re-plan never re-fires T1).
+  //   - Report: the Gate consumed the completion report (label ai:done).
+  if (record.status === 'published' && record.published_comment_id !== undefined) {
+    const isPlanAccepted =
+      task.mode === 'plan' &&
       snapshot.view.approvals.some(
         (entry) =>
           entry.record.workflow_epoch === snapshot.epoch &&
-          entry.record.plan_comment_id === receipt.published_comment_id,
+          entry.record.plan_comment_id === record.published_comment_id,
       );
-    const isExecutorReportAccepted = role === 'executor' && snapshot.aiState === 'ai:done';
-    if (isConsumerPlanAccepted || isExecutorReportAccepted) {
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        status: 'accepted',
-        last_sync_at: nowIso,
+    const isReportAccepted = task.mode === 'execute' && snapshot.aiState === 'ai:done';
+    if (isPlanAccepted || isReportAccepted) {
+      await writeDriverState(paths, {
+        ...withTaskRecord(state, {
+          ...recordBase(record, taskId),
+          status: 'accepted',
+          last_sync_at: nowIso,
+        }),
       });
-      await releaseExecutorLockIfTerminal(paths, inboxDispatch, 'accepted');
-      return { dispatchId, action: 'accepted', detail: `Gate accepted the ${role} output (${snapshot.aiState})` };
+      return { taskId, action: 'accepted', detail: `Gate accepted the ${task.mode} output (${snapshot.aiState})` };
     }
   }
 
-  // (5) Result replay protection (docs §8.4): published/accepted receipts
-  // never re-publish; later result.json overwrites are not accepted.
-  if (receipt?.status === 'published' || receipt?.status === 'accepted') {
+  // (7) Replay protection: published/accepted records never re-publish;
+  // later result.json overwrites are not accepted.
+  if (record.status === 'published' || record.status === 'accepted') {
     return {
-      dispatchId,
+      taskId,
       action: 'skipped',
-      detail: `receipt already ${receipt.status} — later result overwrites are not accepted (docs §8.4)`,
+      detail: `record already ${record.status} — later result overwrites are not accepted`,
     };
   }
 
-  if (role === 'consumer') {
-    return syncConsumer(deps, ref(repositoryInfo, inboxDispatch.issue_number), paths, dispatchId, receipt, status, result, snapshot, nowIso);
+  if (task.mode === 'plan') {
+    return syncPlanMode(deps, ref(repositoryInfo, task.issue_number), paths, state, taskId, task, record, result, snapshot, nowIso);
   }
-  return syncExecutor(deps, ref(repositoryInfo, inboxDispatch.issue_number), paths, dispatchId, inboxDispatch, receipt, status, result, snapshot, nowIso);
+  return syncExecuteMode(deps, ref(repositoryInfo, task.issue_number), paths, state, taskId, task, record, result, snapshot, nowIso);
 }
 
 function ref(repositoryInfo: RepositoryInfo, issueNumber: number): IssueRef {
   return { owner: repositoryInfo.owner, repo: repositoryInfo.name, issueNumber };
 }
 
+async function persistRecord(
+  paths: WorkspacePaths,
+  state: DriverStateFile,
+  record: TaskRecord,
+): Promise<void> {
+  await writeDriverState(paths, withTaskRecord(state, record));
+}
+
 /**
- * Operation reconciliation for a PLAN or REPORT comment (hardening Phase 5.3):
- * search by marker + dispatch id. Found + same canonical content → adopt;
+ * Plan-mode sync: plan publication + plain notices only. The agent's plan.md
+ * is passed through verbatim into a Plan comment (T1 trigger).
+ */
+async function syncPlanMode(
+  deps: DriverDeps,
+  issueRef: IssueRef,
+  paths: WorkspacePaths,
+  state: DriverStateFile,
+  taskId: string,
+  task: TaskFile,
+  record: TaskRecord,
+  result: ResultFile | null,
+  snapshot: SyncSnapshot,
+  nowIso: string,
+): Promise<SyncOutcome> {
+  if (result !== null) {
+    if (result.status === 'completed') {
+      // State matrix: a plan may only be published while the issue sits in
+      // PLANNING or REVIEW (a feedback round re-publishes into REVIEW;
+      // anything else is a stale task).
+      if (snapshot.aiState !== 'ai:planning' && snapshot.aiState !== 'ai:review') {
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: `plan publication requires ai:planning|ai:review, current state is ${snapshot.aiState}`,
+        };
+      }
+      const plan = await readOutputCapped(paths, taskId, 'plan.md');
+      if (plan.error !== null) {
+        return { taskId, action: 'rejected', detail: `plan.md rejected: ${plan.error}` };
+      }
+      if (plan.content === null) {
+        return { taskId, action: 'rejected', detail: 'status=completed but plan.md is missing or empty' };
+      }
+
+      // Operation reconciliation: adopt / conflict / publish.
+      const reconciliation = reconcileMarkerComment(snapshot.comments, taskId, plan.content, 'plan');
+      if (reconciliation.verdict === 'conflict') {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: 'failed',
+          error: reconciliation.detail,
+          last_sync_at: nowIso,
+        });
+        deps.log.error(`conflict ${taskId}: ${reconciliation.detail}`);
+        return { taskId, action: 'rejected', detail: reconciliation.detail };
+      }
+      let commentId: number;
+      if (reconciliation.verdict === 'adopt') {
+        commentId = reconciliation.comment.id;
+        deps.log.info(`reconciled ${taskId}: adopting existing plan comment #${commentId}`);
+      } else {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: 'publishing',
+          last_sync_at: nowIso,
+        });
+        const published = await publishPlanComment(deps.client, issueRef, plan.content, taskId);
+        commentId = published.id;
+      }
+      await persistRecord(paths, state, {
+        ...recordBase(record, taskId),
+        status: 'published',
+        published_comment_id: commentId,
+        last_sync_at: nowIso,
+        error: null,
+      });
+      return {
+        taskId,
+        action: 'plan-published',
+        detail: `plan comment #${commentId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`,
+      };
+    }
+    // blocked | question | failed — plain notice, no marker, nothing for the
+    // Gate to parse. Notices are non-state-bearing: they never move the
+    // record to `published`; the dedup key prevents re-posting every cycle.
+    const body = noticeBody('plan', result.status, taskId, result.reason ?? '(no reason given)');
+    const key = noticeKey(body);
+    if (record.last_notice_key === key) {
+      return { taskId, action: 'unchanged', detail: 'notice already posted for this result' };
+    }
+    await deps.client.addIssueComment(issueRef, body);
+    await persistRecord(paths, state, {
+      ...recordBase(record, taskId),
+      last_notice_key: key,
+      last_sync_at: nowIso,
+    });
+    return { taskId, action: 'notice', detail: `plan ${result.status} notice posted` };
+  }
+
+  return {
+    taskId,
+    action: 'unchanged',
+    detail: 'no result.json yet; the agent has not reported a terminal result',
+  };
+}
+
+/**
+ * Execute-mode sync: completion report publication, blocked reporting, and
+ * the minimal tracker lifecycle (create on start / Blocked on a blocked
+ * result / resume before a report). Every publication is
+ * operation-reconciled; `published` ≠ `accepted`.
+ */
+async function syncExecuteMode(
+  deps: DriverDeps,
+  issueRef: IssueRef,
+  paths: WorkspacePaths,
+  state: DriverStateFile,
+  taskId: string,
+  task: TaskFile,
+  record: TaskRecord,
+  result: ResultFile | null,
+  snapshot: SyncSnapshot,
+  nowIso: string,
+): Promise<SyncOutcome> {
+  if (result !== null) {
+    if (result.status === 'completed') {
+      // Agent claims need real verification: validation:'failed' is never
+      // published as a completion (the claim itself is a Claim — only the
+      // Gate transitions to DONE, and `published` ≠ `accepted`).
+      if (result.validation !== 'passed') {
+        return {
+          taskId,
+          action: 'rejected',
+          detail: `status=completed requires validation="passed", got ${JSON.stringify(result.validation ?? null)}`,
+        };
+      }
+      // State matrix: reports publish from PLANNING-side READY (the tracker
+      // is ensured first so the Gate fires T3 before T6 — comment events are
+      // processed in creation order), from WORKING, or from BLOCKED (a T5
+      // resume edit precedes the report).
+      if (
+        snapshot.aiState !== 'ai:ready' &&
+        snapshot.aiState !== 'ai:working' &&
+        snapshot.aiState !== 'ai:blocked'
+      ) {
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: `completion report requires ai:ready|ai:working|ai:blocked, current state is ${snapshot.aiState}`,
+        };
+      }
+      const report = await readOutputCapped(paths, taskId, 'report.md');
+      if (report.error !== null) {
+        return { taskId, action: 'rejected', detail: `report.md rejected: ${report.error}` };
+      }
+      if (report.content === null) {
+        return { taskId, action: 'rejected', detail: 'status=completed but report.md is missing or empty' };
+      }
+
+      // The report must not be an orphan: a tracker MUST exist before the
+      // report publishes, so the issue legally traverses T3 (READY→WORKING)
+      // before T6 (WORKING→DONE). A completed claim without a tracker gets
+      // a lawful tracker here, never a bare report that cannot trigger DONE.
+      let tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+      let trackerId: number | undefined = tracker?.id;
+      if (tracker === null) {
+        const created = await publishTrackerComment(deps.client, issueRef, {
+          taskId,
+          issueNumber: issueRef.issueNumber,
+        });
+        trackerId = created.id;
+        tracker = {
+          id: created.id,
+          user: 'gateflow-driver',
+          body: buildTrackerCommentBody({ taskId, issueNumber: issueRef.issueNumber, status: 'In Progress', progressMarkdown: '' }),
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        deps.log.info(`repaired ${taskId}: lawful tracker #${created.id} created before report publication`);
+      }
+
+      // Blocked → resume first (T5), so T6's from-state (WORKING) holds.
+      if (snapshot.aiState === 'ai:blocked') {
+        await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: 'In Progress' });
+        deps.log.info(`resumed ${taskId}: tracker #${tracker.id} set back to In Progress before the report (T5)`);
+      }
+
+      // Operation reconciliation for the REPORT.
+      const reconciliation = reconcileMarkerComment(snapshot.comments, taskId, report.content, 'report');
+      if (reconciliation.verdict === 'conflict') {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: 'failed',
+          error: reconciliation.detail,
+          last_sync_at: nowIso,
+        });
+        deps.log.error(`conflict ${taskId}: ${reconciliation.detail}`);
+        return { taskId, action: 'rejected', detail: reconciliation.detail };
+      }
+      let reportId: number;
+      if (reconciliation.verdict === 'adopt') {
+        reportId = reconciliation.comment.id;
+        deps.log.info(`reconciled ${taskId}: adopting existing report comment #${reportId}`);
+      } else {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: 'publishing',
+          last_sync_at: nowIso,
+        });
+        const published = await publishCompletionReport(deps.client, issueRef, report.content, taskId);
+        reportId = published.id;
+      }
+      await persistRecord(paths, state, {
+        ...recordBase(record, taskId),
+        status: 'published',
+        published_comment_id: reportId,
+        tracker_comment_id: trackerId,
+        last_sync_at: nowIso,
+        error: null,
+      });
+      return {
+        taskId,
+        action: 'completed',
+        detail: `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`,
+      };
+    }
+
+    // status = blocked | question | failed: reflect Blocked on the tracker
+    // (creating it first if the agent jumped straight to a terminal state)
+    // and post a plain notice with the reason. Notices don't consume the
+    // published token; the notice key makes it post-once.
+    if (snapshot.aiState !== 'ai:working' && snapshot.aiState !== 'ai:blocked') {
+      return {
+        taskId,
+        action: 'unchanged',
+        detail: `blocked-state reporting requires ai:working|ai:blocked, current state is ${snapshot.aiState}`,
+      };
+    }
+    const pendingBody = noticeBody('execute', result.status, taskId, result.reason ?? '(no reason given)');
+    const pendingKey = noticeKey(pendingBody);
+    if (record.last_notice_key === pendingKey) {
+      return {
+        taskId,
+        action: 'unchanged',
+        detail: 'blocked notice already posted for this task',
+      };
+    }
+    let tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+    let trackerId: number;
+    if (tracker !== null) {
+      await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: 'Blocked' });
+      trackerId = tracker.id;
+    } else {
+      const created = await publishTrackerComment(deps.client, issueRef, {
+        taskId,
+        issueNumber: issueRef.issueNumber,
+      });
+      // T3 then T4: create as In Progress, then edit to Blocked so the gate
+      // sees the same transition everyone else does.
+      const createdBody = buildTrackerCommentBody({
+        taskId,
+        issueNumber: issueRef.issueNumber,
+        status: 'In Progress',
+        progressMarkdown: '',
+      });
+      await updateTracker(deps.client, issueRef, created.id, createdBody, { status: 'Blocked' });
+      trackerId = created.id;
+    }
+    const body = pendingBody;
+    await deps.client.addIssueComment(issueRef, body);
+    await persistRecord(paths, state, {
+      ...recordBase(record, taskId),
+      tracker_comment_id: trackerId,
+      last_notice_key: noticeKey(body),
+      last_sync_at: nowIso,
+    });
+    return { taskId, action: 'notice', detail: `execute ${result.status}: tracker #${trackerId} set to Blocked, notice posted` };
+  }
+
+  // No terminal result yet: create the execution tracker as the visible
+  // "work started" signal (T3) when the issue sits in READY.
+  if (snapshot.aiState === 'ai:ready') {
+    const tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+    if (tracker === null) {
+      const created = await publishTrackerComment(deps.client, issueRef, {
+        taskId,
+        issueNumber: issueRef.issueNumber,
+      });
+      await persistRecord(paths, state, {
+        ...recordBase(record, taskId),
+        tracker_comment_id: created.id,
+        last_sync_at: nowIso,
+      });
+      return { taskId, action: 'tracker-created', detail: `tracker comment #${created.id} created (execution started)` };
+    }
+    // Crash-recovery adoption: a tracker exists on GitHub but the record
+    // lost it — adopt the id instead of duplicating the tracker.
+    if (record.tracker_comment_id !== tracker.id) {
+      await persistRecord(paths, state, {
+        ...recordBase(record, taskId),
+        tracker_comment_id: tracker.id,
+        last_sync_at: nowIso,
+      });
+      return { taskId, action: 'tracker-created', detail: `recovered existing tracker comment #${tracker.id}` };
+    }
+  }
+
+  return {
+    taskId,
+    action: 'unchanged',
+    detail: 'no result.json yet; the agent is still working',
+  };
+}
+
+/**
+ * Operation reconciliation for a PLAN or REPORT comment (hardening Phase 5):
+ * search by marker + task id. Found + same canonical content → adopt;
  * found + different content → CONFLICT (fail closed, never overwrite, never
  * post a second copy); absent → caller publishes.
  */
 function reconcileMarkerComment(
   comments: CommentDetail[],
-  dispatchId: string,
+  taskId: string,
   localContent: string,
   kind: 'plan' | 'report',
 ): { verdict: 'absent' } | { verdict: 'adopt'; comment: CommentDetail } | { verdict: 'conflict'; detail: string } {
   const mine =
     kind === 'plan'
-      ? findPlanComments(comments).filter((plan) => plan.dispatchId === dispatchId)
-      : findCompletionReportComments(comments, dispatchId);
+      ? findPlanComments(comments).filter((plan) => plan.dispatchId === taskId)
+      : findCompletionReportComments(comments, taskId);
   if (mine.length === 0) return { verdict: 'absent' };
   const latest = mine[mine.length - 1];
   if (latest === undefined) return { verdict: 'absent' };
@@ -373,433 +659,41 @@ function reconcileMarkerComment(
     return {
       verdict: 'conflict',
       detail:
-        `remote ${kind} comment #${latest.id} exists for ${dispatchId} with DIFFERENT ` +
+        `remote ${kind} comment #${latest.id} exists for ${taskId} with DIFFERENT ` +
         'content (fail closed: no overwrite, no duplicate)',
     };
   }
   return { verdict: 'adopt', comment: latest };
 }
 
-/** Consumer sync (docs §3.1/§3.2): plan publication + plain notices only. */
-async function syncConsumer(
-  deps: DriverDeps,
-  issueRef: IssueRef,
-  paths: WorkspacePaths,
-  dispatchId: string,
-  receipt: Receipt | null,
-  status: StatusFile | null,
-  result: ResultFile | null,
-  snapshot: SyncSnapshot,
-  nowIso: string,
-): Promise<SyncOutcome> {
-  if (result !== null) {
-    if (result.result === 'plan_ready') {
-      // State matrix: a consumer plan may only be published while the issue
-      // sits in PLANNING or REVIEW (a feedback round re-publishes into
-      // REVIEW; anything else is a stale dispatch).
-      if (snapshot.aiState !== 'ai:planning' && snapshot.aiState !== 'ai:review') {
-        return {
-          dispatchId,
-          action: 'unchanged',
-          detail: `plan publication requires ai:planning|ai:review, current state is ${snapshot.aiState}`,
-        };
-      }
-      const plan = await readMarkdownCapped(paths, dispatchId, 'PLAN.md');
-      if (plan.error !== null) {
-        return { dispatchId, action: 'rejected', detail: `PLAN.md rejected: ${plan.error}` };
-      }
-      if (plan.content === null) {
-        return { dispatchId, action: 'rejected', detail: 'result=plan_ready but PLAN.md is missing or empty' };
-      }
-
-      // Operation reconciliation: adopt / conflict / publish.
-      const reconciliation = reconcileMarkerComment(snapshot.comments, dispatchId, plan.content, 'plan');
-      if (reconciliation.verdict === 'conflict') {
-        await writeReceipt(paths, {
-          ...receiptBase(receipt, dispatchId),
-          status: 'failed',
-          error: reconciliation.detail,
-          last_sync_at: nowIso,
-        });
-        deps.log.error(`conflict ${dispatchId}: ${reconciliation.detail}`);
-        return { dispatchId, action: 'rejected', detail: reconciliation.detail };
-      }
-      let commentId: number;
-      if (reconciliation.verdict === 'adopt') {
-        commentId = reconciliation.comment.id;
-        deps.log.info(`reconciled ${dispatchId}: adopting existing plan comment #${commentId}`);
-      } else {
-        await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: 'publishing', last_sync_at: nowIso });
-        const published = await publishPlanComment(deps.client, issueRef, plan.content, dispatchId);
-        commentId = published.id;
-      }
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        status: 'published',
-        published_comment_id: commentId,
-        last_sync_at: nowIso,
-        error: null,
-      });
-      return {
-        dispatchId,
-        action: 'plan-published',
-        detail: `plan comment #${commentId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`,
-      };
-    }
-    // question | failed — plain notice, no marker, nothing for the Gate to
-    // parse. Notices are non-state-bearing: they never move the receipt to
-    // `published`; the dedup key prevents re-posting every cycle.
-    const body = noticeBody('consumer', result.result, dispatchId, result.reason ?? '(no reason given)');
-    const key = noticeKey(body);
-    if (receipt?.last_notice_key === key) {
-      return { dispatchId, action: 'unchanged', detail: 'notice already posted for this result' };
-    }
-    await deps.client.addIssueComment(issueRef, body);
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      last_notice_key: key,
-      last_sync_at: nowIso,
-    });
-    return { dispatchId, action: 'notice', detail: `consumer ${result.result} notice posted` };
-  }
-
-  if (status !== null && status.state === 'blocked') {
-    // Status notices are non-terminal: they must NOT move the receipt to
-    // `published` — that token is reserved for a confirmed remote protocol
-    // object — otherwise a blocked echo would swallow the dispatch's later
-    // legitimate plan_ready result. The notice key makes it post-once.
-    const body = noticeBody('consumer', 'blocked', dispatchId, status.summary ?? status.phase ?? '(blocked, no summary)');
-    const key = noticeKey(body);
-    if (receipt?.last_notice_key === key) {
-      return {
-        dispatchId,
-        action: 'unchanged',
-        detail: 'consumer blocked notice already posted for this dispatch',
-      };
-    }
-    await deps.client.addIssueComment(issueRef, body);
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      last_notice_key: key,
-      last_sync_at: nowIso,
-    });
-    return { dispatchId, action: 'notice', detail: 'consumer blocked notice posted' };
-  }
-
-  return {
-    dispatchId,
-    action: 'unchanged',
-    detail: 'no terminal result yet; consumer working/failed status is not echoed to GitHub',
-  };
-}
-
 /**
- * Executor sync (docs §3.4): completion report publication, blocked notices
- * with tracker updates, and the working/blocked tracker lifecycle with
- * debounced progress edits (progress_sync_seconds, docs §10). Every
- * publication is operation-reconciled; `published` ≠ `accepted`.
+ * Sync every task directory sequentially. Infrastructure errors are logged
+ * per task so one broken task cannot starve the others. Returns the
+ * outcomes plus the final driver state (for status reporting).
  */
-async function syncExecutor(
+export async function syncAll(
   deps: DriverDeps,
-  issueRef: IssueRef,
-  paths: WorkspacePaths,
-  dispatchId: string,
-  inboxDispatch: Dispatch,
-  receipt: Receipt | null,
-  status: StatusFile | null,
-  result: ResultFile | null,
-  snapshot: SyncSnapshot,
-  nowIso: string,
-): Promise<SyncOutcome> {
-  const now = deps.now ?? (() => new Date());
-
-  if (result !== null) {
-    if (result.result === 'completed') {
-      // Agent claims need real verification: validation:'failed' is never
-      // published as a completion (docs §2.4; the claim itself is a Claim —
-      // only the Gate transitions to DONE, and `published` ≠ `accepted`).
-      if (result.validation !== 'passed') {
-        return {
-          dispatchId,
-          action: 'rejected',
-          detail: `result=completed requires validation="passed", got ${JSON.stringify(result.validation ?? null)}`,
-        };
-      }
-      // State matrix: reports publish only from WORKING (T6's from-state).
-      if (snapshot.aiState !== 'ai:working') {
-        return {
-          dispatchId,
-          action: 'unchanged',
-          detail: `completion report requires ai:working, current state is ${snapshot.aiState}`,
-        };
-      }
-      const report = await readMarkdownCapped(paths, dispatchId, 'REPORT.md');
-      if (report.error !== null) {
-        return { dispatchId, action: 'rejected', detail: `REPORT.md rejected: ${report.error}` };
-      }
-      if (report.content === null) {
-        return { dispatchId, action: 'rejected', detail: 'result=completed but REPORT.md is missing or empty' };
-      }
-
-      // The report must not be an orphan: a tracker MUST exist before the
-      // report publishes, so the issue legally traverses T3 (READY→WORKING)
-      // before T6 (WORKING→DONE). A completed claim without a tracker gets
-      // a lawful tracker here (docs §4.3: "补齐合法 Tracker"), never a bare
-      // report that cannot trigger DONE.
-      let tracker = resolveTrackerFrom(snapshot.comments, dispatchId, receipt);
-      let trackerId: number | undefined = tracker?.id;
-      if (tracker === null) {
-        const progress = await readMarkdownCapped(paths, dispatchId, 'PROGRESS.md');
-        const created = await publishTrackerComment(deps.client, issueRef, {
-          dispatchId,
-          issueNumber: issueRef.issueNumber,
-          progressMarkdown: progress.content ?? '',
-        });
-        trackerId = created.id;
-        await writeReceipt(paths, {
-          ...receiptBase(receipt, dispatchId),
-          status: receipt?.status ?? 'dispatched',
-          tracker_comment_id: created.id,
-          last_sync_at: nowIso,
-        });
-        deps.log.info(`repaired ${dispatchId}: lawful tracker #${created.id} created before report publication`);
-      }
-
-      // Operation reconciliation for the REPORT.
-      const reconciliation = reconcileMarkerComment(
-        snapshot.comments,
-        dispatchId,
-        report.content,
-        'report',
-      );
-      if (reconciliation.verdict === 'conflict') {
-        await writeReceipt(paths, {
-          ...receiptBase(receipt, dispatchId),
-          status: 'failed',
-          error: reconciliation.detail,
-          last_sync_at: nowIso,
-        });
-        await releaseExecutorLockIfTerminal(paths, inboxDispatch, 'failed');
-        deps.log.error(`conflict ${dispatchId}: ${reconciliation.detail}`);
-        return { dispatchId, action: 'rejected', detail: reconciliation.detail };
-      }
-      let reportId: number;
-      if (reconciliation.verdict === 'adopt') {
-        reportId = reconciliation.comment.id;
-        deps.log.info(`reconciled ${dispatchId}: adopting existing report comment #${reportId}`);
-      } else {
-        await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), status: 'publishing', last_sync_at: nowIso });
-        const published = await publishCompletionReport(deps.client, issueRef, report.content, dispatchId);
-        reportId = published.id;
-      }
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        status: 'published',
-        published_comment_id: reportId,
-        tracker_comment_id: trackerId,
-        last_sync_at: nowIso,
-        error: null,
-      });
-      return {
-        dispatchId,
-        action: 'completed',
-        detail: `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`,
-      };
-    }
-
-    // result = blocked | question | failed: reflect Blocked on the tracker
-    // (creating it first if the agent jumped straight to a terminal state)
-    // and post a plain notice with the reason. Notices don't consume the
-    // published token; the tracker edit is a state-relevant write the
-    // preflight already authorized against the current state matrix.
-    if (snapshot.aiState !== 'ai:working' && snapshot.aiState !== 'ai:blocked') {
-      return {
-        dispatchId,
-        action: 'unchanged',
-        detail: `blocked-state reporting requires ai:working|ai:blocked, current state is ${snapshot.aiState}`,
-      };
-    }
-    const { tracker } = await resolveTracker(deps, issueRef, dispatchId, receipt);
-    let trackerId: number;
-    if (tracker !== null) {
-      await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: 'Blocked' });
-      trackerId = tracker.id;
-    } else {
-      const progress = await readMarkdownCapped(paths, dispatchId, 'PROGRESS.md');
-      const created = await publishTrackerComment(deps.client, issueRef, {
-        dispatchId,
-        issueNumber: issueRef.issueNumber,
-        progressMarkdown: progress.content ?? '',
-      });
-      // T3 then T4: create as In Progress, then edit to Blocked so the gate
-      // sees the same transition everyone else does.
-      const createdBody = buildTrackerCommentBody({
-        dispatchId,
-        issueNumber: issueRef.issueNumber,
-        status: 'In Progress',
-        progressMarkdown: progress.content ?? '',
-      });
-      await updateTracker(deps.client, issueRef, created.id, createdBody, { status: 'Blocked' });
-      trackerId = created.id;
-    }
-    const body = noticeBody('executor', result.result, dispatchId, result.reason ?? '(no reason given)');
-    await deps.client.addIssueComment(issueRef, body);
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      status: receipt?.status ?? 'dispatched',
-      tracker_comment_id: trackerId,
-      last_notice_key: noticeKey(body),
-      last_sync_at: nowIso,
-    });
-    return { dispatchId, action: 'notice', detail: `executor ${result.result}: tracker #${trackerId} set to Blocked, notice posted` };
-  }
-
-  // No terminal result: tracker lifecycle over status.json.
-  if (status === null) {
-    return { dispatchId, action: 'unchanged', detail: 'no status.json or result.json in the outbox yet' };
-  }
-
-  // State matrix for tracker lifecycle writes: T4/T5 exist only between
-  // WORKING and BLOCKED; creation is meaningful in READY (T3) or WORKING
-  // (a missed creation event).
-  const trackerStateAllowed =
-    status.state === 'blocked'
-      ? snapshot.aiState === 'ai:working' || snapshot.aiState === 'ai:blocked'
-      : snapshot.aiState === 'ai:ready' || snapshot.aiState === 'ai:working' || snapshot.aiState === 'ai:blocked';
-  if (!trackerStateAllowed) {
-    return {
-      dispatchId,
-      action: 'unchanged',
-      detail: `tracker lifecycle requires ai:ready|ai:working|ai:blocked, current state is ${snapshot.aiState}`,
-    };
-  }
-
-  const progress = await readMarkdownCapped(paths, dispatchId, 'PROGRESS.md');
-  if (progress.error !== null) {
-    return { dispatchId, action: 'rejected', detail: `PROGRESS.md rejected: ${progress.error}` };
-  }
-  const progressMd = progress.content;
-  const progressSha = progressMd === null ? null : sha256Hex(progressMd);
-
-  const { tracker } = await resolveTracker(deps, issueRef, dispatchId, receipt);
-
-  if (tracker === null) {
-    // Fresh tracker (T3 trigger). Always created 'In Progress'; an immediate
-    // Blocked edit (T4) follows when the agent already reported blocked.
-    const created = await publishTrackerComment(deps.client, issueRef, {
-      dispatchId,
-      issueNumber: issueRef.issueNumber,
-      progressMarkdown: progressMd ?? '',
-    });
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      tracker_comment_id: created.id,
-      last_progress_sha256: progressSha ?? sha256Hex(''),
-      last_sync_at: nowIso,
-    });
-    if (status.state === 'blocked') {
-      const createdBody = buildTrackerCommentBody({
-        dispatchId,
-        issueNumber: issueRef.issueNumber,
-        status: 'In Progress',
-        progressMarkdown: progressMd ?? '',
-      });
-      await updateTracker(deps.client, issueRef, created.id, createdBody, { status: 'Blocked' });
-      await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), tracker_comment_id: created.id, last_sync_at: nowIso });
-      return { dispatchId, action: 'blocked', detail: `tracker #${created.id} created and set to Blocked` };
-    }
-    return { dispatchId, action: 'tracker-created', detail: `tracker comment #${created.id} created` };
-  }
-
-  // Crash recovery adoption (docs §2.6): a tracker exists on GitHub but the
-  // receipt lost it — adopt the id instead of duplicating the tracker.
-  if (receipt?.tracker_comment_id !== tracker.id) {
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      tracker_comment_id: tracker.id,
-      last_sync_at: nowIso,
-    });
-    return { dispatchId, action: 'tracker-created', detail: `recovered existing tracker comment #${tracker.id}` };
-  }
-
-  if (status.state === 'blocked') {
-    await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: 'Blocked' });
-    await writeReceipt(paths, { ...receiptBase(receipt, dispatchId), tracker_comment_id: tracker.id, last_sync_at: nowIso });
-    return { dispatchId, action: 'blocked', detail: `tracker #${tracker.id} set to Blocked` };
-  }
-
-  if (status.state === 'working' && findTrackerStatus(tracker.body) === 'Blocked') {
-    // T5: blocked → working again.
-    await updateTracker(deps.client, issueRef, tracker.id, tracker.body, {
-      status: 'In Progress',
-      ...(progressMd !== null ? { progressMarkdown: progressMd } : {}),
-    });
-    await writeReceipt(paths, {
-      ...receiptBase(receipt, dispatchId),
-      tracker_comment_id: tracker.id,
-      last_sync_at: nowIso,
-      ...(progressSha !== null ? { last_progress_sha256: progressSha } : {}),
-    });
-    return { dispatchId, action: 'resumed', detail: `tracker #${tracker.id} set back to In Progress` };
-  }
-
-  // Debounced progress edits (docs §10): only when the content changed AND
-  // the configured window has elapsed since the last tracker write. Only
-  // 'working' reaches here: 'blocked' returned above and 'failed' (a mid-run
-  // give-up) has no tracker status to express.
-  if (status.state === 'working' && progressSha !== null && progressSha !== receipt?.last_progress_sha256) {
-    const lastSyncMs = Date.parse(receipt?.last_sync_at ?? '1970-01-01T00:00:00Z');
-    const windowMs = deps.config.driver.progressSyncSeconds * 1000;
-    if (now().getTime() - lastSyncMs >= windowMs) {
-      await updateTracker(deps.client, issueRef, tracker.id, tracker.body, {
-        status: 'In Progress',
-        progressMarkdown: progressMd ?? '',
-      });
-      await writeReceipt(paths, {
-        ...receiptBase(receipt, dispatchId),
-        tracker_comment_id: tracker.id,
-        last_progress_sha256: progressSha,
-        last_sync_at: nowIso,
-      });
-      return { dispatchId, action: 'tracker-updated', detail: `tracker #${tracker.id} progress updated` };
-    }
-  }
-
-  return {
-    dispatchId,
-    action: 'unchanged',
-    detail: 'tracker is current (progress unchanged or debounce window not elapsed)',
-  };
-}
-
-/**
- * Locate the tracker comment for a dispatch (fresh comment fetch): the
- * receipt's id first, then a marker+dispatch-id scan (crash recovery).
- */
-async function resolveTracker(
-  deps: DriverDeps,
-  issueRef: IssueRef,
-  dispatchId: string,
-  receipt: Receipt | null,
-): Promise<{ comments: CommentDetail[]; tracker: CommentDetail | null }> {
-  const comments = await deps.client.listComments(issueRef);
-  return { comments, tracker: resolveTrackerFrom(comments, dispatchId, receipt) };
-}
-
-/**
- * Sync every outbox dispatch directory sequentially. Infrastructure errors
- * are logged per dispatch so one broken dispatch cannot starve the others.
- */
-export async function syncAll(deps: DriverDeps, repositoryInfo: RepositoryInfo): Promise<SyncOutcome[]> {
+  repositoryInfo: RepositoryInfo,
+): Promise<{ outcomes: SyncOutcome[]; state: DriverStateFile }> {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
-  const dispatchIds = await listOutboxDispatchIds(paths);
+  const taskIds = await listTaskDirs(paths.tasks);
   const outcomes: SyncOutcome[] = [];
-  for (const dispatchId of dispatchIds) {
+  for (const taskId of taskIds) {
     try {
-      outcomes.push(await syncDispatch(deps, repositoryInfo, dispatchId));
+      outcomes.push(await syncTask(deps, repositoryInfo, taskId));
     } catch (err) {
-      deps.log.error(`sync failed for ${dispatchId}: ${errorMessage(err)}`);
+      deps.log.error(`sync failed for ${taskId}: ${errorMessage(err)}`);
     }
   }
-  return outcomes;
+  return { outcomes, state: await readDriverState(paths) };
+}
+
+/** Explicit retry: drop the driver-state record so `run` may re-prepare. */
+export async function clearTask(paths: WorkspacePaths, taskId: string): Promise<boolean> {
+  const state = await readDriverState(paths);
+  if (getTaskRecord(state, taskId) === null) {
+    return false;
+  }
+  await writeDriverState(paths, withoutTaskRecord(state, taskId));
+  return true;
 }

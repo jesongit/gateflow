@@ -71,9 +71,6 @@ export function readGateInput(): GateInput | null {
     issueNumber,
     commentId: payload.comment?.id,
     commentBody: payload.comment?.body,
-    // Observability only: the gate parses this for the Producer schema block
-    // (issues.opened); it never derives state or permissions from it.
-    issueBody: payload.issue?.body,
     trustedHumansInput: inputs.trustedHumans,
     trustedAgentsInput: inputs.trustedAgents,
     requireExplicitHumansInput: inputs.requireExplicitHumans,

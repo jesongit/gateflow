@@ -1,71 +1,58 @@
 /**
- * gateflow.config.yml loading and validation (docs/workspace-protocol.md
- * §10, frozen).
+ * gateflow.config.yml loading and validation.
  *
- * FROZEN CONSTRAINTS owned by the Driver as a whole (stated once here, and
- * per-module in the other driver files):
- * - The Driver NEVER calls an LLM; it only discovers, dispatches and syncs.
+ * V1 SIMPLIFIED CONFIG (docs/plans/v1-simplification-plan.md §7): only the
+ * repository, the workspace location and the identity allowlists remain.
+ * The role-routing, agent and activation sections are gone — V1 has one
+ * skill, two modes and Manual Activation (the printed prompt).
+ *
+ * FROZEN CONSTRAINTS owned by the Driver as a whole:
+ * - The Driver NEVER calls an LLM; it only prepares tasks and syncs results.
  * - The Driver NEVER transitions labels or issue state — that is the Gate's
- *   exclusive power (docs/architecture-v1.md §6); it only publishes protocol
- *   comments after validating outbox files.
+ *   exclusive power; it only publishes protocol comments after validating
+ *   task outputs.
  * - GitHub credentials live only in the Driver process environment
  *   (GITHUB_TOKEN) and are never written to `.gateflow/` or the config file.
  *
- * Config rules (docs §10):
+ * Config rules:
  * - `version` must be exactly 1; anything else is a ConfigError.
  * - Unknown keys are ignored (forward compatibility).
  * - Invalid value types are ConfigErrors with a clear message — a broken
  *   config must fail fast, never silently degrade into surprising behavior.
- * - A MISSING config file is normal: the all-defaults config applies
- *   (manual activation, `.gateflow` workspace, 30s polling, 3 attempts).
- * - `routing.consumer` / `routing.executor` may be absent: that role then has
- *   no agent and activation resolution falls through to the fallback adapter
- *   (manual) via resolveAdapterForAgent('__none__', ...).
+ * - A MISSING config file is normal: the all-defaults config applies.
  */
 import { readFile } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { parse } from 'yaml';
 
-import type { ActivationAgentConfig, ActivationKind } from '../activation';
-
-/** Strongly-typed driver configuration (docs/workspace-protocol.md §10). */
+/** Strongly-typed driver configuration. */
 export interface DriverConfig {
   version: 1;
   /** `owner/name`; optional — resolution order in resolveRepository. */
   repository?: string;
   driver: {
-    /** `start` mode poll interval. */
-    pollIntervalSeconds: number;
     /** Runtime directory name under the project root. */
     workspaceDir: string;
-    /** Tracker edit debounce (progress sync). */
-    progressSyncSeconds: number;
-    /** Automatic retry ceiling per dispatch. */
+    /** Automatic retry ceiling per task. */
     maxAttempts: number;
   };
-  /** Trusted humans besides the repo owner (approval/feedback authors). */
+  /** Trusted humans besides the repo owner (command authors). */
   trustedHumans: string[];
   /**
    * GitHub logins allowed to have authored Gate records (approval /
    * feedback_accepted). The Driver independently re-validates Gate-issued
-   * records against this allowlist (schema 2 hardening; default
-   * `['github-actions[bot]']`). NEVER include the Driver's own identity
-   * here: the Gate and the Driver must be separate protected identities.
+   * records against this allowlist (default `['github-actions[bot]']`).
+   * NEVER include the Driver's own identity here: the Gate and the Driver
+   * must be separate protected identities.
    */
   gateLogins: string[];
   /**
-   * Fail-closed Organization rule (hardening §8): when the repository owner
-   * is not a personal User and trustedHumans is empty, the Driver refuses to
-   * run. Default true.
+   * Fail-closed Organization rule: when the repository owner is not a
+   * personal User and trustedHumans is empty, the Driver refuses to run.
+   * Default true.
    */
   requireExplicitHumans: boolean;
-  /** Role → agent name; an absent role gets no activation agent. */
-  routing: { consumer?: string; executor?: string };
-  /** Agent name → activation config. */
-  agents: Record<string, ActivationAgentConfig>;
-  /** Fallback activation kind when an agent is unknown or its probe fails. */
-  activation: { fallback: ActivationKind };
 }
 
 /** Raised for every invalid or unusable configuration input. */
@@ -81,23 +68,16 @@ export function defaultConfig(): DriverConfig {
   return {
     version: 1,
     driver: {
-      pollIntervalSeconds: 30,
       workspaceDir: '.gateflow',
-      progressSyncSeconds: 60,
       maxAttempts: 3,
     },
     trustedHumans: [],
     gateLogins: ['github-actions[bot]'],
     requireExplicitHumans: true,
-    routing: {},
-    agents: {},
-    activation: { fallback: 'manual' },
   };
 }
 
-const ACTIVATION_KINDS: readonly ActivationKind[] = ['manual', 'chatgpt', 'zcode'];
-
-/** `owner/name` shape (used for the resolved repository, docs §10). */
+/** `owner/name` shape (used for the resolved repository). */
 const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 
 type Obj = Record<string, unknown>;
@@ -144,53 +124,6 @@ function optionalNumber(
   return value;
 }
 
-function optionalActivationKind(raw: Obj, key: string, what: string, errors: string[]): ActivationKind | undefined {
-  const value = raw[key];
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || !(ACTIVATION_KINDS as readonly string[]).includes(value)) {
-    errors.push(`${what}: must be one of ${ACTIVATION_KINDS.join('|')}, got ${JSON.stringify(value)}`);
-    return undefined;
-  }
-  return value as ActivationKind;
-}
-
-/** Parse the `agents:` mapping; unknown keys inside an agent entry are ignored. */
-function parseAgents(raw: Obj, errors: string[]): Record<string, ActivationAgentConfig> {
-  const agents: Record<string, ActivationAgentConfig> = {};
-  for (const [name, value] of Object.entries(raw)) {
-    if (!isRecord(value)) {
-      errors.push(`agents.${name}: expected a mapping, got ${typeof value}`);
-      continue;
-    }
-    const activation = optionalActivationKind(value, 'activation', `agents.${name}.activation`, errors);
-    if (activation === undefined) continue; // error already recorded above
-    const agent: ActivationAgentConfig = { activation };
-    const autoStart = value['autoStart'];
-    if (autoStart !== undefined) {
-      if (typeof autoStart !== 'boolean') {
-        errors.push(`agents.${name}.autoStart: must be a boolean, got ${JSON.stringify(autoStart)}`);
-      } else {
-        agent.autoStart = autoStart;
-      }
-    }
-    const command = optionalString(value, 'command', errors, `agents.${name}.command`);
-    if (command !== undefined) agent.command = command;
-    const envPassthrough = value['env_passthrough'];
-    if (envPassthrough !== undefined) {
-      if (
-        !Array.isArray(envPassthrough) ||
-        envPassthrough.some((k) => typeof k !== 'string' || k.length === 0)
-      ) {
-        errors.push(`agents.${name}.env_passthrough: must be a list of non-empty strings`);
-      } else {
-        agent.envPassthrough = envPassthrough as string[];
-      }
-    }
-    agents[name] = agent;
-  }
-  return agents;
-}
-
 /**
  * Parse raw key/value pairs (already YAML-decoded) into a DriverConfig.
  * Exported for tests; `loadConfig` is the normal entry point.
@@ -204,7 +137,7 @@ export function parseConfig(raw: unknown): DriverConfig {
   const version = raw['version'];
   if (version !== 1) {
     throw new ConfigError(
-      `config version must be exactly 1, got ${JSON.stringify(version)} — this build speaks protocol v1 only`,
+      `config version must be exactly 1, got ${JSON.stringify(version)} — this build speaks config v1 only`,
     );
   }
 
@@ -220,12 +153,8 @@ export function parseConfig(raw: unknown): DriverConfig {
   }
 
   const driver = section(raw, 'driver', errors);
-  const pollIntervalSeconds = optionalNumber(driver, 'poll_interval_seconds', errors, { min: 1 });
-  if (pollIntervalSeconds !== undefined) config.driver.pollIntervalSeconds = pollIntervalSeconds;
   const workspaceDir = optionalString(driver, 'workspace_dir', errors, 'driver.workspace_dir');
   if (workspaceDir !== undefined) config.driver.workspaceDir = workspaceDir;
-  const progressSyncSeconds = optionalNumber(driver, 'progress_sync_seconds', errors, { min: 0 });
-  if (progressSyncSeconds !== undefined) config.driver.progressSyncSeconds = progressSyncSeconds;
   const maxAttempts = optionalNumber(driver, 'max_attempts', errors, { min: 1 });
   if (maxAttempts !== undefined) config.driver.maxAttempts = maxAttempts;
 
@@ -255,19 +184,6 @@ export function parseConfig(raw: unknown): DriverConfig {
       config.requireExplicitHumans = requireExplicitHumans;
     }
   }
-
-  const routing = section(raw, 'routing', errors);
-  const consumer = optionalString(routing, 'consumer', errors, 'routing.consumer');
-  if (consumer !== undefined) config.routing.consumer = consumer;
-  const executor = optionalString(routing, 'executor', errors, 'routing.executor');
-  if (executor !== undefined) config.routing.executor = executor;
-
-  const agents = section(raw, 'agents', errors);
-  config.agents = parseAgents(agents, errors);
-
-  const activation = section(raw, 'activation', errors);
-  const fallback = optionalActivationKind(activation, 'fallback', 'activation.fallback', errors);
-  if (fallback !== undefined) config.activation.fallback = fallback;
 
   if (errors.length > 0) {
     throw new ConfigError(`invalid gateflow config: ${errors.join('; ')}`);
@@ -301,7 +217,7 @@ export async function loadConfig(projectRoot: string, fileName = 'gateflow.confi
 
 /**
  * Parse an `owner/name` slug out of a git remote URL. Supports the two
- * GitHub forms (docs §10): `https://github.com/owner/name(.git)` and
+ * GitHub forms: `https://github.com/owner/name(.git)` and
  * `git@github.com:owner/name.git`. Returns null for anything else.
  */
 export function parseGitRemoteRepository(gitRemoteUrl: string | null): string | null {
@@ -324,7 +240,7 @@ export function parseGitRemoteRepository(gitRemoteUrl: string | null): string | 
 }
 
 /**
- * Resolve the target repository as `owner/name` (docs §10, frozen order):
+ * Resolve the target repository as `owner/name` (frozen order):
  * config.repository ?? GATEFLOW_REPOSITORY ?? git remote origin ?? throw.
  */
 export function resolveRepository(

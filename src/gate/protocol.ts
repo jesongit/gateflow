@@ -8,8 +8,12 @@
  * SCHEMA 2 (hardening, docs/plans/v1_hardening_decisions.md): the durable
  * authorization facts are Gate-issued record comments (workflow_epoch /
  * approval / feedback_accepted — src/protocol/records.ts). The /approve
- * command still carries the plan comment id; the issue-body schema block, all
- * label strings, all workflow marker strings keep their V1 shape.
+ * command still carries the plan comment id; all label strings and workflow
+ * marker strings keep their V1 shape.
+ *
+ * V1 SIMPLIFICATION (docs/plans/v1-simplification-plan.md): the Producer
+ * schema block and the append marker are gone (issues are plain GitHub
+ * issues; work enters via /ai-plan), and /choose is merged into /change.
  */
 
 /** Protocol / workflow-marker schema version (schema 2 since the hardening). */
@@ -69,7 +73,7 @@ export const STATE_TO_LABEL: Readonly<Record<State, Label>> = Object.fromEntries
  * T4/T5 are parsed deterministically from the tracker Status field.
  */
 export const TRANSITIONS: ReadonlyArray<{ from: State | null; to: State }> = [
-  { from: null, to: STATES.planning }, // T0: /ai-plan by Trusted Human, or Producer CREATE
+  { from: null, to: STATES.planning }, // T0: /ai-plan by Trusted Human
   { from: STATES.planning, to: STATES.review }, // T1: plan marker comment
   { from: STATES.review, to: STATES.ready }, // T2: /approve by Trusted Human
   { from: STATES.ready, to: STATES.working }, // T3: execution tracker marker comment
@@ -82,7 +86,6 @@ export const TRANSITIONS: ReadonlyArray<{ from: State | null; to: State }> = [
 export const COMMANDS = {
   aiPlan: '/ai-plan',
   approve: '/approve',
-  choose: '/choose',
   change: '/change',
   cancel: '/cancel',
 } as const;
@@ -96,7 +99,6 @@ export const ALL_COMMANDS: readonly CommandName[] = Object.values(COMMANDS);
  * trim). A comment containing more than one marker is invalid.
  */
 export const MARKERS = {
-  append: '<!-- ai-workflow:append:v1 -->',
   plan: '<!-- ai-workflow:plan:v1 -->',
   executionTracker: '<!-- ai-workflow:execution-tracker:v1 -->',
   completionReport: '<!-- ai-workflow:completion-report:v1 -->',
@@ -106,30 +108,7 @@ export type Marker = (typeof MARKERS)[keyof typeof MARKERS];
 
 export const ALL_MARKERS: readonly Marker[] = Object.values(MARKERS);
 
-/** Work item kinds written into the issue body schema block (frozen enum). */
-export const KINDS = ['feature', 'bug', 'refactor', 'docs', 'chore'] as const;
-
-export type Kind = (typeof KINDS)[number];
-
-/** Maturity hints written by the Producer. Hints only; never trusted blindly. */
-export const MATURITY_HINTS = [
-  'requirement',
-  'direction',
-  'solution',
-  'execution_plan',
-] as const;
-
-export type MaturityHint = (typeof MATURITY_HINTS)[number];
-
-/** Maturity levels evaluated by the Consumer (effective maturity). */
-export const MATURITY_LEVELS = {
-  l0: 'L0 Requirement',
-  l1: 'L1 Direction',
-  l2: 'L2 Solution',
-  l3: 'L3 Execution Plan',
-} as const;
-
-/** Suggested label colors (hex, no leading '#') for bootstrap in Phase 8. */
+/** Suggested label colors (hex, no leading '#') for bootstrap. */
 export const LABEL_COLORS: Readonly<Record<Label, string>> = {
   [LABELS.planning]: 'd4c5f9',
   [LABELS.review]: 'fef2c0',

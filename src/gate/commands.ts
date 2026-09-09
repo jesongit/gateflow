@@ -7,32 +7,28 @@
  *  - Parameterless commands (/ai-plan, /cancel) must match the whole comment
  *    exactly after trim. Substring/prefix matching (body.includes)
  *    is forbidden and never used.
- *  - Parameterized commands (/choose, /change, /approve) use ANCHORED regexes
+ *  - Parameterized commands (/change, /approve) use ANCHORED regexes
  *    over the trimmed body: the whole comment must be the command. `.` never
  *    matches a newline, so multi-line bodies can never match.
- *  - V1 BREAKING CHANGE (plan phases 9 + protocol v2, architecture-v1 3.3):
- *    /approve is no longer parameterless. The bare command "/approve" is NOT
- *    a command anymore — it is a normal comment and is silently ignored
- *    (protocol 3.1 rule 7). The approval is bound to a specific plan comment:
+ *  - /approve carries the plan comment id it approves:
  *    "/approve <plan-comment-id>" where <plan-comment-id> is a run of decimal
- *    digits (parsed via /^\/approve (\d+)$/ and converted with Number).
+ *    digits. The bare command "/approve" is NOT a command — it is a normal
+ *    comment and is silently ignored (protocol 3.1 rule 7).
  *  - Matching is case-sensitive: "/Approve" is NOT a command.
  *  - Anything that does not match is a normal comment -> null, which must
  *    never trigger any gate logic. Command-SHAPED bodies with malformed
- *    arguments (e.g. "/choose 1", "/choose 1 B C", a bare "/change", a
- *    multi-line "/change", a bare "/approve", "/approve abc" or
+ *    arguments (a bare "/change", a multi-line "/change", "/approve abc" or
  *    "/approve 123 extra") are also null: they are normal comments and are
  *    silently ignored (protocol 3.1 rule 7), not "invalid commands".
- *  - /choose and /change arguments are parsed but NEVER interpreted by the
- *    gate: they are forwarded verbatim to the Consumer as untrusted data
- *    (protocol 3.3).
- *
- * Since Phase 2 the gate routes all five frozen commands; since V1 the
- * approval command carries the plan comment id it approves.
+ *  - V1 SIMPLIFICATION: /choose is gone. Free-form questions or decisions are
+ *    expressed through "/change <feedback>" — one feedback channel instead of
+ *    two (docs/plans/v1-simplification-plan.md §5.2).
+ *  - /change arguments are parsed but NEVER interpreted by the gate: they are
+ *    forwarded verbatim to the planner as untrusted data (protocol 3.3).
  */
 import { COMMANDS, type CommandName } from './protocol';
 
-/** All five frozen commands are routed as of Phase 2. */
+/** All frozen commands are routed here. */
 export type GateCommand = CommandName;
 
 /** Commands that take no arguments (exact whole-body match after trim). */
@@ -41,12 +37,6 @@ export type ExactCommand = Extract<GateCommand, '/ai-plan' | '/cancel'>;
 /** Strictly parsed /approve argument: the plan comment id being approved. */
 export interface ApproveArgs {
   planCommentId: number;
-}
-
-/** Strictly parsed /choose arguments: exactly two non-whitespace tokens. */
-export interface ChooseArgs {
-  questionId: string;
-  choice: string;
 }
 
 /** Strictly parsed /change argument: the free text after the command word. */
@@ -58,7 +48,6 @@ export interface ChangeArgs {
 export type ParsedCommand =
   | { command: ExactCommand; args: null }
   | { command: Extract<GateCommand, '/approve'>; args: ApproveArgs }
-  | { command: Extract<GateCommand, '/choose'>; args: ChooseArgs }
   | { command: Extract<GateCommand, '/change'>; args: ChangeArgs };
 
 const EXACT_COMMANDS: ReadonlySet<string> = new Set<string>([
@@ -68,9 +57,7 @@ const EXACT_COMMANDS: ReadonlySet<string> = new Set<string>([
 
 // Anchored patterns (protocol 3.1 rule 4). Applied to the trimmed body: the
 // trailing `$` forbids trailing content and `.` never crosses newlines.
-// V1: /approve takes exactly one argument, a decimal-digit comment id.
 const APPROVE_PATTERN = /^\/approve (\d+)$/;
-const CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
 const CHANGE_PATTERN = /^\/change (.+)$/;
 
 /**
@@ -94,14 +81,6 @@ export function parseCommand(body: string | null | undefined): ParsedCommand | n
     return {
       command: COMMANDS.approve,
       args: { planCommentId: Number(approve[1] ?? '0') },
-    };
-  }
-
-  const choose = CHOOSE_PATTERN.exec(trimmed);
-  if (choose !== null) {
-    return {
-      command: COMMANDS.choose,
-      args: { questionId: choose[1] ?? '', choice: choose[2] ?? '' },
     };
   }
 

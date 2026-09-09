@@ -1,51 +1,42 @@
 /**
- * Discovery: GitHub canonical state → per-issue DispatchIntents (docs/
- * architecture-v1.md §3, §5).
+ * Discovery: GitHub canonical state → per-issue TaskIntents.
  *
  * FROZEN CONSTRAINTS: the Driver never calls an LLM and never transitions
- * labels — it reads issues/comments and derives what SHOULD be dispatched;
- * the dedup/receipt layer decides what actually is. Discovery performs one
+ * labels — it reads issues/comments and derives what SHOULD be prepared; the
+ * driver-state layer decides what actually is. Discovery performs one
  * listComments call per issue and shares it between intent derivation and
  * feedback projection so a cycle is consistently snapshot-based.
  *
- * Schema 2 (hardening): discovery also
- *  - reads the issue's Gate-issued records ONCE per cycle and fails the
- *    issue closed on suspect records (unparsable / untrusted author);
- *  - bootstraps a workflow_epoch record for planning issues that lack one
- *    (Driver-issued epoch, docs/plans/v1_hardening_decisions.md §4.1) so
- *    Producer-submitted issues and post-T0 record failures self-heal.
+ * V1 SIMPLIFICATION: the Driver no longer bootstraps workflow_epoch records.
+ * The Gate is the only record issuer; a T0 whose record write failed is
+ * healed by re-running /ai-plan (the Gate's PLANNING self-heal path). A
+ * planning issue without an epoch record simply derives no intent — fail
+ * closed, with a log line.
  */
 import type { CommentDetail, DriverGitHubClient, IssueDetail, RepositoryInfo } from '../github/client';
 import {
   acceptedFeedbackEvents,
-  findHumanFeedbackCommands,
   readIssueRecords,
   type IssueRecordView,
   type HumanFeedbackEntry,
 } from '../github/issue-sync';
-import {
-  buildRecordBody,
-  epochOperationId,
-  type WorkflowEpochRecord,
-} from '../protocol/records';
-import { newWorkflowEpoch } from '../protocol/epoch';
 import type { DriverConfig } from './config';
 import { aiLabels, deriveIntents } from './intent';
-import type { DispatchIntent, IntentContext } from './intent';
+import type { TaskIntent, IntentContext } from './intent';
 
-/** Everything the dispatch layer needs for one issue, computed in one pass. */
+/** Everything the preparation layer needs for one issue, computed in one pass. */
 export interface Discovery {
   issue: IssueDetail;
   /**
-   * The raw comment snapshot the intents were derived from, so dispatch can
-   * extract the approved Plan body without a second GitHub round-trip.
+   * The raw comment snapshot the intents were derived from, so preparation
+   * can extract the approved Plan body without a second GitHub round-trip.
    */
   comments: CommentDetail[];
-  /** Intents to dispatch for this issue (0..1 in practice, but list-typed). */
-  intents: DispatchIntent[];
+  /** Intents to prepare for this issue (0..1 in practice, but list-typed). */
+  intents: TaskIntent[];
   /** ACCEPTED feedback events of the current epoch, ascending by comment id. */
   feedback: HumanFeedbackEntry[];
-  /** Record view (epoch, approvals, feedback, suspect) for this cycle. */
+  /** Record view (epoch, approvals, feedback, suspect) for this snapshot. */
   records: IssueRecordView;
 }
 
@@ -60,46 +51,9 @@ export function parseRepositorySlug(repository: string): { owner: string; name: 
 }
 
 /**
- * Driver-side epoch bootstrap (schema 2): a planning issue WITHOUT any epoch
- * record gets one issued by the Driver identity (Producer-submitted issues,
- * or a gate T0 whose record write failed). Bootstrapping is idempotent and
- * never touches issues with suspect epoch records — those fail closed.
- * Returns the fresh comment snapshot after a successful bootstrap, or null
- * when no bootstrap happened.
- */
-async function bootstrapEpochIfNeeded(
-  client: DriverGitHubClient,
-  ref: { owner: string; repo: string; issueNumber: number },
-  repositoryInfo: RepositoryInfo,
-  issue: IssueDetail,
-  records: IssueRecordView,
-): Promise<CommentDetail[] | null> {
-  const labels = aiLabels(issue.labels);
-  if (!(labels.length === 1 && labels[0] === 'ai:planning')) return null;
-  if (records.epoch !== null) return null;
-  if (records.suspect.some((entry) => entry.reason.includes('workflow_epoch'))) return null;
-  const identity = await client.getAuthenticatedUser();
-  const epoch = newWorkflowEpoch();
-  const record: WorkflowEpochRecord = {
-    schema: 2,
-    kind: 'workflow_epoch',
-    repository_id: repositoryInfo.id,
-    issue_number: issue.number,
-    workflow_epoch: epoch,
-    created_at: new Date().toISOString(),
-    issued_by: identity.login,
-    operation_id: epochOperationId(repositoryInfo.id, issue.number, epoch),
-  };
-  await client.addIssueComment(ref, buildRecordBody(record));
-  // Re-read so this cycle's intents already carry the new epoch.
-  return client.listComments(ref);
-}
-
-/**
  * Discover work for ONE issue: list comments once, compute the trusted-human
- * set (config.trustedHumans + repo owner — the owner is always trusted,
- * docs/architecture-v1.md §4) and derive intents + accepted feedback from
- * the snapshot.
+ * set (config.trustedHumans + repo owner — the owner is always trusted) and
+ * derive intents + accepted feedback from the snapshot.
  */
 export async function discoverIssue(
   client: DriverGitHubClient,
@@ -113,15 +67,9 @@ export async function discoverIssue(
     throw new Error(`invalid repository slug: ${JSON.stringify(repository)}`);
   }
   const ref = { owner: slug.owner, repo: slug.name, issueNumber: issue.number };
-  let comments: CommentDetail[] = await client.listComments(ref);
+  const comments: CommentDetail[] = await client.listComments(ref);
   const gateLogins = new Set(config.gateLogins.map((login) => login.toLowerCase()));
-  let records = readIssueRecords(comments, gateLogins);
-
-  const bootstrapped = await bootstrapEpochIfNeeded(client, ref, repositoryInfo, issue, records);
-  if (bootstrapped !== null) {
-    comments = bootstrapped;
-    records = readIssueRecords(comments, gateLogins);
-  }
+  const records = readIssueRecords(comments, gateLogins);
 
   const ctx: IntentContext = {
     repositoryId: repositoryInfo.id,
@@ -145,9 +93,9 @@ export async function discoverIssue(
  * Discover work across ALL open issues with exactly one `ai:*` label.
  * Issues are processed sequentially (predictable API usage, deterministic
  * comment id ordering assumptions). Issues with 0 or >1 ai: labels are
- * skipped logless by aiLabels/deriveIntents semantics. A per-issue failure
- * (odd GitHub payload, simulated outage) is reported through `log.error`
- * and skips only that issue — one bad issue never aborts the cycle.
+ * skipped by aiLabels/deriveIntents semantics. A per-issue failure (odd
+ * GitHub payload, simulated outage) is reported through `log.error` and
+ * skips only that issue — one bad issue never aborts the cycle.
  */
 export async function discoverWork(
   client: DriverGitHubClient,

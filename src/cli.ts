@@ -1,23 +1,26 @@
 /**
- * `gateflow` CLI (docs/architecture-v1.md §5: src/cli.ts — "gateflow driver
- * CLI (start / once / status / retry)").
+ * `gateflow` CLI — the V1 Manual-Activation driver (docs/plans/
+ * v1-simplification-plan.md §7).
  *
  * Usage:
- *   gateflow driver once [--root <dir>] [--config <file>]
- *   gateflow driver start [--root <dir>] [--config <file>]
- *   gateflow driver status [--root <dir>] [--config <file>]
- *   gateflow driver retry <dispatchId> [--root <dir>] [--config <file>]
+ *   gateflow run    [--issue <n>] [--root <dir>] [--config <file>]
+ *   gateflow sync   [--root <dir>] [--config <file>]
+ *   gateflow status [--root <dir>] [--config <file>]
+ *   gateflow retry  <task-id> [--root <dir>] [--config <file>]
  *
- * - `--root` defaults to the current working directory; `--config` defaults
- *   to `gateflow.config.yml` inside the root.
- * - `once` / `start` need GITHUB_TOKEN in the environment (docs §10: the
- *   token lives only in the Driver process environment, never on disk).
- *   Repository resolution order: config `repository` → GATEFLOW_REPOSITORY
- *   → git remote origin (parsed by driver/config).
- * - `status` / `retry` are OFFLINE operations (no token, no GitHub calls):
- *   they only read / clear local workspace files.
+ * - `run` prepares the active task directory and prints the prompt to paste
+ *   into ChatGPT / ZCode. `--issue` explicitly switches the active task.
+ * - `sync` publishes validated task results to GitHub (Plan / Tracker /
+ *   Report comments; the Gate alone transitions state).
+ * - `status` is OFFLINE: it only reads local workspace files.
+ * - `retry <task-id>` clears the driver-state record so the next `run`
+ *   re-prepares the task. Offline.
+ * - `run` / `sync` need GITHUB_TOKEN in the environment; the token lives
+ *   only in the Driver process environment, never on disk. Repository
+ *   resolution order: config `repository` → GATEFLOW_REPOSITORY → git
+ *   remote origin.
  * - Console logger with timestamps, mirrored (best-effort, never crashing)
- *   into `<workspace>/logs/driver.log`.
+ *   into `<workspace>/driver/logs/driver.log`.
  * - Exit codes: 0 success, 1 usage/config/infrastructure error.
  *
  * No new dependencies: argv parsing is manual.
@@ -30,31 +33,35 @@ import process from 'node:process';
 
 import { createDriverGitHubClient, createOctokit } from './github/client';
 import { ConfigError, loadConfig, resolveRepository } from './driver/config';
-import { startDriver, runOnce } from './driver/driver';
+import { runCommand, syncCommand } from './driver/driver';
 import type { DriverDeps, DriverLogger } from './driver/driver';
-import { retryDispatch } from './driver/retry';
-import { readCurrent } from './workspace/inbox';
-import { listOutboxDispatchIds, listReceipts } from './workspace/outbox';
+import { readCurrent } from './workspace/tasks';
+import { readDriverState } from './workspace/driver-state';
 import { resolveWorkspace } from './workspace/paths';
 import type { WorkspacePaths } from './workspace/paths';
-import { DISPATCH_DIR_PATTERN } from './workspace/protocol';
-import { inspectSubmit } from './workspace/submit';
+import { TASK_ID_PATTERN } from './workspace/protocol';
+import { clearTask } from './driver/sync';
 
-const USAGE = `gateflow driver — local GateFlow Driver
+const USAGE = `gateflow — local GateFlow driver (Manual Activation)
 
 Usage:
-  gateflow driver once   [--root <dir>] [--config <file>]   run one discovery+sync cycle
-  gateflow driver start  [--root <dir>] [--config <file>]   poll + watch until interrupted
-  gateflow driver status [--root <dir>] [--config <file>]   show local workspace state (offline)
-  gateflow driver retry <dispatchId> [--root <dir>]         clear a receipt so the next cycle re-dispatches
+  gateflow run    [--issue <n>] [--root <dir>] [--config <file>]
+                  discover GitHub state, prepare the active task, print the AI prompt
+  gateflow sync   [--root <dir>] [--config <file>]
+                  validate task results and publish them to GitHub
+  gateflow status [--root <dir>] [--config <file>]
+                  show local workspace state (offline)
+  gateflow retry  <task-id> [--root <dir>]
+                  clear a task's driver state so the next run re-prepares it (offline)
 
 Environment:
-  GITHUB_TOKEN          required for once/start; never written to disk
+  GITHUB_TOKEN          required for run/sync; never written to disk
   GATEFLOW_REPOSITORY   optional owner/name fallback for repository resolution`;
 
 interface CliArgs {
-  command: 'once' | 'start' | 'status' | 'retry';
-  dispatchId: string | null;
+  command: 'run' | 'sync' | 'status' | 'retry';
+  taskId: string | null;
+  issue: number | null;
   root: string;
   config: string;
 }
@@ -63,16 +70,24 @@ function parseArgs(argv: string[]): { ok: true; args: CliArgs } | { ok: false; e
   const positionals: string[] = [];
   let root = process.cwd();
   let config = 'gateflow.config.yml';
+  let issue: number | null = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? '';
-    if (arg === '--root' || arg === '--config') {
+    if (arg === '--root' || arg === '--config' || arg === '--issue') {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith('--')) {
         return { ok: false, error: `flag ${arg} requires a value` };
       }
       if (arg === '--root') root = value;
-      else config = value;
+      else if (arg === '--config') config = value;
+      else {
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed) || parsed < 1) {
+          return { ok: false, error: `--issue must be a positive integer, got ${JSON.stringify(value)}` };
+        }
+        issue = parsed;
+      }
       i += 1;
       continue;
     }
@@ -84,26 +99,32 @@ function parseArgs(argv: string[]): { ok: true; args: CliArgs } | { ok: false; e
       config = arg.slice('--config='.length);
       continue;
     }
+    if (arg.startsWith('--issue=')) {
+      const parsed = Number(arg.slice('--issue='.length));
+      if (!Number.isSafeInteger(parsed) || parsed < 1) {
+        return { ok: false, error: `--issue must be a positive integer, got ${JSON.stringify(arg.slice('--issue='.length))}` };
+      }
+      issue = parsed;
+      continue;
+    }
     if (arg.startsWith('--')) {
       return { ok: false, error: `unknown flag "${arg}"` };
     }
     positionals.push(arg);
   }
 
-  // Tolerate `gateflow driver once` and a bare `gateflow once` alike.
-  if (positionals[0] === 'driver') positionals.shift();
   const command = positionals[0];
-  if (command !== 'once' && command !== 'start' && command !== 'status' && command !== 'retry') {
+  if (command !== 'run' && command !== 'sync' && command !== 'status' && command !== 'retry') {
     return { ok: false, error: `unknown command "${command ?? ''}"` };
   }
-  const dispatchId = positionals[1] ?? null;
-  if (command === 'retry' && dispatchId === null) {
-    return { ok: false, error: 'retry requires a <dispatchId> argument' };
+  const taskId = positionals[1] ?? null;
+  if (command === 'retry' && taskId === null) {
+    return { ok: false, error: 'retry requires a <task-id> argument' };
   }
-  return { ok: true, args: { command, dispatchId, root, config } };
+  return { ok: true, args: { command, taskId, issue, root, config } };
 }
 
-/** Timestamped console logger mirrored into <workspace>/logs/driver.log. */
+/** Timestamped console logger mirrored into <workspace>/driver/logs/driver.log. */
 function createLogger(paths: WorkspacePaths): DriverLogger {
   const emit = (level: 'info' | 'warn' | 'error', msg: string): void => {
     const line = `${new Date().toISOString()} [${level}] ${msg}`;
@@ -128,9 +149,9 @@ function createLogger(paths: WorkspacePaths): DriverLogger {
 }
 
 /**
- * Best-effort `git remote get-url origin` for repository resolution
- * (docs §10 fallback order). Any failure — missing git, missing remote,
- * non-git directory — yields null, which resolveRepository handles.
+ * Best-effort `git remote get-url origin` for repository resolution.
+ * Any failure — missing git, missing remote, non-git directory — yields
+ * null, which resolveRepository handles.
  */
 function readGitRemoteUrl(projectRoot: string): string | null {
   try {
@@ -146,14 +167,13 @@ function readGitRemoteUrl(projectRoot: string): string | null {
   }
 }
 
-async function runOnline(args: CliArgs, mode: 'once' | 'start'): Promise<number> {
+async function onlineDeps(args: CliArgs): Promise<DriverDeps> {
   const token = process.env.GITHUB_TOKEN;
   if (token === undefined || token.length === 0) {
-    console.error(
-      `GITHUB_TOKEN is required for \`gateflow driver ${mode}\`. ` +
+    throw new ConfigError(
+      'GITHUB_TOKEN is required for `gateflow run` / `gateflow sync`. ' +
         'Export a token with repo access, e.g. `export GITHUB_TOKEN=ghp_...`.',
     );
-    return 1;
   }
   const config = await loadConfig(args.root, args.config);
   const repository = resolveRepository(config, process.env, readGitRemoteUrl(args.root));
@@ -167,24 +187,33 @@ async function runOnline(args: CliArgs, mode: 'once' | 'start'): Promise<number>
   const log = createLogger(paths);
   const octokit = createOctokit(token);
   const client = createDriverGitHubClient(octokit, { owner, repo });
-  const deps: DriverDeps = { client, config, projectRoot: args.root, log };
-  log.info(`gateflow driver ${mode}: repository=${repository} root=${args.root}`);
+  return { client, config, projectRoot: args.root, log };
+}
 
-  if (mode === 'once') {
-    const result = await runOnce(deps);
-    const dispatched = result.dispatched.filter((o) => o.dispatched);
-    console.log(`dispatched: ${dispatched.length} of ${result.dispatched.length} intent(s)`);
-    for (const outcome of result.dispatched) {
-      console.log(`  ${outcome.dispatched ? '+' : '-'} ${outcome.dispatchId ?? '?'}: ${outcome.reason}`);
+async function runOnline(args: CliArgs, command: 'run' | 'sync'): Promise<number> {
+  const deps = await onlineDeps(args);
+  deps.log.info(`gateflow ${command}: root=${args.root}`);
+
+  if (command === 'run') {
+    const result = await runCommand(deps, { issue: args.issue ?? undefined });
+    if (result.taskId !== null) {
+      console.log(`task: ${result.taskId} (${result.mode ?? '?'}, issue #${result.issueNumber ?? '?'})`);
     }
-    console.log(`synced: ${result.synced.length} outbox dispatch dir(s)`);
-    for (const outcome of result.synced) {
-      console.log(`  ${outcome.dispatchId}: ${outcome.action} — ${outcome.detail}`);
+    console.log(`result: ${result.reason}`);
+    if (result.prompt !== undefined) {
+      console.log('');
+      console.log('--- copy the prompt below into ChatGPT / ZCode ---');
+      console.log(result.prompt);
+      console.log('--- end of prompt ---');
     }
     return 0;
   }
 
-  await startDriver(deps);
+  const result = await syncCommand(deps);
+  console.log(`synced: ${result.outcomes.length} task dir(s)`);
+  for (const outcome of result.outcomes) {
+    console.log(`  ${outcome.taskId}: ${outcome.action} — ${outcome.detail}`);
+  }
   return 0;
 }
 
@@ -194,62 +223,58 @@ async function runStatus(args: CliArgs): Promise<number> {
 
   const current = await readCurrent(paths);
   if (current === null) {
-    console.log('current.json: (none)');
+    console.log('current task: (none — run `gateflow run`)');
   } else {
     console.log(
-      `current.json: ${current.dispatch_id} (role=${current.role}, issue=#${current.issue_number}, updated=${current.updated_at})`,
+      `current task: ${current.task_id} (mode=${current.mode}, issue=#${current.issue_number}, updated=${current.updated_at})`,
     );
   }
 
-  const receipts = await listReceipts(paths);
-  console.log(`receipts: ${receipts.length}`);
-  for (const receipt of receipts) {
+  const state = await readDriverState(paths);
+  const records = Object.values(state.tasks).sort((a, b) => a.task_id.localeCompare(b.task_id));
+  console.log(`driver state: ${records.length} task record(s)`);
+  for (const record of records) {
     console.log(
-      `  ${receipt.dispatch_id}  status=${receipt.status} attempts=${receipt.attempts} ` +
-        `epoch=${receipt.workflow_epoch ?? '-'} ` +
-        `published=${receipt.published_comment_id ?? '-'} ` +
-        `activation=${receipt.activation ? receipt.activation.state : '-'} ` +
-        `last_sync=${receipt.last_sync_at ?? '-'}` +
-        `${receipt.error !== undefined && receipt.error !== null ? ` error=${receipt.error}` : ''}`,
+      `  ${record.task_id}  status=${record.status} attempts=${record.attempts} ` +
+        `issue=#${record.issue_number} epoch=${record.workflow_epoch}` +
+        `${record.published_comment_id !== undefined ? ` published=#${record.published_comment_id}` : ''}` +
+        `${record.last_sync_at !== undefined ? ` last_sync=${record.last_sync_at}` : ''}` +
+        `${record.error !== undefined && record.error !== null ? ` error=${record.error}` : ''}`,
     );
   }
 
-  const outboxIds = await listOutboxDispatchIds(paths);
-  console.log(`outbox dispatch dirs: ${outboxIds.length}`);
-  for (const id of outboxIds) {
-    console.log(`  ${id}`);
-  }
-
-  const submit = await inspectSubmit(paths);
-  if (submit.status === 'empty') {
-    console.log('submit: (empty)');
-  } else if (submit.status === 'invalid') {
-    console.log(`submit: INVALID — ${submit.error}`);
+  const pendingSync = records.filter((record) => record.status === 'prepared' || record.status === 'publishing');
+  if (pendingSync.length > 0) {
+    console.log('next step: work with your AI client, then run `gateflow sync`.');
+  } else if (current !== null) {
+    const record = state.tasks[current.task_id];
+    if (record !== undefined && (record.status === 'published')) {
+      console.log('next step: results published — wait for the Gate (or re-run sync to confirm acceptance).');
+    } else if (record !== undefined && record.status === 'accepted') {
+      console.log('next step: output accepted by the Gate — continue on GitHub (/approve or check ai:done).');
+    }
   } else {
-    console.log(`submit: ready — "${submit.request.title}" (${submit.request.kind}/${submit.request.maturity_hint})`);
+    console.log('next step: run `gateflow run` (or /ai-plan on GitHub to start a task).');
   }
   return 0;
 }
 
 async function runRetry(args: CliArgs): Promise<number> {
-  const dispatchId = args.dispatchId ?? '';
-  if (!DISPATCH_DIR_PATTERN.test(dispatchId)) {
-    console.error(
-      `invalid dispatch id: ${JSON.stringify(dispatchId)} ` +
-        '(expected gf_r<id>_i<issue>_w<epoch-code>_<role>_<revision>)',
-    );
+  const taskId = args.taskId ?? '';
+  if (!TASK_ID_PATTERN.test(taskId)) {
+    console.error(`invalid task id: ${JSON.stringify(taskId)} (expected gf_r<id>_i<issue>_w<epoch>_<mode>_<rev>)`);
     return 1;
   }
   const config = await loadConfig(args.root, args.config);
   const paths = resolveWorkspace(args.root, config.driver.workspaceDir);
-  const cleared = await retryDispatch(paths, dispatchId);
+  const cleared = await clearTask(paths, taskId);
   if (cleared) {
     console.log(
-      `receipt cleared for ${dispatchId}. The dispatch will be re-dispatched on the next cycle ` +
-        'if the issue state still warrants it.',
+      `driver state cleared for ${taskId}. The task will be re-prepared by ` +
+        '`gateflow run` if the issue state still warrants it.',
     );
   } else {
-    console.log(`no receipt found for ${dispatchId} — nothing to clear.`);
+    console.log(`no driver-state record found for ${taskId} — nothing to clear.`);
   }
   return 0;
 }
@@ -263,8 +288,8 @@ export async function main(argv: string[]): Promise<number> {
   }
   try {
     switch (parsed.args.command) {
-      case 'once':
-      case 'start':
+      case 'run':
+      case 'sync':
         return await runOnline(parsed.args, parsed.args.command);
       case 'status':
         return await runStatus(parsed.args);
@@ -275,7 +300,7 @@ export async function main(argv: string[]): Promise<number> {
     if (err instanceof ConfigError) {
       console.error(`config error: ${err.message}`);
     } else {
-      console.error(`gateflow driver failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`gateflow failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     return 1;
   }

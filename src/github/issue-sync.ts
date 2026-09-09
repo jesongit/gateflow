@@ -10,13 +10,13 @@
  *  - Authorization facts come from Gate-issued RECORDS (schema 2, shared
  *    parser in ../protocol/records): readIssueRecords is the ONE place the
  *    Driver interprets them. No second copy of the record grammar exists.
- *  - Human command matching for the FEEDBACK.md projection (/choose,
- *    /change) is REIMPLEMENTED here with the same anchored, case-sensitive,
- *    whole-trimmed-body rules as the gate (src/gate/commands.ts,
- *    docs/protocol.md section 3.1). We deliberately do NOT import
- *    gate/commands.ts; if the frozen protocol ever changes, mirror the
- *    change in both places. Acceptance (revision counting) is decided by
- *    Gate-issued feedback records, never by the raw comment count.
+ *  - Human command matching for the feedback.md projection (/change) is
+ *    REIMPLEMENTED here with the same anchored, case-sensitive,
+ *    whole-trimmed-body rules as the gate (src/gate/commands.ts). We
+ *    deliberately do NOT import gate/commands.ts; if the frozen protocol ever
+ *    changes, mirror the change in both places. Acceptance (revision
+ *    counting) is decided by Gate-issued feedback records, never by the raw
+ *    comment count.
  *
  * Publishing (side-effectful): the Driver publishes protocol comments and
  * edits ONLY its own tracker comment. Labels, issue fields, and other
@@ -103,20 +103,20 @@ export function findCompletionReportComments(
   return reports;
 }
 
-// Anchored patterns over the TRIMMED body (docs/protocol.md section 3.1):
-// the whole comment must be the command. `.` never matches a newline, so
-// multi-line bodies can never match; the trailing `$` forbids trailing
-// content. Matching is case-sensitive on purpose ("/CHANGE" is not a
-// command). Used ONLY for the FEEDBACK.md projection and for cross-checking
-// that an accepted-feedback record still anchors to a real human command —
-// acceptance itself is decided by Gate-issued records (schema 2).
-const CHOOSE_PATTERN = /^\/choose (\S+) (\S+)$/;
+// Anchored patterns over the TRIMMED body: the whole comment must be the
+// command. `.` never matches a newline, so multi-line bodies can never match;
+// the trailing `$` forbids trailing content. Matching is case-sensitive on
+// purpose ("/CHANGE" is not a command). Used ONLY for the feedback.md
+// projection and for cross-checking that an accepted-feedback record still
+// anchors to a real human command — acceptance itself is decided by
+// Gate-issued records (schema 2). V1: /choose is gone; /change is the one
+// feedback channel.
 const CHANGE_PATTERN = /^\/change (.+)$/;
 
 /** A trusted-human feedback command comment. */
 export interface HumanFeedbackEntry {
   comment: CommentDetail;
-  kind: 'change' | 'choose';
+  kind: 'change';
 }
 
 /**
@@ -141,7 +141,7 @@ function isTrustedAuthor(
 }
 
 /**
- * Candidate human feedback commands (/choose, /change) for FEEDBACK.md
+ * Candidate human feedback commands (/change) for the feedback.md
  * projection: whole-comment, anchored matches by trusted humans. These are
  * CANDIDATES only — discovery intersects them with Gate-issued
  * feedback_accepted records before counting revisions or projecting.
@@ -157,10 +157,6 @@ export function findHumanFeedbackCommands(
       continue;
     }
     const trimmed = comment.body.trim();
-    if (CHOOSE_PATTERN.exec(trimmed) !== null) {
-      entries.push({ comment, kind: 'choose' });
-      continue;
-    }
     if (CHANGE_PATTERN.exec(trimmed) !== null) {
       entries.push({ comment, kind: 'change' });
     }
@@ -290,9 +286,9 @@ export function readIssueRecords(
 
 /**
  * Accepted feedback events of the CURRENT epoch: gate-issued records whose
- * referenced command comment still exists as an anchored /choose or /change
- * by a trusted human. Rejected, duplicated (no record), old-epoch and
- * edited-away commands never count (hardening Phase 3.2).
+ * referenced command comment still exists as an anchored /change by a trusted
+ * human. Rejected, duplicated (no record), old-epoch and edited-away commands
+ * never count (hardening Phase 3.2).
  */
 export function acceptedFeedbackEvents(
   view: IssueRecordView,
@@ -309,10 +305,9 @@ export function acceptedFeedbackEvents(
     const comment = byId.get(record.feedback_comment_id);
     if (comment === undefined) continue;
     if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) continue;
-    const trimmed = comment.body.trim();
-    if (record.feedback_kind === 'choose' && CHOOSE_PATTERN.exec(trimmed) === null) continue;
-    if (record.feedback_kind === 'change' && CHANGE_PATTERN.exec(trimmed) === null) continue;
-    accepted.push({ comment, kind: record.feedback_kind });
+    if (record.feedback_kind !== 'change') continue;
+    if (CHANGE_PATTERN.exec(comment.body.trim()) === null) continue;
+    accepted.push({ comment, kind: 'change' });
   }
   return accepted;
 }
@@ -322,16 +317,15 @@ export async function publishPlanComment(
   client: DriverGitHubClient,
   ref: IssueRef,
   planMarkdown: string,
-  dispatchId: string,
+  taskId: string,
 ): Promise<{ id: number }> {
-  return client.addIssueComment(ref, buildPlanCommentBody(planMarkdown, dispatchId));
+  return client.addIssueComment(ref, buildPlanCommentBody(planMarkdown, taskId));
 }
 
 /** Options for creating an Execution Tracker comment. */
 export interface TrackerPublishOptions {
-  dispatchId: string;
+  taskId: string;
   issueNumber: number;
-  progressMarkdown: string;
 }
 
 /**
@@ -345,10 +339,10 @@ export async function publishTrackerComment(
   opts: TrackerPublishOptions,
 ): Promise<{ id: number }> {
   const body = buildTrackerCommentBody({
-    dispatchId: opts.dispatchId,
+    taskId: opts.taskId,
     issueNumber: opts.issueNumber,
     status: 'In Progress',
-    progressMarkdown: opts.progressMarkdown,
+    progressMarkdown: '',
   });
   return client.addIssueComment(ref, body);
 }
@@ -418,7 +412,7 @@ export async function updateTracker(
     opts.status ?? (current === 'Blocked' ? 'Blocked' : 'In Progress');
   const progressMarkdown = opts.progressMarkdown ?? extractProgressTail(currentBody);
   const body = buildTrackerCommentBody({
-    dispatchId,
+    taskId: dispatchId,
     issueNumber: ref.issueNumber,
     status,
     progressMarkdown,
@@ -434,7 +428,7 @@ export async function publishCompletionReport(
   client: DriverGitHubClient,
   ref: IssueRef,
   reportMarkdown: string,
-  dispatchId: string,
+  taskId: string,
 ): Promise<{ id: number }> {
-  return client.addIssueComment(ref, buildCompletionReportBody(reportMarkdown, dispatchId));
+  return client.addIssueComment(ref, buildCompletionReportBody(reportMarkdown, taskId));
 }

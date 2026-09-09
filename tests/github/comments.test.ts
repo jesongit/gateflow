@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   DISPATCH_ID_COMMENT_PATTERN,
   buildCompletionReportBody,
@@ -37,7 +37,7 @@ describe('comment body builders', () => {
 
   it('buildTrackerCommentBody contains the exact machine Status line and trimmed progress', () => {
     const body = buildTrackerCommentBody({
-      dispatchId: DISPATCH_EXE,
+      taskId: DISPATCH_EXE,
       issueNumber: 2,
       status: 'In Progress',
       progressMarkdown: '  did stuff  ',
@@ -50,7 +50,7 @@ describe('comment body builders', () => {
 
   it('buildTrackerCommentBody supports the Blocked status and omits empty progress cleanly', () => {
     const blocked = buildTrackerCommentBody({
-      dispatchId: DISPATCH_EXE,
+      taskId: DISPATCH_EXE,
       issueNumber: 2,
       status: 'Blocked',
       progressMarkdown: '',

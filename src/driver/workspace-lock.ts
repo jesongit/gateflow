@@ -1,16 +1,17 @@
 /**
- * Workspace locks (hardening Phase 7.3, docs/plans/v1_hardening_decisions.md
- * §9): one active Executor per worktree, one Driver instance per machine.
+ * Workspace lock (the single-writer rule, kept from the hardening plan):
+ * one Driver process per machine/workspace at any time.
  *
  * FROZEN LIMITS (kept honest):
- * - These are LOCAL locks (same machine, same workspace directory). They
- *   constrain same-machine processes only; they are NOT a cross-machine
+ * - This is a LOCAL lock (same machine, same workspace directory). It
+ *   constrains same-machine processes only; it is NOT a cross-machine
  *   mutex. Multi-device setups must designate a single controlled writer or
  *   add an external coordinator — never assume the lock travels.
- * - Conflicts QUEUE (the dispatch is skipped with a reason and retried on a
- *   later cycle); there is no preemption and no agent registry.
+ * - V1 has no executor lock: there is exactly one active task and no
+ *   auto-dispatch, so `run`/`sync` mutual exclusion via the driver lock is
+ *   sufficient.
  *
- * Implementation: O_EXCL lock files under `.gateflow/driver/locks/` with
+ * Implementation: an O_EXCL lock file under `.gateflow/driver/locks/` with
  * { pid, holder, acquired_at } JSON. Stale detection = holder pid is dead
  * (process.kill(pid, 0)) or the lock is older than MAX_LOCK_AGE_MS; a stale
  * lock is stolen once. Every failure mode answers explicitly to the caller.
@@ -18,11 +19,6 @@
 import { open, readFile, unlink, writeFile } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import type { WorkspacePaths } from '../workspace/paths';
-
-/** Lock file guarding the single active Executor of one worktree. */
-export function executorLockFile(paths: WorkspacePaths): string {
-  return nodePath.join(paths.locks, 'executor.lock');
-}
 
 /** Lock file guarding the single Driver instance of one machine/workspace. */
 export function driverLockFile(paths: WorkspacePaths): string {
@@ -36,8 +32,6 @@ export interface LockContents {
   pid: number;
   holder: string;
   acquired_at: string;
-  /** Executor locks record the dispatch they guard; driver locks don't. */
-  dispatch_id?: string;
 }
 
 /** Steal a lock whose holder cannot possibly still be alive after this long. */
@@ -85,14 +79,14 @@ async function lockAgeMs(file: string, nowMs: number): Promise<number> {
 }
 
 /**
- * Acquire `file` for `holder` (optionally guarding `dispatchId`). Returns
- * { ok: false, holder } when a LIVE holder owns the lock (the caller queues).
- * A stale lock (dead pid or past MAX_LOCK_AGE_MS) is stolen once.
+ * Acquire `file` for `holder`. Returns { ok: false, holder } when a LIVE
+ * holder owns the lock (the caller fails with a clear message). A stale
+ * lock (dead pid or past MAX_LOCK_AGE_MS) is stolen once — never merely
+ * because of its age while the holder process is still alive.
  */
 export async function acquireLock(
   file: string,
   holder: string,
-  dispatchId?: string,
   now: () => Date = () => new Date(),
 ): Promise<LockAcquireResult> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -100,7 +94,6 @@ export async function acquireLock(
       pid: process.pid,
       holder,
       acquired_at: now().toISOString(),
-      ...(dispatchId !== undefined ? { dispatch_id: dispatchId } : {}),
     };
     let fd;
     try {
@@ -136,29 +129,17 @@ export async function acquireLock(
 }
 
 /**
- * Release `file` only when it still belongs to `holder` + `pid` (never delete
- * another process's lock). Returns whether a lock was actually removed.
+ * Release `file` only when it still belongs to `holder` + `pid` (never
+ * delete another process's lock). Returns whether a lock was removed.
  */
-export async function releaseLock(file: string, holder: string, dispatchId?: string): Promise<boolean> {
+export async function releaseLock(file: string, holder: string): Promise<boolean> {
   const existing = await readLock(file);
   if (existing === null) return false;
   if (existing.pid !== process.pid || existing.holder !== holder) return false;
-  if (dispatchId !== undefined && existing.dispatch_id !== dispatchId) return false;
   try {
     await unlink(file);
     return true;
   } catch {
     return false;
   }
-}
-
-/** Overwrite `file` with refreshed contents (keep-alive for long syncs). */
-export async function refreshLock(file: string, now: () => Date = () => new Date()): Promise<void> {
-  const existing = await readLock(file);
-  if (existing === null || existing.pid !== process.pid) return;
-  await writeFile(
-    file,
-    JSON.stringify({ ...existing, acquired_at: now().toISOString() }, null, 2) + '\n',
-    'utf8',
-  );
 }

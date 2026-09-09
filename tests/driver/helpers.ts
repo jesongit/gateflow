@@ -1,7 +1,7 @@
 /**
  * Shared fixtures for driver tests: a disposable workspace, an in-memory
  * DriverGitHubClient fake (no real GitHub API is ever touched) and a config
- * builder matching docs/workspace-protocol.md §10 defaults (schema 2).
+ * builder (V1 simplified config).
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,8 +10,6 @@ import * as nodePath from 'node:path';
 import type {
   CommentDetail,
   DriverGitHubClient,
-  DriverIdentity,
-  DriverReactionContent,
   IssueDetail,
   IssueRef,
   RepositoryInfo,
@@ -23,7 +21,8 @@ import type { WorkspacePaths } from '../../src/workspace/paths';
 import { buildRecordBody, RECORD_SCHEMA_VERSION, type GateRecord } from '../../src/protocol/records';
 import { newWorkflowEpoch, type WorkflowEpoch } from '../../src/protocol/epoch';
 
-export { CREATED_AT, UPDATED_AT } from '../workspace/helpers';
+export const CREATED_AT = '2026-09-06T10:00:00Z';
+export const UPDATED_AT = '2026-09-06T11:00:00Z';
 
 /** A disposable workspace with all directories created. */
 export interface WorkspaceFixture {
@@ -32,7 +31,7 @@ export interface WorkspaceFixture {
   cleanup: () => Promise<void>;
 }
 
-/** Temp workspace under os.tmpdir (mirrors tests/workspace/helpers.ts). */
+/** Temp workspace under os.tmpdir. */
 export async function makeWorkspace(): Promise<WorkspaceFixture> {
   const projectRoot = await mkdtemp(nodePath.join(tmpdir(), 'gateflow-driver-'));
   const paths = resolveWorkspace(projectRoot);
@@ -51,7 +50,6 @@ export type FakeIssue = IssueDetail & { comments: CommentDetail[] };
 
 /** A deterministic valid epoch for tests (suffix varies by index). */
 export function testEpoch(n = 1): WorkflowEpoch {
-  const base = newWorkflowEpoch();
   const suffix = n.toString(36).padStart(12, '0').slice(-12).replace(/[^0-9a-z]/g, '0');
   return `wf_${suffix}` as WorkflowEpoch;
 }
@@ -112,65 +110,26 @@ export class FakeDriverClient implements DriverGitHubClient {
   }
 
   /**
-   * Append a Gate-issued record comment (schema 2): authored by the fake's
-   * gate identity and carrying a valid record body.
+   * Append a Gate-issued record comment: authored by the fake's gate
+   * identity and carrying a valid record body.
    */
   addGateRecord(issueNumber: number, record: GateRecord, overrides: Partial<CommentDetail> = {}): CommentDetail {
     return this.addComment(issueNumber, this.gateUser, buildRecordBody(record), overrides);
-  }
-
-  /**
-   * Ensure an epoch record exists for the issue (the usual first fixture
-   * call for an in-workflow issue) and return the epoch.
-   */
-  ensureEpoch(issueNumber: number, epoch: WorkflowEpoch = testEpoch(issueNumber)): WorkflowEpoch {
-    const issue = this.issues.get(issueNumber);
-    if (issue === undefined) throw new Error(`fake issue #${issueNumber} does not exist`);
-    const existing = issue.comments.some((c) => c.body.includes('gateflow:workflow:v2'));
-    if (!existing) {
-      this.addGateRecord(issueNumber, {
-        schema: 2,
-        kind: 'workflow_epoch',
-        repository_id: this.repository.id,
-        issue_number: issueNumber,
-        workflow_epoch: epoch,
-        created_at: '2026-09-06T11:00:00Z',
-        issued_by: this.gateUser,
-        operation_id: `epoch:${this.repository.id}:${issueNumber}:${epoch}`,
-      });
-    }
-    return epoch;
   }
 
   commentCount(issueNumber: number): number {
     return this.issues.get(issueNumber)?.comments.length ?? 0;
   }
 
-  trackerBodies(issueNumber: number, dispatchId: string): string[] {
-    return (this.issues.get(issueNumber)?.comments ?? [])
-      .filter((c) => c.body.includes(dispatchId))
-      .map((c) => c.body);
-  }
-
   async getRepository(): Promise<RepositoryInfo> {
     return this.repository;
   }
 
-  async getAuthenticatedUser(): Promise<DriverIdentity> {
-    return { id: 5001, login: this.botUser };
-  }
-
-  async listIssues(ref: { owner: string; repo: string; state?: 'open' | 'closed' | 'all' }): Promise<IssueDetail[]> {
-    const state = ref.state ?? 'open';
+  async listIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
     return [...this.issues.values()]
-      .filter((issue) => (state === 'all' ? true : issue.state === state))
+      .filter((issue) => issue.state === 'open')
       .sort((a, b) => a.number - b.number)
       .map(({ comments: _comments, ...issue }) => issue);
-  }
-
-  /** Convenience alias mirroring the production discovery entry point. */
-  async listOpenIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
-    return this.listIssues({ ...ref, state: 'open' });
   }
 
   async getIssue(ref: IssueRef): Promise<IssueDetail | null> {
@@ -194,60 +153,28 @@ export class FakeDriverClient implements DriverGitHubClient {
     if (comment === undefined) throw new Error(`fake comment ${commentId} not found`);
     comment.body = body;
   }
-
-  async addReaction(_ref: IssueRef, _commentId: number, _content: DriverReactionContent): Promise<void> {
-    /* no-op */
-  }
-
-  /** Records created issues so submit tests can assert title/body/labels. */
-  readonly createdIssues: Array<{
-    ref: IssueRef;
-    title: string;
-    body: string;
-    labels: string[];
-    number: number;
-  }> = [];
-  private issueSeq = 500;
-
-  async createIssue(
-    ref: IssueRef,
-    input: { title: string; body: string; labels: string[] },
-  ): Promise<{ number: number }> {
-    const number = ++this.issueSeq;
-    this.addIssue(number, { title: input.title, body: input.body, labels: [...input.labels] });
-    this.createdIssues.push({ ref, ...input, labels: [...input.labels], number });
-    return { number };
-  }
 }
 
-/** DriverConfig with §10 defaults and surgical overrides for tests. */
+/** DriverConfig with V1 defaults and surgical overrides for tests. */
 export function testConfig(
   overrides: {
     repository?: string;
     trustedHumans?: string[];
     gateLogins?: string[];
     requireExplicitHumans?: boolean;
-    routing?: { consumer?: string; executor?: string };
-    progressSyncSeconds?: number;
     maxAttempts?: number;
-    pollIntervalSeconds?: number;
   } = {},
 ): DriverConfig {
   return {
     version: 1,
     ...(overrides.repository !== undefined ? { repository: overrides.repository } : {}),
     driver: {
-      pollIntervalSeconds: overrides.pollIntervalSeconds ?? 30,
       workspaceDir: '.gateflow',
-      progressSyncSeconds: overrides.progressSyncSeconds ?? 60,
       maxAttempts: overrides.maxAttempts ?? 3,
     },
     trustedHumans: overrides.trustedHumans ?? [],
     gateLogins: overrides.gateLogins ?? ['github-actions[bot]'],
     requireExplicitHumans: overrides.requireExplicitHumans ?? true,
-    routing: overrides.routing ?? {},
-    agents: {},
-    activation: { fallback: 'manual' },
   };
 }
 
@@ -273,14 +200,14 @@ export function makeDeps(
   return { client, config, projectRoot: fixture.projectRoot, log, ...(now ? { now } : {}) };
 }
 
-/** Write an outbox file for a dispatch (creating the directory). */
-export async function writeOutboxFile(
+/** Write a file inside a task directory (creating the directory). */
+export async function writeTaskFile(
   paths: WorkspacePaths,
-  dispatchId: string,
+  taskId: string,
   name: string,
   content: string,
 ): Promise<void> {
-  const dir = nodePath.join(paths.outbox, dispatchId);
+  const dir = nodePath.join(paths.tasks, taskId);
   await mkdir(dir, { recursive: true });
   await writeFile(nodePath.join(dir, name), content, 'utf8');
 }
@@ -289,24 +216,6 @@ export async function writeOutboxFile(
 export const ISSUE = 7;
 export const OWNER = 'octo';
 export const REPO = 'repo';
-
-/*
- * ============================================================================
- * SCHEMA 2 GATE-RECORD FIXTURES (supplement — nothing above was changed).
- *
- * The frozen record parser (src/protocol/records.ts parseRecord) validates
- * the record JSON against the EXACT field set INCLUDING `schema: 2`, and its
- * LOGIN grammar `^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?!$)){0,37}$` rejects
- * `[bot]`-suffixed logins such as `github-actions[bot]` — the very identity
- * docs/plans/v1_hardening_decisions.md §4 names as `gate_login` and
- * config.gateLogins defaults to. The frozen `GateRecord` interfaces predate
- * the `schema` field, so `buildRecordBody` cannot emit a parser-valid body
- * today (reported as a src gap). These builders produce parser-valid records
- * for tests: the JSON carries `schema: 2` and a bracket-free login, while
- * the record COMMENT author stays the fake's gateUser (`github-actions[bot]`)
- * — which is what readIssueRecords' gate_logins allowlist actually checks.
- * ============================================================================
- */
 
 /** LOGIN-grammar-clean stand-in for `github-actions[bot]` inside record JSON. */
 export const GATE_JSON_LOGIN = 'github-actions-bot';
@@ -371,7 +280,7 @@ export interface FeedbackRecordInput {
   issueNumber: number;
   epoch: WorkflowEpoch;
   feedbackCommentId: number;
-  kind: 'choose' | 'change';
+  kind: 'change';
 }
 
 /** A parser-valid feedback_accepted record (schema 2, Gate-issued). */
@@ -393,10 +302,8 @@ export function feedbackRecord(input: FeedbackRecordInput): GateRecord {
 }
 
 /**
- * Convenience fixture: ensure the issue carries a PARSER-VALID epoch record
- * (unlike FakeDriverClient.ensureEpoch, whose built-in record predates the
- * schema-2 field and therefore fails parseRecord — reported src gap). Every
- * in-workflow fixture starts here so intents can be derived at all.
+ * Convenience fixture: ensure the issue carries a parser-valid epoch record
+ * (the usual first fixture call for an in-workflow issue).
  */
 export function addEpochRecord(
   client: FakeDriverClient,
@@ -405,4 +312,9 @@ export function addEpochRecord(
 ): WorkflowEpoch {
   client.addGateRecord(issueNumber, epochRecord(client.repository.id, issueNumber, epoch));
   return epoch;
+}
+
+/** Build a valid plan-marker comment body. */
+export function planCommentBody(planMarkdown: string, taskId: string): string {
+  return `<!-- ai-workflow:plan:v1 -->\n\n<!-- gateflow:dispatch-id: ${taskId} -->\n\n${planMarkdown.trim()}\n`;
 }

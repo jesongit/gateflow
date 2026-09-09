@@ -31,14 +31,14 @@ import { MARKERS } from '../gate/protocol';
 import { parseTrackerStatus, type TrackerStatus } from '../gate/tracker';
 
 /**
- * Matches the dispatch-id HTML comment and captures the id (schema 2 grammar
- * `gf_r<repo_id>_i<issue>_w<epoch_code>_<role>_<revision>`, docs/
- * workspace-protocol.md section 3; the epoch segment is optional in the
- * pattern so schema-1 comments published before an upgrade still parse). Not
- * anchored to a line: discovery is string-level.
+ * Matches the dispatch-id HTML comment and captures the id (schema 3 grammar
+ * `gf_r<repo_id>_i<issue>_w<epoch_code>_<mode>_<revision>`; the mode tokens
+ * are `plan` | `execute`, and the epoch segment is optional in the pattern so
+ * comments published by earlier schema versions still parse). Not anchored to
+ * a line: discovery is string-level.
  */
 export const DISPATCH_ID_COMMENT_PATTERN: RegExp =
-  /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:consumer|executor)_\S+) -->/;
+  /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:plan|execute|consumer|executor)_\S+) -->/;
 
 /**
  * Matches a tracker Status machine line: literal bold label, optional
@@ -68,15 +68,16 @@ export function buildPlanCommentBody(planMarkdown: string, dispatchId: string): 
 
 /** Options for building an Execution Tracker comment body. */
 export interface TrackerCommentOptions {
-  dispatchId: string;
+  taskId: string;
   /**
-   * Accepted for call-site parity with the dispatch record; the frozen body
-   * layout does NOT render it separately because dispatch_id already embeds
+   * Accepted for call-site parity with the task record; the frozen body
+   * layout does NOT render it separately because task_id already embeds
    * `i<issueNumber>`.
    */
   issueNumber: number;
   status: 'In Progress' | 'Blocked';
-  progressMarkdown: string;
+  /** Optional progress tail (V1 keeps trackers minimal). */
+  progressMarkdown?: string;
 }
 
 /**
@@ -88,11 +89,11 @@ export function buildTrackerCommentBody(opts: TrackerCommentOptions): string {
   const head = [
     MARKERS.executionTracker,
     '',
-    dispatchIdComment(opts.dispatchId),
+    dispatchIdComment(opts.taskId),
     '',
     `**Status:** ${opts.status}`,
   ].join('\n');
-  const progress = opts.progressMarkdown.trim();
+  const progress = (opts.progressMarkdown ?? '').trim();
   return progress.length > 0 ? `${head}\n\n${progress}\n` : `${head}\n`;
 }
 
