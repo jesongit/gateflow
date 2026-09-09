@@ -33,8 +33,9 @@ function commandFor(program) {
 }
 
 function usesControlledWindowsShell(program, executable) {
+  const npmProgram = program === 'npm' || /^(?:npm\.(?:cmd|bat))$/i.test(program);
   return process.platform === 'win32'
-    && program === 'npm'
+    && npmProgram
     && /\.(?:cmd|bat)$/i.test(executable);
 }
 
