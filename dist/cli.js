@@ -16096,7 +16096,7 @@ var OctokitDriverClient = class {
   async listIssues(ref2) {
     const issues = [];
     for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
-      const { data } = await this.octokit.rest.issues.list({
+      const { data } = await this.octokit.rest.issues.listForRepo({
         owner: ref2.owner,
         repo: ref2.repo,
         state: "open",

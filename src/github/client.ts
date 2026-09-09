@@ -133,7 +133,7 @@ export interface OctokitRest {
           updated_at?: string;
         }>;
       }>;
-      list(params: {
+      listForRepo(params: {
         owner: string;
         repo: string;
         state: 'open';
@@ -311,7 +311,7 @@ class OctokitDriverClient implements DriverGitHubClient {
   async listIssues(ref: { owner: string; repo: string }): Promise<IssueDetail[]> {
     const issues: IssueDetail[] = [];
     for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
-      const { data } = await this.octokit.rest.issues.list({
+      const { data } = await this.octokit.rest.issues.listForRepo({
         owner: ref.owner,
         repo: ref.repo,
         state: 'open',
