@@ -317,7 +317,7 @@ async function runBootstrap(context, targetDir, repository, actionRef) {
   if (typeof bootstrap === 'function') {
     // A harness-provided bootstrap helper may either accept the full option
     // object or the exact argv array. Prefer the documented object form.
-    return bootstrap({ context, args, targetDir, repository, actionRef });
+    return bootstrap({ context, args, targetDir, repository, actionRef, commit: false });
   }
   let token = context.env?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
   if (!token && context.gh && typeof context.gh.text === 'function') {

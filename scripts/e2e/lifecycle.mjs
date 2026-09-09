@@ -294,6 +294,7 @@ export async function bootstrapRepository(
   repository = context.repository.fullName,
   installMode = 'new',
   actionRef = context.actionRef ?? `jesongit/gateflow@${context.preflight?.head ?? ''}`,
+  { commit = true } = {},
 ) {
   assert(typeof targetDir === 'string' && targetDir.length > 0, 'Bootstrap target directory is missing');
   const githubToken = context.githubToken;
@@ -324,27 +325,29 @@ export async function bootstrapRepository(
     timeoutMs: context.options.timeoutMs,
   });
   assert(output(status).length > 0, 'Bootstrap produced no checkout changes');
-  await context.runProcess('git', ['add', '--', '.github', 'gateflow.config.yml', '.gitignore'], {
-    cwd: targetDir,
-    env: context.bootstrapEnv,
-    redactOutput: true,
-    timeoutMs: context.options.timeoutMs,
-  });
-  await context.runProcess('git', [
-    '-c', 'user.name=GateFlow Release E2E',
-    '-c', 'user.email=gateflow-release-e2e@example.invalid',
-    'commit', '-m', 'test: bootstrap GateFlow release E2E',
-  ], { cwd: targetDir, env: context.bootstrapEnv, timeoutMs: context.options.timeoutMs, redactOutput: true });
-  await context.runProcess('git', ['push', '--set-upstream', 'origin', 'HEAD'], {
-    cwd: targetDir,
-    env: context.bootstrapEnv,
-    timeoutMs: context.options.timeoutMs,
-    redactOutput: true,
-  });
+  if (commit) {
+    await context.runProcess('git', ['add', '--', '.github', 'gateflow.config.yml', '.gitignore'], {
+      cwd: targetDir,
+      env: context.bootstrapEnv,
+      redactOutput: true,
+      timeoutMs: context.options.timeoutMs,
+    });
+    await context.runProcess('git', [
+      '-c', 'user.name=GateFlow Release E2E',
+      '-c', 'user.email=gateflow-release-e2e@example.invalid',
+      'commit', '-m', 'test: bootstrap GateFlow release E2E',
+    ], { cwd: targetDir, env: context.bootstrapEnv, timeoutMs: context.options.timeoutMs, redactOutput: true });
+    await context.runProcess('git', ['push', '--set-upstream', 'origin', 'HEAD'], {
+      cwd: targetDir,
+      env: context.bootstrapEnv,
+      timeoutMs: context.options.timeoutMs,
+      redactOutput: true,
+    });
+  }
   const workflowFile = context.workflowFile ?? context.bootstrapResult?.workflowFile ?? 'ai-workflow.yml';
   const actualWorkflowPath = resolve(targetDir, '.github', 'workflows', workflowFile);
   const actions = {
-    bootstrap: { status: 'passed', installMode, actionRef },
+      bootstrap: { status: 'passed', installMode, actionRef, commit },
   };
   let actualLabels = [];
   try {

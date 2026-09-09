@@ -62,12 +62,12 @@ export async function runReleaseE2E(argv = process.argv.slice(2), deps = {}) {
     return { help: true, options };
   }
   const context = createReleaseContext(options, deps);
-  context.runBootstrap = ({ targetDir, repository, args = [] }) => {
+  context.runBootstrap = ({ targetDir, repository, args = [], commit = true }) => {
     const modeIndex = args.indexOf('--install-mode');
     const installMode = modeIndex >= 0 ? args[modeIndex + 1] : 'existing';
     const refIndex = args.indexOf('--action-ref');
     const actionRef = refIndex >= 0 ? args[refIndex + 1] : context.actionRef;
-    return bootstrapRepository(context, targetDir, repository, installMode, actionRef);
+    return bootstrapRepository(context, targetDir, repository, installMode, actionRef, { commit });
   };
   let success = false;
   try {
