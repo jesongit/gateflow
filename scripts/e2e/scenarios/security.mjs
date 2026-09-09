@@ -14,7 +14,11 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { waitFor } from '../wait.mjs';
 import { runFakeAgent } from '../fake-agent.mjs';
-import { runWorkflowScenario } from './workflow.mjs';
+import {
+  issueComments as workflowIssueComments,
+  issueView as workflowIssueView,
+  runWorkflowScenario,
+} from './workflow.mjs';
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_OBSERVATION_MS = 30_000;
@@ -136,33 +140,9 @@ async function readFixture(id) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
 
-function issueLabels(issue) {
-  return (issue?.labels ?? [])
-    .map((label) => typeof label === 'string' ? label : label?.name)
-    .filter(Boolean);
-}
-
-function issueComments(issue) {
-  return (issue?.comments ?? []).map((comment) => ({
-    ...comment,
-    id: Number(comment.id),
-    body: String(comment.body ?? ''),
-    user: comment.user ?? comment.author?.login ?? comment.author?.name ?? '',
-  })).filter((comment) => Number.isSafeInteger(comment.id) && comment.id > 0);
-}
-
-async function issueView(context, repository, issueNumber) {
-  const raw = await gh(context, [
-    'issue', 'view', String(issueNumber), '--repo', repository, '--json', 'number,title,body,state,labels,comments',
-  ], { cwd: context.root });
-  const issue = jsonOf(raw, 'gh issue view');
-  return {
-    ...issue,
-    number: Number(issue.number ?? issueNumber),
-    labels: issueLabels(issue),
-    comments: issueComments(issue),
-  };
-}
+// Both scenarios use the workflow reader so every protocol comment has the
+// numeric REST database id required by /approve and record parsing.
+const issueView = workflowIssueView;
 
 async function readIssueLabels(context, repository, issueNumber) {
   return (await issueView(context, repository, issueNumber)).labels;
@@ -924,3 +904,5 @@ export async function run(context) {
 }
 
 export const runSecuritySmoke = run;
+
+export { workflowIssueComments as issueComments, workflowIssueView as readIssueView };

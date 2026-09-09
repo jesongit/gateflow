@@ -85,17 +85,40 @@ function repoArgs(repository) {
   return ['--repo', repository];
 }
 
-async function issueView(context, repository, issueNumber) {
-  const raw = await gh(context, ['issue', 'view', String(issueNumber), ...repoArgs(repository), '--json', 'number,title,body,state,labels,comments']);
+function flattenPaginatedJson(value, label) {
+  const result = valueOf(value);
+  if (!Array.isArray(result)) throw new Error(`${label} did not return a JSON array`);
+  return result.every((page) => Array.isArray(page)) ? result.flat() : result;
+}
+
+/** REST returns the numeric database IDs required by the /approve protocol. */
+export async function issueComments(context, repository, issueNumber) {
+  const raw = await gh(context, [
+    'api', `repos/${repository}/issues/${issueNumber}/comments`, '--paginate', '--slurp',
+  ], { cwd: context.root });
+  const comments = flattenPaginatedJson(jsonOf(raw, 'GitHub issue comments'), 'GitHub issue comments');
+  return comments.map((comment) => {
+    const id = Number(comment?.id);
+    if (!Number.isSafeInteger(id) || id < 1) {
+      throw new Error(`GitHub REST issue comment has no numeric database id: ${textOf(comment)}`);
+    }
+    return {
+      ...comment,
+      user: typeof comment.user === 'string'
+        ? comment.user
+        : comment.user?.login ?? comment.author?.login ?? comment.author?.name ?? '',
+      id,
+    };
+  });
+}
+
+export async function issueView(context, repository, issueNumber) {
+  const raw = await gh(context, ['issue', 'view', String(issueNumber), ...repoArgs(repository), '--json', 'number,title,body,state,labels']);
   const issue = jsonOf(raw, 'gh issue view');
   return {
     ...issue,
     labels: Array.isArray(issue.labels) ? issue.labels.map((label) => typeof label === 'string' ? label : label.name).filter(Boolean) : [],
-    comments: Array.isArray(issue.comments) ? issue.comments.map((comment) => ({
-      ...comment,
-      user: comment.user ?? comment.author?.login ?? comment.author?.name ?? '',
-      id: Number(comment.id),
-    })) : [],
+    comments: await issueComments(context, repository, issueNumber),
   };
 }
 
