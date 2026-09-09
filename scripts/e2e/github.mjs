@@ -1,10 +1,11 @@
 /**
  * Reliable subprocess boundary for GitHub CLI and local commands.
  *
- * Every gh invocation in the release suite goes through createGhClient(). No
- * shell is used, output is captured for diagnostics, and every call has a
- * timeout. Secrets are never included in errors because arguments are redacted
- * before they are rendered.
+ * Every gh invocation in the release suite goes through createGhClient().
+ * Native executables are spawned without a shell; the sole Windows shell
+ * exception is the controlled npm.cmd/npm.bat wrapper used for local gates.
+ * Output is captured for diagnostics, every call has a timeout, and secrets
+ * are never included in errors because arguments are redacted before rendering.
  */
 import { spawn } from 'node:child_process';
 import process from 'node:process';
@@ -25,8 +26,16 @@ export class ProcessError extends E2EError {
 }
 
 function commandFor(program) {
-  if (program !== 'gh' && program !== 'npm') return program;
-  return process.platform === 'win32' ? `${program}.cmd` : program;
+  if (process.platform !== 'win32') return program;
+  if (program === 'gh') return 'gh.exe';
+  if (program === 'npm') return 'npm.cmd';
+  return program;
+}
+
+function usesControlledWindowsShell(program, executable) {
+  return process.platform === 'win32'
+    && program === 'npm'
+    && /\.(?:cmd|bat)$/i.test(executable);
 }
 
 function safeArgs(args) {
@@ -61,7 +70,10 @@ export function runProcess(program, args = [], options = {}) {
       child = spawn(executable, args.map(String), {
         cwd,
         env,
-        shell: false,
+        // Windows cannot directly execute command scripts with shell:false.
+        // Only the fixed npm run <script> boundary is allowed to use a shell;
+        // gh.exe, git, and every other executable remain shell-free.
+        shell: usesControlledWindowsShell(program, executable),
         windowsHide: true,
       });
     } catch (error) {
