@@ -1,6 +1,9 @@
 # AI Workflow Gate：目标仓库接入用的 workflow 模板（可由 scripts/bootstrap.mjs 自动生成，也可手工复制）。
 # 它在 Issue / 评论事件上运行确定性 Gate：校验 actor 身份、严格解析命令与 Marker、迁移 ai:* 标签；AI 永远不参与授权判断。
 # 安装步骤与参数说明见 docs/usage.md §2；协议（命令 / 状态机 / Marker / 并发规则）见 docs/protocol.md。
+# Gate 会通过 GET /user 取得签发身份，因此这里必须使用由 GitHub User 持有的
+# GATEFLOW_GATE_TOKEN Actions secret，而不是 workflow 的 github.token。Secret 值
+# 只保存在 GitHub Secrets；仓库中只保留下面的引用，Bootstrap 也不会写入凭证。
 
 name: AI Workflow Gate
 
@@ -27,8 +30,10 @@ jobs:
         # 占位引用：Phase 9 发布时以实际 owner/repo@ref 为准；bootstrap.mjs --action-ref 可替换。
         uses: jesongit/gateflow@v0
         with:
-          # 缺省使用 workflow 自身 token；要求 permissions.issues: write（上方已授予）。
-          github-token: ${{ github.token }}
+          # GATEFLOW_GATE_TOKEN 应配置为该 Gate User 的 fine-grained PAT；要求
+          # permissions.issues: write（上方已授予）。Gate 的登录名还需加入
+          # gateflow.config.yml 的 gate_logins，供 Driver 独立校验 Gate 记录。
+          github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}
           # Trusted Humans：除 repo owner（V0 默认）外额外可信的 GitHub login（逗号分隔）。
           # 只有 Trusted Human 能执行 /ai-plan /approve /change /cancel。
           # 留空 = 仅 repo owner 可执行命令。

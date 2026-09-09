@@ -13,6 +13,8 @@ const TEMPLATE = [
   'permissions:',
   '  issues: write',
   'uses: jesongit/gateflow@v0',
+  'with:',
+  '  github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}',
   "trusted-humans: ''",
   "trusted-agents: ''",
   '',
@@ -98,6 +100,12 @@ describe('bootstrap CLI options', () => {
 });
 
 describe('local bootstrap idempotency and boundaries', () => {
+  it('ships a production template that references the Gate secret, not github.token', async () => {
+    const template = await readFile(nodePath.resolve(process.cwd(), 'templates', 'workflow.yml'), 'utf8');
+    expect(template).toContain('github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}');
+    expect(template).not.toContain('github-token: ${{ github.token }}');
+  });
+
   it('uses the supplied workdir and creates the workflow, minimal config, and incremental runtime ignore', async () => {
     const { root, template } = await makeTarget();
     const fetch = vi.fn();
@@ -110,13 +118,20 @@ describe('local bootstrap idempotency and boundaries', () => {
     expect(result.target).toBe(nodePath.join(root, '.github', 'workflows', 'ai-workflow.yml'));
     expect(await readFile(result.target, 'utf8')).toContain('uses: jesongit/gateflow@v0');
     expect(await readFile(nodePath.join(root, 'gateflow.config.yml'), 'utf8')).toBe(
-      'version: 1\nrepository: octo/project\n',
+      'version: 1\nrepository: octo/project\n# Gate records are signed by the user behind GATEFLOW_GATE_TOKEN.\n# gate_logins:\n#   - your-github-login\n',
     );
+    const workflow = await readFile(result.target, 'utf8');
+    expect(workflow).toContain('github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}');
+    expect(workflow).not.toContain('github-token: ${{ github.token }}');
+    expect(workflow).not.toContain('test-token');
+    expect(await readFile(nodePath.join(root, 'gateflow.config.yml'), 'utf8')).not.toContain('test-token');
     expect(await readFile(nodePath.join(root, '.gitignore'), 'utf8')).toBe(
       '# GateFlow V1 local runtime\n.gateflow/\n',
     );
     expect(fetch).not.toHaveBeenCalled();
     expect(captured.logs.join('\n')).toContain('GitHub 配置');
+    expect(captured.logs.join('\n')).toContain('GATEFLOW_GATE_TOKEN');
+    expect(captured.logs.join('\n')).toContain('gate_logins');
 
     const rerun = await runBootstrap(
       ['--repo', 'octo/project', '--workdir', root, '--generate-only'],
@@ -163,6 +178,21 @@ describe('local bootstrap idempotency and boundaries', () => {
     await expect(readFile(nodePath.join(root, '.github', 'workflows', 'ai-workflow.yml'), 'utf8')).rejects.toThrow();
     await expect(readFile(nodePath.join(root, '.gitignore'), 'utf8')).rejects.toThrow();
     await expect(readFile(nodePath.join(root, 'gateflow.config.yml'), 'utf8')).rejects.toThrow();
+  });
+
+  it('warns about the legacy workflow token without overwriting an existing workflow', async () => {
+    const { root, template } = await makeTarget();
+    const workflow = nodePath.join(root, '.github', 'workflows', 'ai-workflow.yml');
+    await mkdir(nodePath.dirname(workflow), { recursive: true });
+    await writeFile(workflow, TEMPLATE.replace('${{ secrets.GATEFLOW_GATE_TOKEN }}', '${{ github.token }}'), 'utf8');
+
+    const captured = testDeps(root, template);
+    const result = await runBootstrap(['--repo', 'octo/project', '--generate-only'], captured.deps);
+
+    expect(result.workflowStatus).toBe('different');
+    expect(await readFile(workflow, 'utf8')).toContain('${{ github.token }}');
+    expect(captured.logs.join('\n')).toContain('github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}');
+    expect(captured.logs.join('\n')).toContain('绝不覆盖');
   });
 });
 

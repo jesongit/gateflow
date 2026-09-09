@@ -570,12 +570,15 @@ export async function prepareAgentWorkspace(context) {
 }
 
 /**
- * Success removes the disposable clone and remote. Failure deliberately keeps
- * both so a GitHub run can be diagnosed. --keep preserves them after success.
+ * Success removes the disposable clone and remote when permitted. If remote
+ * deletion is unavailable, the repository is retained with a manual-cleanup
+ * warning. Failure deliberately keeps both so a GitHub run can be diagnosed.
+ * --keep preserves them after success.
  */
 export async function cleanup(context, { success = false } = {}) {
   const preserve = context.options.keep || !success || context.prepareAgentResult !== null;
   const errors = [];
+  let remotePreserved = false;
   if (!context.cleanup.remoteCreated || context.repository === null) {
     context.cleanup.completed = true;
     return { preserved: preserve, errors };
@@ -595,7 +598,16 @@ export async function cleanup(context, { success = false } = {}) {
     });
     context.log(`[e2e] deleted repository ${context.repository.fullName}`);
   } catch (error) {
-    errors.push(`remote cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    const reason = error instanceof Error ? error.message : String(error);
+    if (success) {
+      const repositoryUrl = `https://github.com/${context.repository.fullName}`;
+      remotePreserved = true;
+      const warn = context.error ?? context.log;
+      warn(`[e2e] WARNING: 仓库保留、请手动删除：${repositoryUrl}`);
+      warn(`[e2e] remote cleanup failed: ${reason}`);
+    } else {
+      errors.push(`remote cleanup failed: ${reason}`);
+    }
   }
   if (context.paths.clone !== null) {
     try {
@@ -610,5 +622,5 @@ export async function cleanup(context, { success = false } = {}) {
     failure.context = context;
     throw failure;
   }
-  return { preserved: false, errors };
+  return { preserved: remotePreserved, errors };
 }

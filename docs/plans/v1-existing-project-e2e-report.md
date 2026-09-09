@@ -1,11 +1,14 @@
 # GateFlow V1 Task 10：已有项目增量接入 E2E 报告
 
 > 日期：2026-09-09
-> 状态：**blocked（无明确测试资源，且本轮按用户指令停止）**
+> 初始记录状态：**blocked（无明确测试资源，且本轮按用户指令停止）**
+> 当前复验状态：真实 GitHub Release E2E 的 reconnect 路径已通过；命令仅因清理权限限制未以 0 退出
 
 ## 范围与写集
 
-本报告是本轮 Task 10 唯一新增文件。`tests/integration/existing-project-onboarding.e2e.test.ts` 尚未新增；没有修改 `src/**`、`scripts/**`、`skills/**`、README、既有集成测试、`dist` 或主计划文档。
+本报告是本轮 Task 10 唯一新增文件。以下写集和测试结果均是 Task 10 初始执行时的历史记录；
+`tests/integration/existing-project-onboarding.e2e.test.ts` 当时尚未新增；没有修改 `src/**`、
+`scripts/**`、`skills/**`、README、既有集成测试、`dist` 或主计划文档。
 
 当前工作区中的其它改动来自并发的 Task 01–08，不属于本 Task 10 写集；本轮未回滚或改写它们。
 
@@ -31,6 +34,21 @@
 | `npm run check:dist` | 未执行本轮；Task 01 基线报告通过，不能替代当前工作树复验 |
 | `git diff --check` | 未执行本轮；并发任务报告通过 |
 
-## 结论与后续阻塞
+## 历史结论与当前复验
 
-真实已有项目接入 E2E 标记为 **blocked**，不是通过。恢复 Task 10 需要提供明确的 `GATEFLOW_E2E_EXISTING_REPOSITORY`，并同时明确 Control Repository 与入口 Issue；随后才能在目标仓库的接入分支上做 Bootstrap、提交和 PR 验证。PR 合并、目标仓库独立接收 Issue、以及入口 Issue 收到最终报告均不能在没有批准和测试资源时声称完成。
+Task 10 初次执行时，真实已有项目接入 E2E 标记为 **blocked**，不是通过；当时没有选择目标
+仓库，也没有执行外部写操作。这一历史结论仍然有效，不应改写为当时已经完成独立目标仓库
+和 PR 验证。
+
+随后在 2026-09-09 的真实 GitHub Release E2E 中，已有 checkout 的 reconnect 路径已实际通过，
+并且 Preflight、local gates、Bootstrap、workflow、reconnect 和 security 四项 smoke 全部通过。
+这证明当前 Release E2E 的已有项目重接路径可运行，但不等同于单独指定的 Control Repository、
+入口 Issue、目标仓库接入分支和 PR 合并流程已经另行验收。
+
+该次命令唯一失败发生在成功后的 `gh repo delete`：本机 `gh` token 缺少 `delete_repo` scope，
+远端临时仓库因此被保留。它是清理权限限制，不是已有项目重接或安全断言失败。完整清理前执行
+`gh auth refresh -h github.com -s delete_repo`，再运行 `npm run e2e:release`；该 scope 仅用于
+本地 E2E 清理。
+
+ChatGPT/ZCode 客户端驱动的真实任务尚未执行，按计划属于可选 smoke，不能在发布说明中声称已
+通过。

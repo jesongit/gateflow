@@ -62,7 +62,16 @@ npm run e2e:release
 - 通过 `gh repo create ... --private --add-readme` 创建真实的私有临时仓库，默认名称为带时间和随机后缀的 `gateflow-release-e2e-...`，默认 owner 为 `gh api user` 返回的登录名；随后 clone 到系统临时目录，并校验仓库确实为私有、未归档；
 - Bootstrap 以非交互方式配置并 push 测试 checkout，然后验证 README 保持不变、`gateflow.config.yml` 存在、`.gitignore` 包含 `.gateflow/`、workflow 的 `uses:` 精确指向 `jesongit/gateflow@<HEAD SHA>`，以及 6 个 `ai:*` labels（`planning` / `review` / `ready` / `working` / `blocked` / `done`）均存在；
 - 使用落盘的 Fake Agent 完成 plan、execute/working、execute/completed 三个确定性阶段：它读取 `task.json` 声明的输入，写入 `plan.md` / `report.md` / `result.json`，并为 workflow 场景提交和 push `hello.txt`；不调用 LLM，不依赖 ChatGPT/ZCode；
-- 正常完整 E2E 成功时删除临时远端仓库和 clone；失败时保留已创建的远端仓库和 clone，并打印仓库名称与 clone 路径，保留 GitHub run/Issue 等现场供排查。`--prepare-agent` 成功后是有意保留现场的交接例外，便于继续使用输出的 workspace；
+- 正常完整 E2E 成功时删除临时远端仓库和 clone；失败时保留已创建的远端仓库和 clone，并打印仓库名称与 clone 路径，保留 GitHub run/Issue 等现场供排查。成功清理远端仓库还要求本机 `gh` 登录 token 具有 `delete_repo` scope；缺少该 scope 时业务场景仍可能全部通过，但清理步骤会失败并保留远端现场。`--prepare-agent` 成功后是有意保留现场的交接例外，便于继续使用输出的 workspace；
+
+截至 2026-09-09，最新真实 GitHub Release E2E 的 Preflight、local gates、Bootstrap、workflow、reconnect 和 security 四项 smoke 全部通过。该次命令唯一的失败发生在成功后的 `gh repo delete`：本机 `gh` token 没有 `delete_repo` scope，因此远端临时仓库被保留；这不是 GateFlow 业务断言失败。需要让命令以完整清理并以退出码 0 结束时，先执行：
+
+```bash
+gh auth refresh -h github.com -s delete_repo
+npm run e2e:release
+```
+
+`delete_repo` 仅用于本地 E2E 清理，不应加入工作流使用的 `GATEFLOW_GATE_TOKEN`。
 
 当前 CLI 参数如下（支持 `--repo-name=<name>` / `--owner=<login>` 等等号形式）：
 
@@ -207,12 +216,12 @@ node scripts/bootstrap.mjs \
 
 另加版本对齐两查：`package.json` `version` == 待打 tag（V1 为 `1.0.0`）；`GATE_VERSION` 与测试断言一致（V1 首版 `1.0.0`）。
 
-## 5. 已知限制与发布阻塞
+## 5. 已知限制与发布注意事项
 
-- Task 10 的真实已有项目 E2E 因缺少明确隔离仓库、Control Repository 和入口 Issue，状态为 **blocked**；不得把本地 fake E2E 当成真实 GitHub 接入通过。
-- 真实新建项目的 GitHub 写入闭环尚未完成验证；本地 `gh auth status` 只能证明登录状态，不能证明 Bootstrap、Actions 排队、Issue 回写或目标仓库接入成功。
-- ChatGPT/ZCode 客户端驱动的真实任务尚未验证；发布说明不得声称两种客户端已通过验收。
-- 以上验证需要用户提供隔离资源、明确批准的 GitHub 写权限和可用客户端环境；在此之前只能发布本地工程验证结果。
+- 最新真实 GitHub Release E2E 已验证新建临时仓库、Bootstrap、Actions workflow、已有 checkout reconnect 以及四项 security smoke；这些结果不再是 blocked 或“未验证”。
+- 上述 E2E 的业务阶段全部通过，但本机 `gh` token 缺少 `delete_repo` scope，导致成功后的远端仓库清理失败、命令退出码为 1。重跑前按上面的清理说明刷新该 scope；在不刷新时可使用 `--keep` 明确保留现场，但不能把清理失败写成完整命令通过。
+- ChatGPT/ZCode 客户端驱动的真实任务尚未执行；它仍是 Step 2.5 的可选 smoke，发布说明不得声称两种客户端已通过验收，也不应把它写成 `e2e:release` 的失败原因。
+- 独立的用户指定 Control/Target 仓库及 PR 接入流程若要单独验收，仍需提供明确隔离资源和批准范围；它不影响本次临时仓库 Release E2E 已通过的结论。
 
 ### e2e:release 故障现场排查
 

@@ -37,7 +37,7 @@ const CONFIG_FILE = 'gateflow.config.yml';
 const GITIGNORE_ENTRY = '.gateflow/';
 
 function minimumConfig(repo) {
-  return `version: 1\nrepository: ${repo}\n`;
+  return `version: 1\nrepository: ${repo}\n# Gate records are signed by the user behind GATEFLOW_GATE_TOKEN.\n# gate_logins:\n#   - your-github-login\n`;
 }
 
 /**
@@ -371,6 +371,9 @@ function inspectWorkflowInputs(target, current, io, repoInfo) {
   }
   if (!/^\s*trusted-humans\s*:/m.test(current)) missing.push('trusted-humans');
   if (!/^\s*trusted-agents\s*:/m.test(current)) missing.push('trusted-agents');
+  if (!/^\s*github-token\s*:\s*\$\{\{\s*secrets\.GATEFLOW_GATE_TOKEN\s*\}\}\s*$/m.test(current)) {
+    missing.push('github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}（需配置 Actions secret）');
+  }
   if (missing.length > 0) {
     io.log(`[warn] 已有 workflow ${target} 缺少或无法确认必要配置：${missing.join('、')}；文件保持不变，请人工审阅。`);
   }
@@ -627,10 +630,12 @@ function printDryRunPlan(opts, target, workflow, workflowInfo, gitignoreInfo, co
 function printNextSteps(opts, io) {
   io.log('');
   io.log('后续提示（以下步骤需要你按批准范围手动完成，本脚本不代劳）：');
-  io.log('  1. 在 AI Client 中配置 GitHub 官方 MCP Server；凭证只交给 Driver 进程，不写入工作区。');
-  io.log('  2. 在 AI Client 中安装唯一的 GateFlow Skill：skills/gateflow（plan / execute 两种模式）。');
-  io.log('  3. 确认 workflow 中的 Trusted Human / Trusted Agent 配置，并在 Organization 仓库配置 Driver 的 gate 身份。');
-  io.log(`  4. 提交并推送 ${opts.workflowFile}、${CONFIG_FILE} 与 .gitignore 的本地变更，然后从 Issue 上评论 /ai-plan 开始。`);
+  io.log('  1. 在目标仓库 Actions Secrets 中创建 GATEFLOW_GATE_TOKEN（推荐使用该 Gate User 的 fine-grained PAT）。');
+  io.log('     可用 `gh auth token | gh secret set GATEFLOW_GATE_TOKEN --repo owner/name` 通过 stdin 设置；本脚本不读取或写入该凭证。');
+  io.log('  2. 在 gateflow.config.yml 的 gate_logins 中加入 GATEFLOW_GATE_TOKEN 所属 GitHub User 登录名；不要填写 token，也不要放入 trusted-agents。');
+  io.log('  3. 在 AI Client 中配置 GitHub 官方 MCP Server，并安装唯一的 GateFlow Skill：skills/gateflow（plan / execute 两种模式）。');
+  io.log('  4. 确认 workflow 中的 Trusted Human / Trusted Agent 配置，并在 Organization 仓库配置显式 trusted_humans。');
+  io.log(`  5. 提交并推送 ${opts.workflowFile}、${CONFIG_FILE} 与 .gitignore 的本地变更，然后从 Issue 上评论 /ai-plan 开始。`);
 }
 
 /**

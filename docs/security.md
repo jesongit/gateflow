@@ -72,7 +72,17 @@ Report 和 Gate 状态仍回写 Control Repository 的原 Issue。Target workspa
 
 ## 8. 已知限制与验收前置
 
-Task 10 的真实已有项目 E2E 因缺少明确隔离仓库、Control Repository 和入口 Issue 而
-**blocked**；真实 GitHub 新建项目写入也没有被伪造为通过。ChatGPT/ZCode 客户端驱动的真实
-任务尚未验证。它们不能由本地 fake E2E、单元测试或 `gh auth status` 代替，发布前仍需提供
-隔离资源、批准的凭证和客户端验证条件。
+截至 2026-09-09，最新真实 GitHub Release E2E 已通过 Preflight、local gates、Bootstrap、
+workflow、reconnect，以及 `wrong-approval`、`old-plan-approval`、`old-report`、`fake-ready`
+四项 security smoke。该结果来自真实临时 GitHub 仓库和 Actions 闭环，不是由本地 fake E2E、
+单元测试或 `gh auth status` 推断得出。
+
+该次命令唯一的失败发生在成功后的 `gh repo delete`：本机 `gh` token 缺少 `delete_repo`
+scope，故远端临时仓库被保留。它是测试现场清理权限限制，不是 GateFlow 授权链或安全断言
+失败。若需要完整清理并获得命令退出码 0，应先执行
+`gh auth refresh -h github.com -s delete_repo`；该 scope 只用于本地清理，不应授予
+`GATEFLOW_GATE_TOKEN`。
+
+ChatGPT/ZCode 客户端驱动的真实任务尚未执行。它们仍属于可选的客户端 smoke，不能在发布说明
+中声称已验收，也不应被误写成核心 Release E2E 未通过的依据。若要单独验收用户指定的
+Control/Target 仓库与 PR 接入流程，仍需另行提供隔离资源、批准的凭证和对应验证条件。

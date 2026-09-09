@@ -98,6 +98,15 @@ Bootstrap 的实际选项为：
 
 Bootstrap 会按需生成或检查 `.github/workflows/ai-workflow.yml`、不含凭证的最小 `gateflow.config.yml`、`.gitignore` 中的 `.gateflow/`，以及（仅 `--github-config`）缺少的 6 个 `ai:*` 标签。
 
+Bootstrap 不会替目标仓库创建或写入 Secret。生成 Workflow 后，必须在启用 Gate 的目标仓库配置 `GATEFLOW_GATE_TOKEN`：当前 Gate 会调用 GitHub API 的 `GET /user` 获取 Gate-issued 记录的签发身份，所以这里应使用 GitHub User 的 PAT，而不是 Actions 默认的 `github.token`。建议使用只授权目标仓库、Issues Read and write、Metadata read-only 的 fine-grained PAT。可以通过 stdin 设置，避免把凭证写进命令参数：
+
+```bash
+# 当前 gh 登录身份必须就是 GATEFLOW_GATE_TOKEN 所属的 GitHub User。
+gh auth token | gh secret set GATEFLOW_GATE_TOKEN --repo owner/target
+```
+
+也可以在 GitHub Settings → Secrets and variables → Actions 中手工创建该 Secret。仓库中只应出现 `${{ secrets.GATEFLOW_GATE_TOKEN }}` 引用，绝不能出现 Secret 值。
+
 提交前人工检查 Workflow：
 
 ```yaml
@@ -106,13 +115,22 @@ permissions:
   contents: read
 
 with:
-  github-token: ${{ github.token }}
+  github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}
   trusted-humans: ''
   trusted-agents: ''
   require-explicit-humans: 'true'
 ```
 
-默认 Action 引用是 `jesongit/gateflow@v0`；若改用自己的发布仓库或 ref，使用 `--action-ref`，并先确认 Target 能访问该 Action。个人仓库的 User-type owner 默认是 Trusted Human，因此通常不需要填写 `trusted-humans`，也不要把同一用户登录名放入 `trusted-agents`。Organization 仓库必须配置显式 `trusted-humans`，否则默认 fail closed。
+把同一个 PAT 所属用户的登录名加入 Driver 使用的 `gateflow.config.yml`：
+
+```yaml
+version: 1
+repository: owner/target
+gate_logins:
+  - your-github-login # 用 gh api user --jq .login 获取；这里只写登录名
+```
+
+`gate_logins` 是 Gate-issued 记录的发布者白名单，不是 `trusted-agents`；不要把该用户登录名放入 `trusted-agents`。默认 Action 引用是 `jesongit/gateflow@v0`；若改用自己的发布仓库或 ref，使用 `--action-ref`，并先确认 Target 能访问该 Action。个人仓库的 User-type owner 默认是 Trusted Human，因此通常不需要填写 `trusted-humans`。Organization 仓库必须配置显式 `trusted-humans`，否则默认 fail closed。
 
 确认 GitHub Settings → Actions → General 中 Actions 未被禁用，然后提交：
 
@@ -140,6 +158,8 @@ npm link                         # 可选：安装本机 `gateflow` 命令
 ```yaml
 version: 1
 repository: owner/target
+gate_logins:
+  - your-github-login # GATEFLOW_GATE_TOKEN 所属用户的登录名
 # 或使用显式名称：control_repository: owner/target
 ```
 

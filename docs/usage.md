@@ -96,13 +96,35 @@ permissions:
   contents: read
 
 with:
-  github-token: ${{ github.token }}
+  github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}
   trusted-humans: ''
   trusted-agents: ''
   require-explicit-humans: 'true'
 ```
 
-这里的 `trusted-humans: ''` 依赖个人仓库的 User-type owner 默认可信；不要把自己的用户登录名再填进 `trusted-agents`。Organization 仓库必须按批准范围填写显式 `trusted-humans`（或者明确承担将 `require-explicit-humans` 设为 `false` 的风险）。
+当前 Gate 会通过 GitHub API 的 `GET /user` 取得签发身份，并把该身份写入 Gate-issued 授权记录；因此生产 Workflow 必须把 `github-token` 指向用户 PAT 的 Actions Secret，而不是默认的 `github.token`。在启用 Workflow 的仓库中配置一次 Secret（建议使用只授权目标仓库、Issues Read and write、Metadata read-only 的 fine-grained PAT）：
+
+```bash
+# 当前 gh 登录身份必须就是 GATEFLOW_GATE_TOKEN 所属的 GitHub User。
+gh auth token | gh secret set GATEFLOW_GATE_TOKEN --repo you/my-gateflow
+```
+
+也可以在 GitHub 仓库的 Settings → Secrets and variables → Actions 中手工创建同名 Secret。Bootstrap 不会读取、打印或写入 Secret 值；仓库文件中只保留 `${{ secrets.GATEFLOW_GATE_TOKEN }}` 引用。
+
+同时把同一个 PAT 所属用户的登录名加入 Driver 配置（只写登录名，不写 token）：
+
+```bash
+gh api user --jq .login
+```
+
+```yaml
+version: 1
+repository: you/my-gateflow
+gate_logins:
+  - your-github-login
+```
+
+这里的 `gate_logins` 是 Gate-issued 记录的发布者白名单，不是 `trusted-agents`；不要把该用户放进 `trusted-agents`。`trusted-humans: ''` 仍依赖个人仓库的 User-type owner 默认可信；Organization 仓库必须按批准范围填写显式 `trusted-humans`（或者明确承担将 `require-explicit-humans` 设为 `false` 的风险）。
 
 确认后提交入口仓库的本地变更：
 
@@ -124,7 +146,7 @@ git push
 Personal Mode 可以复用用户已经登录的本地 `gh` 身份，但边界必须按“用户授权下的本地执行”理解：
 
 * `gh repo create`、`gh repo view`、clone、commit、push、PR 等操作使用当前用户的 GitHub 权限；如果本地 AI 客户端被允许运行这些命令，它继承的也是同一权限，不是一个独立的 Agent 低权限身份。
-* Gate Workflow 使用 `${{ github.token }}` 在 GitHub Actions 中读写 Issue 状态所需的标签和评论；本地 `GITHUB_TOKEN` 供 Driver 的 `run/sync` 使用。两者都不应写入仓库或 `.gateflow/`。
+* Gate Workflow 使用 Actions Secret `${{ secrets.GATEFLOW_GATE_TOKEN }}` 以固定用户身份读写 Issue 状态所需的标签和评论；本地 `GITHUB_TOKEN` 供 Bootstrap 的 GitHub 配置和 Driver 的 `run/sync` 使用。两者用途不同，凭证值都不应写入仓库或 `.gateflow/`。
 * Human Approval 仍由 Gate 校验 `/approve <plan-comment-id>`、当前 Plan 和 Gate-issued 记录；`gh` 登录本身不会替代审批，也不会让 AI 自述获得授权。
 * 在 Personal Mode 中，本地工作区隔离是协议边界，不是 OS 级的 Human/Agent 强隔离。创建仓库、修改可见性、修改权限、改 Secrets、改重要 Workflow、删除内容或向默认分支推送，都必须在 Plan 中写明并经用户批准。
 
@@ -193,6 +215,9 @@ unset GITHUB_TOKEN
 ```yaml
 version: 1
 repository: you/my-gateflow
+# 替换为 GATEFLOW_GATE_TOKEN 所属用户的 gh api user --jq .login 输出：
+gate_logins:
+  - your-github-login
 # 也可写成：control_repository: you/my-gateflow
 ```
 
@@ -274,5 +299,7 @@ node /path/to/my-gateflow/scripts/bootstrap.mjs \
 | --- | --- |
 | `GITHUB_TOKEN` | Bootstrap 的 `--github-config`、Driver 的 `run/sync`；仅存在于进程环境 |
 | `GATEFLOW_REPOSITORY` | Driver 找不到配置和 remote 时的 `owner/name` 兜底 |
+
+`GATEFLOW_GATE_TOKEN` 不是本地环境变量，而是启用 Gate Workflow 的 GitHub Actions repository secret；它的值不应出现在配置文件、Issue、日志或任务目录中。
 
 Gate 继续独占正式标签状态迁移和 Gate-issued 授权记录；Driver 负责准备、校验并发布协议评论；AI 负责计划、开发、验证和报告。不要在文档、Issue 或工作区中写入 token，也不要把本地 `gh` 的用户授权误解成强 Human/Agent 隔离。

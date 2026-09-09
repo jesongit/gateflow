@@ -4,6 +4,10 @@
 
 本次 Task 09 已修正现有集成闭环中与当前契约冲突的断言，并新增当前流 fake E2E 覆盖。后续窄范围修复已完成：超时夹具使用独立 workspace，任务确认进入 `syncAll`，并按 Driver 的 per-task 基础设施错误语义保留超时日志断言。当前本地验证全绿。
 
+本报告保留 Task 09 初次执行时的本地验证和资源阻塞记录。随后在 2026-09-09 完成的真实
+GitHub Release E2E 中，Preflight、local gates、Bootstrap、workflow、reconnect 和 security
+四项 smoke 均通过；因此“真实新仓库 E2E blocked/未执行”不再代表当前复验状态。
+
 当前契约已在测试中固定为：
 
 ```text
@@ -44,7 +48,7 @@ READY
 
 `npm run build` 期间生成的 `dist/cli.js` 与 `dist/index.js` 变化已撤销，以保持 Task 09 窄写集；本次未保留任何 `dist` 修改。构建和 `check:dist` 的实际通过结果已如上记录。
 
-## GitHub 权限与真实 E2E
+## GitHub 权限与真实 E2E（历史记录与当前复验）
 
 已实际执行：
 
@@ -53,12 +57,35 @@ READY
 - `gh repo view`：当前仓库为 `jesongit/gateflow`，public，当前账号权限 `ADMIN`。
 - `gh api user/orgs`：没有返回组织；因此没有可确认的组织测试资源或组织级权限。
 
-真实新仓库 E2E 状态：**blocked，未执行**。
+### 历史记录：初次执行
+
+真实新仓库 E2E 初次执行状态：**blocked，未执行**。
 
 原因是当前没有明确指定且已登记的隔离测试仓库/资源；虽然当前账号具备创建仓库的权限，但本次中止后没有创建临时仓库、没有推送代码、没有运行 Bootstrap 的 GitHub 配置模式，也没有向任何 Control Issue 回写链接。没有外部通过结果可报告，也没有删除或覆盖任何仓库。
 
-ChatGPT/ZCode 客户端驱动的外部 E2E 本次未执行，未将其可用性或结果推断为通过。
+### 当前复验：真实 GitHub Release E2E
 
-## 后续唯一阻塞点
+最新一次真实 Release E2E 的阶段结果如下：
 
-真实 GitHub 新仓库 E2E 仍因没有明确登记的隔离测试资源而 blocked；本次 follow-up 不执行任何外部写操作。除该外部条件外，本地 Task 09 验证已完成。
+| 阶段 | 结果 |
+| --- | --- |
+| Preflight | 通过 |
+| local gates | 通过 |
+| Bootstrap | 通过 |
+| workflow | 通过 |
+| reconnect | 通过 |
+| security：`wrong-approval` / `old-plan-approval` / `old-report` / `fake-ready` | 全部通过 |
+
+命令唯一失败发生在成功后的 `gh repo delete`：本机 `gh` token 没有 `delete_repo` scope，
+所以远端临时仓库被保留。该失败属于清理权限限制，不是业务阶段或安全断言失败。要让完整
+命令完成清理并返回 0，先执行 `gh auth refresh -h github.com -s delete_repo`，再运行
+`npm run e2e:release`；该 scope 仅用于本地清理。
+
+ChatGPT/ZCode 客户端驱动的外部 E2E 在当前复验中仍未执行。它按计划是可选 smoke，不能把
+其未执行写成客户端已通过，也不能用它否定核心 Release E2E 的真实通过结果。
+
+## 当前限制与后续事项
+
+本次真实 Release E2E 的核心链路没有遗留业务阻塞。若要单独验收用户指定的 Control/Target
+仓库、入口 Issue 和 PR 接入流程，仍需另行提供隔离资源并执行对应测试；本报告当前复验覆盖的
+是 Release E2E 的新建仓库与已有 checkout reconnect 路径。
