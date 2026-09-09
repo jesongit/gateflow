@@ -24374,9 +24374,13 @@ function parseCommand(body) {
   }
   const approve = APPROVE_PATTERN.exec(trimmed);
   if (approve !== null) {
+    const planCommentId = Number(approve[1] ?? "0");
+    if (!Number.isSafeInteger(planCommentId) || planCommentId < 1) {
+      return null;
+    }
     return {
       command: COMMANDS.approve,
-      args: { planCommentId: Number(approve[1] ?? "0") }
+      args: { planCommentId }
     };
   }
   const change = CHANGE_PATTERN.exec(trimmed);
@@ -24547,6 +24551,12 @@ function validateIdentityConfig(input) {
     }
   }
   const isPersonalOwner = input.ownerType === "User";
+  if (isPersonalOwner && agents.some((agent) => loginEquals2(agent, input.owner))) {
+    return {
+      ok: false,
+      reason: `repository owner "${input.owner}" is implicitly a Trusted Human for a personal repository and cannot also be configured as a Trusted Agent. The two roles must remain separate; refusing to run.`
+    };
+  }
   if (!isPersonalOwner && humans.length === 0 && input.requireExplicitHumans) {
     return {
       ok: false,
@@ -24590,6 +24600,9 @@ function isObj(value) {
 }
 function epochOperationId(repositoryId, issueNumber, epoch) {
   return `epoch:${repositoryId}:${issueNumber}:${epoch}`;
+}
+function gateEpochOperationId(repositoryId, issueNumber, commandCommentId) {
+  return `epoch:${repositoryId}:${issueNumber}:c${commandCommentId}`;
 }
 function approvalOperationId(repositoryId, issueNumber, epoch, planCommentId) {
   return `approval:${repositoryId}:${issueNumber}:${epoch}:p${planCommentId}`;
@@ -24684,9 +24697,9 @@ function parseRecord(commentId, body) {
       return validateFeedbackRecord(commentId, raw);
   }
 }
-function checkFields(raw, required, what, errors) {
+function checkFields(raw, required, what, errors, optional = []) {
   for (const key of Object.keys(raw)) {
-    if (!required.includes(key)) {
+    if (!required.includes(key) && !optional.includes(key)) {
       errors.push(`${what}: unknown key "${key}"`);
     }
   }
@@ -24712,6 +24725,14 @@ function num(raw, key, errors) {
   }
   return value;
 }
+function positiveNum(raw, key, errors) {
+  const value = num(raw, key, errors);
+  if (value !== null && value < 1) {
+    errors.push(`${key}: expected a positive integer, got ${JSON.stringify(value)}`);
+    return null;
+  }
+  return value;
+}
 function validateEpochRecord(commentId, raw) {
   const errors = [];
   const required = [
@@ -24724,24 +24745,26 @@ function validateEpochRecord(commentId, raw) {
     "issued_by",
     "operation_id"
   ];
-  checkFields(raw, required, "workflow_epoch record", errors);
+  checkFields(raw, required, "workflow_epoch record", errors, ["request_comment_id"]);
   if (raw["schema"] !== RECORD_SCHEMA_VERSION) {
     errors.push(`schema: expected ${RECORD_SCHEMA_VERSION}, got ${JSON.stringify(raw["schema"])}`);
   }
   if (raw["kind"] !== "workflow_epoch") {
     errors.push(`kind: expected "workflow_epoch", got ${JSON.stringify(raw["kind"])}`);
   }
-  const repositoryId = num(raw, "repository_id", errors);
-  const issueNumber = num(raw, "issue_number", errors);
+  const repositoryId = positiveNum(raw, "repository_id", errors);
+  const issueNumber = positiveNum(raw, "issue_number", errors);
   const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
   if (epoch === null) errors.push("workflow_epoch: malformed epoch string");
   const createdAt = str(raw, "created_at", ISO_DATE, errors);
   const issuedBy = str(raw, "issued_by", LOGIN, errors);
   const operationId = str(raw, "operation_id", OPERATION_ID, errors);
-  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || createdAt === null || issuedBy === null || operationId === null) {
+  const requestCommentId = raw["request_comment_id"] === void 0 ? void 0 : positiveNum(raw, "request_comment_id", errors);
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || createdAt === null || issuedBy === null || operationId === null || requestCommentId === null) {
     return { ok: false, reason: `invalid workflow_epoch record: ${errors.join("; ")}` };
   }
-  if (operationId !== epochOperationId(repositoryId, issueNumber, epoch)) {
+  const operationBindsRecord = requestCommentId === void 0 ? operationId === epochOperationId(repositoryId, issueNumber, epoch) : operationId === gateEpochOperationId(repositoryId, issueNumber, requestCommentId);
+  if (!operationBindsRecord) {
     return { ok: false, reason: `invalid workflow_epoch record: operation_id "${operationId}" does not bind repository/issue/epoch` };
   }
   return {
@@ -24755,7 +24778,8 @@ function validateEpochRecord(commentId, raw) {
       workflow_epoch: epoch,
       created_at: createdAt,
       issued_by: issuedBy,
-      operation_id: operationId
+      operation_id: operationId,
+      ...requestCommentId !== void 0 ? { request_comment_id: requestCommentId } : {}
     }
   };
 }
@@ -24928,6 +24952,71 @@ function parseRecords(kind, comments) {
   }
   return { records, invalid };
 }
+function readTrustedWorkflowEpoch(comments, repositoryId, issueNumber, gateLogins) {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) {
+    return { ok: false, reason: `repository id ${String(repositoryId)} is not positive` };
+  }
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) {
+    return { ok: false, reason: `issue number ${String(issueNumber)} is not positive` };
+  }
+  const parsed = parseRecords(
+    "workflow_epoch",
+    comments
+  );
+  if (parsed.invalid.length > 0) {
+    return {
+      ok: false,
+      reason: `unparsable workflow_epoch record(s) (fail closed): ` + parsed.invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+    };
+  }
+  if (parsed.records.length === 0) {
+    return { ok: false, reason: "no workflow_epoch record" };
+  }
+  const trustedLogins = new Set([...gateLogins].map((login) => login.toLowerCase()));
+  const ordered = [...parsed.records].sort((left, right) => left.commentId - right.commentId);
+  const byOperation = /* @__PURE__ */ new Map();
+  for (const entry of ordered) {
+    const record = entry.record;
+    if (record.repository_id !== repositoryId || record.issue_number !== issueNumber) {
+      return {
+        ok: false,
+        reason: `workflow_epoch record #${entry.commentId} does not bind the current repository/issue`
+      };
+    }
+    const commentLogin = entry.comment.user.toLowerCase();
+    const issuedLogin = record.issued_by.toLowerCase();
+    if (!trustedLogins.has(commentLogin) || !trustedLogins.has(issuedLogin) || commentLogin !== issuedLogin) {
+      return {
+        ok: false,
+        reason: `workflow_epoch record #${entry.commentId} is not authored by a trusted Gate identity`
+      };
+    }
+    if (record.request_comment_id !== void 0) {
+      const source = comments.find((comment) => comment.id === record.request_comment_id);
+      if (source === void 0 || source.body.trim() !== "/ai-plan") {
+        return {
+          ok: false,
+          reason: `workflow_epoch record #${entry.commentId} points to a missing or non-/ai-plan source comment #${record.request_comment_id}`
+        };
+      }
+    }
+    const existing = byOperation.get(record.operation_id);
+    if (existing === void 0) {
+      byOperation.set(record.operation_id, record);
+      continue;
+    }
+    const sameFacts = existing.repository_id === record.repository_id && existing.issue_number === record.issue_number && existing.workflow_epoch === record.workflow_epoch && existing.issued_by.toLowerCase() === record.issued_by.toLowerCase() && existing.request_comment_id === record.request_comment_id;
+    if (!sameFacts) {
+      return {
+        ok: false,
+        reason: `conflicting workflow_epoch records for operation ${record.operation_id}`
+      };
+    }
+  }
+  const latest = ordered[ordered.length - 1];
+  if (latest === void 0) return { ok: false, reason: "no workflow_epoch record" };
+  return { ok: true, record: latest.record, commentId: latest.commentId, records: ordered };
+}
 
 // src/protocol/plan.ts
 var import_node_crypto2 = require("node:crypto");
@@ -24953,6 +25042,109 @@ function planSha256(planCommentBody) {
   return sha256Hex(canonicalPlanContent(planCommentBody));
 }
 
+// src/workspace/protocol.ts
+var TASK_ID_PATTERN = /^gf_r(\d+)_i(\d+)_w([0-9a-z]{12})_(plan|execute)_(\d+|p\d+)$/;
+function parseTaskId(id) {
+  const match = TASK_ID_PATTERN.exec(id);
+  if (match === null) return null;
+  const repositoryId = match[1];
+  const issueNumber = match[2];
+  const epochCode = match[3];
+  const mode = match[4];
+  const revision = match[5];
+  if (repositoryId === void 0 || issueNumber === void 0 || epochCode === void 0 || mode === void 0 || revision === void 0) {
+    return null;
+  }
+  if (mode !== "plan" && mode !== "execute") return null;
+  return {
+    repositoryId: Number(repositoryId),
+    issueNumber: Number(issueNumber),
+    epochCode,
+    mode,
+    revision
+  };
+}
+
+// src/gate/execution-chain.ts
+var DISPATCH_ID_OCCURRENCE = /<!-- gateflow:dispatch-id: (\S+) -->/g;
+var DISPATCH_ID_TOKEN = "<!-- gateflow:dispatch-id:";
+function findDispatchId(body) {
+  if (!body) return null;
+  let insideFence = false;
+  const ids = [];
+  let malformedOccurrence = false;
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      insideFence = !insideFence;
+      continue;
+    }
+    if (insideFence) continue;
+    const matches = [...trimmed.matchAll(DISPATCH_ID_OCCURRENCE)];
+    if (matches.length > 0) {
+      for (const match of matches) ids.push(match[1]);
+      if (trimmed.split(DISPATCH_ID_TOKEN).length - 1 > matches.length) malformedOccurrence = true;
+    } else if (trimmed.includes(DISPATCH_ID_TOKEN)) {
+      malformedOccurrence = true;
+    }
+  }
+  if (ids.length !== 1 || malformedOccurrence) return null;
+  return ids[0] ?? null;
+}
+function inspectDispatchId(id) {
+  if (typeof id !== "string") return { ok: false, reason: "dispatch id is missing" };
+  const parsed = parseTaskId(id);
+  if (parsed === null || !Number.isSafeInteger(parsed.repositoryId) || !Number.isSafeInteger(parsed.issueNumber) || parsed.repositoryId < 1 || parsed.issueNumber < 1) {
+    return { ok: false, reason: `dispatch id "${id}" has an invalid task-id shape` };
+  }
+  if (parsed.mode === "plan" && !/^\d+$/.test(parsed.revision)) {
+    return { ok: false, reason: `dispatch id "${id}" has a non-plan revision` };
+  }
+  if (parsed.mode === "execute" && !/^p[1-9]\d*$/.test(parsed.revision)) {
+    return { ok: false, reason: `dispatch id "${id}" has a non-execute revision` };
+  }
+  const canonical = `gf_r${parsed.repositoryId}_i${parsed.issueNumber}_w${parsed.epochCode}_${parsed.mode}_${parsed.revision}`;
+  if (id !== canonical) {
+    return { ok: false, reason: `dispatch id "${id}" is not canonically encoded` };
+  }
+  return {
+    ok: true,
+    id,
+    binding: {
+      repositoryId: parsed.repositoryId,
+      issueNumber: parsed.issueNumber,
+      workflowEpoch: `wf_${parsed.epochCode}`,
+      mode: parsed.mode,
+      revision: parsed.revision
+    }
+  };
+}
+function expectedPlanDispatchId(repositoryId, issueNumber, workflowEpoch, revision) {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) return null;
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) return null;
+  if (!Number.isSafeInteger(revision) || revision < 1) return null;
+  if (!/^wf_[0-9a-z]{12}$/.test(workflowEpoch)) return null;
+  return `gf_r${repositoryId}_i${issueNumber}_w${workflowEpoch.slice(3)}_plan_${String(revision).padStart(2, "0")}`;
+}
+function expectedExecuteDispatchId(repositoryId, issueNumber, workflowEpoch, planCommentId) {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) return null;
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) return null;
+  if (!Number.isSafeInteger(planCommentId) || planCommentId < 1) return null;
+  if (!/^wf_[0-9a-z]{12}$/.test(workflowEpoch)) return null;
+  return `gf_r${repositoryId}_i${issueNumber}_w${workflowEpoch.slice(3)}_execute_p${planCommentId}`;
+}
+function validateExpectedDispatchId(id, expected) {
+  const inspected = inspectDispatchId(id);
+  if (!inspected.ok) return inspected;
+  if (expected === null || inspected.id !== expected) {
+    return {
+      ok: false,
+      reason: `dispatch id "${id ?? ""}" does not match current task "${expected ?? "none"}"`
+    };
+  }
+  return { ok: true, binding: inspected.binding };
+}
+
 // src/gate/gate.ts
 var COMMAND_ACTIONS = /* @__PURE__ */ new Set(["created", "edited"]);
 async function runGate(input, client, log) {
@@ -24967,6 +25159,12 @@ async function runGate(input, client, log) {
   if (!verdict.ok) {
     log.warning(verdict.reason);
     throw new Error(`gate identity configuration rejected: ${verdict.reason}`);
+  }
+  if (identity.id < 1 || input.repositoryId !== identity.id) {
+    log.warning(
+      `Repository identity mismatch on ${input.repoOwner}/${input.repo}: event id ${input.repositoryId}, API id ${identity.id}; ignored (fail closed).`
+    );
+    return;
   }
   if (input.eventName === "issue_comment") {
     if (input.eventAction === void 0 || !COMMAND_ACTIONS.has(input.eventAction)) {
@@ -25089,6 +25287,22 @@ async function handleMarkerComment(input, ref, client, log) {
   }
   const labels = await client.getLabels(ref);
   const snapshot = readSnapshot(labels);
+  const source = await readMarkerSource(input, ref, client, log);
+  if (source === null) return;
+  const gateIdentity = await client.getAuthenticatedUser();
+  const chain = await validateMarkerChain({
+    marker,
+    source: source.comment,
+    comments: source.comments,
+    input,
+    gateIdentity
+  });
+  if (!chain.ok) {
+    log.warning(
+      `Invalid ${marker} on #${ref.issueNumber}: ${chain.reason}; no transition.`
+    );
+    return;
+  }
   switch (marker) {
     case MARKERS.plan:
       await applyMarkerTransition(
@@ -25109,7 +25323,7 @@ async function handleMarkerComment(input, ref, client, log) {
         await applyTrackerStatusEdit(
           ref,
           snapshot,
-          input.commentBody ?? "",
+          source.comment.body,
           publisher,
           input.actor,
           client,
@@ -25129,6 +25343,7 @@ async function handleMarkerComment(input, ref, client, log) {
         client,
         log
       );
+      await recoverPendingReportAfterTracker(ref, input, client, log);
       return;
     }
     case MARKERS.completionReport:
@@ -25167,14 +25382,15 @@ async function applyAiPlan(ref, snapshot, input, client, log) {
     log.warning("Frozen transition table rejects T0; no transition.");
     return false;
   }
-  await client.addLabels(ref, [LABELS.planning]);
-  log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING).`);
   const published = await issueEpochRecord(ref, input, client, log);
   if (!published.ok) {
     log.warning(
-      `Epoch record publish failed after T0 on #${ref.issueNumber}; re-run /ai-plan to heal. Reason: ${published.reason}`
+      `Epoch record publish failed before T0 on #${ref.issueNumber}; Reason: ${published.reason}`
     );
+    return false;
   }
+  await client.addLabels(ref, [LABELS.planning]);
+  log.info(`T0 on #${ref.issueNumber}: added ${LABELS.planning} (PLANNING), epoch ${published.epoch}.`);
   return true;
 }
 async function healPlanningEpoch(ref, input, client, log) {
@@ -25195,6 +25411,28 @@ async function healPlanningEpoch(ref, input, client, log) {
     return false;
   }
   if (records.length > 0) {
+    const identity = await client.getAuthenticatedUser();
+    const trusted = readTrustedWorkflowEpoch(
+      comments,
+      input.repositoryId,
+      ref.issueNumber,
+      /* @__PURE__ */ new Set([identity.login.toLowerCase()])
+    );
+    if (!trusted.ok) {
+      log.warning(
+        `Invalid /ai-plan on #${ref.issueNumber}: existing workflow_epoch record is not trusted (${trusted.reason}); no transition.`
+      );
+      return false;
+    }
+    const retry = trusted.records.find(
+      (entry) => input.commentId !== void 0 && entry.record.request_comment_id === input.commentId
+    );
+    if (retry !== void 0) {
+      log.info(
+        `/ai-plan retry on #${ref.issueNumber}: reusing epoch record #${retry.commentId} for operation ${retry.record.operation_id}.`
+      );
+      return true;
+    }
     log.warning(
       `Invalid /ai-plan on #${ref.issueNumber}: issue already in workflow (PLANNING, epoch ${records[records.length - 1]?.record.workflow_epoch}); no transition.`
     );
@@ -25214,7 +25452,40 @@ async function healPlanningEpoch(ref, input, client, log) {
 }
 async function issueEpochRecord(ref, input, client, log) {
   try {
+    if (input.commentId === void 0 || !Number.isSafeInteger(input.commentId) || input.commentId < 1) {
+      return { ok: false, reason: "the /ai-plan source comment id is missing or invalid" };
+    }
     const identity = await client.getAuthenticatedUser();
+    const comments = await client.listComments(ref);
+    const source = comments.find((comment) => comment.id === input.commentId);
+    if (source === void 0 || source.body.trim() !== "/ai-plan" || !sameLogin(source.user, input.actor) || !isTrustedHuman(source.user, input.repoOwner, input.trustedHumansInput)) {
+      return { ok: false, reason: "the /ai-plan source comment could not be verified as the trusted command" };
+    }
+    const operationId = gateEpochOperationId(input.repositoryId, ref.issueNumber, input.commentId);
+    const parsed = parseRecords("workflow_epoch", comments);
+    if (parsed.invalid.length > 0) {
+      return {
+        ok: false,
+        reason: "unparsable workflow_epoch record(s) present (fail closed): " + parsed.invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+      };
+    }
+    const sameOperation = operationId === null ? [] : parsed.records.filter((entry) => entry.record.operation_id === operationId);
+    if (sameOperation.length > 0) {
+      const first = sameOperation[0];
+      if (first === void 0) return { ok: false, reason: "missing epoch operation record" };
+      const conflict = sameOperation.some(
+        (entry) => entry.record.workflow_epoch !== first.record.workflow_epoch || entry.record.repository_id !== input.repositoryId || entry.record.issue_number !== ref.issueNumber
+      );
+      if (conflict) {
+        return { ok: false, reason: `conflicting workflow_epoch records for ${operationId}` };
+      }
+      if (!sameOperation.every(
+        (entry) => sameLogin(entry.comment.user, identity.login) && sameLogin(entry.record.issued_by, identity.login)
+      )) {
+        return { ok: false, reason: `workflow_epoch records for ${operationId} are not issued by the authenticated Gate` };
+      }
+      return { ok: true, commentId: first.commentId, epoch: first.record.workflow_epoch };
+    }
     const epoch = newWorkflowEpoch();
     const record = {
       schema: 2,
@@ -25224,7 +25495,8 @@ async function issueEpochRecord(ref, input, client, log) {
       workflow_epoch: epoch,
       created_at: (/* @__PURE__ */ new Date()).toISOString(),
       issued_by: identity.login,
-      operation_id: epochOperationId(input.repositoryId, ref.issueNumber, epoch)
+      operation_id: operationId,
+      request_comment_id: input.commentId
     };
     const published = await publishRecord(client, ref, record, log);
     if (!published.ok) return published;
@@ -25257,6 +25529,10 @@ async function publishRecord(client, ref, record, log) {
     if (!parsed.ok || JSON.stringify(parsed.record) !== JSON.stringify(record)) {
       return { ok: false, reason: "record publish confirmed but content mismatch \u2014 failing closed" };
     }
+    const expectedAuthor = record.kind === "workflow_epoch" ? record.issued_by : record.gate_login;
+    if (remote.user.toLowerCase() !== expectedAuthor.toLowerCase()) {
+      return { ok: false, reason: "record publish confirmed with an unexpected author \u2014 failing closed" };
+    }
   } catch (err) {
     return {
       ok: false,
@@ -25265,7 +25541,7 @@ async function publishRecord(client, ref, record, log) {
   }
   return { ok: true, commentId: createdId };
 }
-async function readCurrentEpoch(client, ref, prefetchedComments) {
+async function readCurrentEpoch(client, ref, repositoryId, gateLogin, prefetchedComments, trustedHumansInput = "", repoOwner = "") {
   let comments = prefetchedComments;
   if (comments === void 0) {
     try {
@@ -25277,18 +25553,335 @@ async function readCurrentEpoch(client, ref, prefetchedComments) {
       };
     }
   }
-  const { records, invalid } = parseRecords("workflow_epoch", comments);
-  if (invalid.length > 0) {
+  return currentEpochFromComments(
+    comments,
+    repositoryId,
+    ref.issueNumber,
+    gateLogin,
+    trustedHumansInput,
+    repoOwner
+  );
+}
+function currentEpochFromComments(comments, repositoryId, issueNumber, gateLogin, trustedHumansInput = "", repoOwner = "") {
+  const parsed = parseRecords("workflow_epoch", comments);
+  if (parsed.invalid.length > 0) {
     return {
       ok: false,
-      reason: `unparsable workflow_epoch record(s) on #${ref.issueNumber} (fail closed): ` + invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+      reason: `unparsable workflow_epoch record(s) on #${issueNumber} (fail closed): ` + parsed.invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
     };
   }
-  const latest = records[records.length - 1];
+  const byOperation = /* @__PURE__ */ new Map();
+  for (const entry of parsed.records) {
+    if (entry.record.repository_id !== repositoryId || entry.record.issue_number !== issueNumber) {
+      return {
+        ok: false,
+        reason: `workflow_epoch record #${entry.commentId} does not bind the current repository/issue`
+      };
+    }
+    if (!sameLogin(entry.comment.user, gateLogin) || !sameLogin(entry.record.issued_by, gateLogin)) {
+      return {
+        ok: false,
+        reason: `workflow_epoch record #${entry.commentId} is not issued by the authenticated Gate`
+      };
+    }
+    const existing = byOperation.get(entry.record.operation_id);
+    if (existing !== void 0) {
+      if (existing.repository_id !== entry.record.repository_id || existing.issue_number !== entry.record.issue_number || existing.workflow_epoch !== entry.record.workflow_epoch || !sameLogin(existing.issued_by, entry.record.issued_by) || existing.request_comment_id !== entry.record.request_comment_id) {
+        return {
+          ok: false,
+          reason: `conflicting workflow_epoch records for operation ${entry.record.operation_id}`
+        };
+      }
+    } else {
+      byOperation.set(entry.record.operation_id, entry.record);
+    }
+    if (entry.record.request_comment_id !== void 0) {
+      const source = comments.find((comment) => comment.id === entry.record.request_comment_id);
+      if (source === void 0 || source.body.trim() !== "/ai-plan" || !isTrustedHuman(source.user, repoOwner, trustedHumansInput)) {
+        return {
+          ok: false,
+          reason: `workflow_epoch record #${entry.commentId} points to a missing, invalid, or untrusted /ai-plan source comment #${entry.record.request_comment_id}`
+        };
+      }
+    }
+  }
+  const latest = parsed.records[parsed.records.length - 1];
   if (latest === void 0) {
-    return { ok: false, reason: `no workflow_epoch record on #${ref.issueNumber}` };
+    return { ok: false, reason: `no workflow_epoch record on #${issueNumber}` };
   }
   return { ok: true, record: latest.record, commentId: latest.commentId };
+}
+function acceptedFeedbackCount(comments, epoch, input, gateIdentity) {
+  const parsed = parseRecords("feedback_accepted", comments);
+  if (parsed.invalid.length > 0) {
+    return {
+      ok: false,
+      reason: `unparsable feedback record(s) on #${input.issueNumber} (fail closed): ` + parsed.invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+    };
+  }
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  const seen = /* @__PURE__ */ new Set();
+  let count = 0;
+  for (const entry of parsed.records) {
+    if (entry.record.repository_id !== input.repositoryId || entry.record.issue_number !== input.issueNumber) {
+      return {
+        ok: false,
+        reason: `feedback record #${entry.commentId} does not bind the current repository/issue`
+      };
+    }
+    if (!sameLogin(entry.comment.user, gateIdentity.login) || !sameLogin(entry.record.gate_login, gateIdentity.login) || entry.record.gate_user_id !== gateIdentity.id) {
+      return {
+        ok: false,
+        reason: `feedback record #${entry.commentId} is not issued by the authenticated Gate`
+      };
+    }
+    if (entry.record.workflow_epoch !== epoch) continue;
+    const command = byId.get(entry.record.feedback_comment_id);
+    if (command === void 0) {
+      return {
+        ok: false,
+        reason: `feedback record #${entry.commentId} points to missing source comment #${entry.record.feedback_comment_id}`
+      };
+    }
+    const parsedCommand = parseCommand(command.body);
+    if (parsedCommand?.command !== COMMANDS.change || !isTrustedHuman(command.user, input.repoOwner, input.trustedHumansInput)) {
+      return {
+        ok: false,
+        reason: `feedback record #${entry.commentId} has an invalid or untrusted source command`
+      };
+    }
+    if (seen.has(entry.record.operation_id)) continue;
+    seen.add(entry.record.operation_id);
+    count += 1;
+  }
+  return { ok: true, count };
+}
+function validateCurrentPlan(args) {
+  const planComments = args.comments.filter(
+    (comment2) => detectCommentMarker(comment2.body) === MARKERS.plan
+  );
+  const comment = planComments[planComments.length - 1];
+  if (comment === void 0) return { ok: false, reason: "no valid current Plan comment exists" };
+  if (args.planCommentId !== void 0 && comment.id !== args.planCommentId) {
+    return { ok: false, reason: `Plan comment #${args.planCommentId} is not the current Plan` };
+  }
+  if (!isTrustedHuman(comment.user, args.input.repoOwner, args.input.trustedHumansInput) && !isTrustedAgent(comment.user, args.input.trustedAgentsInput)) {
+    return { ok: false, reason: `current Plan comment #${comment.id} has an untrusted publisher` };
+  }
+  const feedback = acceptedFeedbackCount(
+    args.comments,
+    args.workflowEpoch,
+    args.input,
+    args.gateIdentity
+  );
+  if (!feedback.ok) return feedback;
+  const expected = expectedPlanDispatchId(
+    args.repositoryId,
+    args.issueNumber,
+    args.workflowEpoch,
+    feedback.count + 1
+  );
+  const dispatchId = findDispatchId(comment.body);
+  const binding = validateExpectedDispatchId(dispatchId, expected);
+  if (!binding.ok) return { ok: false, reason: `current Plan comment #${comment.id}: ${binding.reason}` };
+  return {
+    ok: true,
+    plan: { comment, dispatchId, revision: feedback.count + 1 }
+  };
+}
+function validateCurrentApproval(args) {
+  const parsed = parseRecords("approval", args.comments);
+  if (parsed.invalid.length > 0) {
+    return {
+      ok: false,
+      reason: `unparsable approval record(s) on #${args.issueNumber} (fail closed): ` + parsed.invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+    };
+  }
+  for (const entry of parsed.records) {
+    if (entry.record.repository_id !== args.repositoryId || entry.record.issue_number !== args.issueNumber) {
+      return {
+        ok: false,
+        reason: `approval record #${entry.commentId} does not bind the current repository/issue`
+      };
+    }
+    if (!sameLogin(entry.comment.user, args.gateIdentity.login) || !sameLogin(entry.record.gate_login, args.gateIdentity.login) || entry.record.gate_user_id !== args.gateIdentity.id) {
+      return {
+        ok: false,
+        reason: `approval record #${entry.commentId} is not issued by the authenticated Gate`
+      };
+    }
+  }
+  const candidates = parsed.records.filter((entry) => {
+    if (entry.record.workflow_epoch !== args.workflowEpoch || entry.record.plan_comment_id !== args.plan.comment.id || entry.record.plan_sha256 !== planSha256(args.plan.comment.body)) {
+      return false;
+    }
+    const command = args.comments.find((comment) => comment.id === entry.record.approval_command_comment_id);
+    if (command === void 0) return false;
+    const parsedCommand = parseCommand(command.body);
+    return parsedCommand?.command === COMMANDS.approve && parsedCommand.args.planCommentId === args.plan.comment.id && isTrustedHuman(command.user, args.input.repoOwner, args.input.trustedHumansInput) && sameLogin(command.user, entry.record.approved_by_login);
+  });
+  if (candidates.length === 0) {
+    return { ok: false, reason: "no valid Approval binds the current Plan and epoch" };
+  }
+  const conflict = approvalRecordsConflict(candidates);
+  if (conflict.conflict) {
+    return { ok: false, reason: conflict.reason ?? "conflicting Approval records" };
+  }
+  const latest = candidates[candidates.length - 1];
+  if (latest === void 0) return { ok: false, reason: "no valid Approval binds the current Plan and epoch" };
+  return { ok: true, approval: { commentId: latest.commentId, record: latest.record } };
+}
+function currentTracker(comments, dispatchId) {
+  const matches = comments.filter(
+    (comment) => detectCommentMarker(comment.body) === MARKERS.executionTracker && findDispatchId(comment.body) === dispatchId
+  );
+  return matches[matches.length - 1] ?? null;
+}
+function validateMarkerChain(args) {
+  const epoch = currentEpochFromComments(
+    args.comments,
+    args.input.repositoryId,
+    args.input.issueNumber,
+    args.gateIdentity.login,
+    args.input.trustedHumansInput,
+    args.input.repoOwner
+  );
+  if (!epoch.ok) return epoch;
+  const plan = validateCurrentPlan({
+    comments: args.comments,
+    repositoryId: args.input.repositoryId,
+    issueNumber: args.input.issueNumber,
+    workflowEpoch: epoch.record.workflow_epoch,
+    input: args.input,
+    gateIdentity: args.gateIdentity
+  });
+  if (!plan.ok) return plan;
+  const sourceDispatch = findDispatchId(args.source.body);
+  if (args.marker === MARKERS.plan) {
+    if (args.source.id !== plan.plan.comment.id) {
+      return { ok: false, reason: `Plan source #${args.source.id} is not the current planning task` };
+    }
+    const expected = validateExpectedDispatchId(sourceDispatch, plan.plan.dispatchId);
+    if (!expected.ok) return expected;
+    return { ok: true, epoch, plan: plan.plan };
+  }
+  const approval = validateCurrentApproval({
+    comments: args.comments,
+    repositoryId: args.input.repositoryId,
+    issueNumber: args.input.issueNumber,
+    workflowEpoch: epoch.record.workflow_epoch,
+    plan: plan.plan,
+    input: args.input,
+    gateIdentity: args.gateIdentity
+  });
+  if (!approval.ok) return approval;
+  const expectedExecution = expectedExecuteDispatchId(
+    args.input.repositoryId,
+    args.input.issueNumber,
+    epoch.record.workflow_epoch,
+    plan.plan.comment.id
+  );
+  const executionBinding = validateExpectedDispatchId(sourceDispatch, expectedExecution);
+  if (!executionBinding.ok) return executionBinding;
+  const tracker = currentTracker(args.comments, expectedExecution ?? "");
+  if (tracker !== null && !isTrustedHuman(tracker.user, args.input.repoOwner, args.input.trustedHumansInput) && !isTrustedAgent(tracker.user, args.input.trustedAgentsInput)) {
+    return { ok: false, reason: `current execution Tracker #${tracker.id} has an untrusted publisher` };
+  }
+  if (args.marker === MARKERS.executionTracker) {
+    if (tracker === null || tracker.id !== args.source.id) {
+      return { ok: false, reason: "Tracker source is not the current execution task" };
+    }
+    return { ok: true, epoch, plan: plan.plan, approval: approval.approval, tracker };
+  }
+  if (tracker === null) return { ok: false, reason: "current execution Tracker is missing" };
+  return { ok: true, epoch, plan: plan.plan, approval: approval.approval, tracker };
+}
+async function readMarkerSource(input, ref, client, log) {
+  if (input.commentId === void 0 || input.commentId < 1) {
+    log.warning(`Marker on #${ref.issueNumber} has no valid source comment id; ignored (fail closed).`);
+    return null;
+  }
+  const comments = await client.listComments(ref);
+  const listed = comments.find((comment) => comment.id === input.commentId);
+  if (listed === void 0) {
+    log.warning(`Marker source comment #${input.commentId} is not on issue #${ref.issueNumber}; ignored.`);
+    return null;
+  }
+  const remote = await client.getComment(ref, input.commentId);
+  if (remote === null || remote.id !== listed.id || !sameLogin(remote.user, input.actor) || remote.user !== listed.user || remote.body !== listed.body || remote.body !== input.commentBody) {
+    log.warning(
+      `Marker source comment #${input.commentId} could not be re-read consistently on #${ref.issueNumber}; ignored (fail closed).`
+    );
+    return null;
+  }
+  return { comment: remote, comments };
+}
+function sameLogin(left, right) {
+  return left.toLowerCase() === right.toLowerCase();
+}
+async function recoverPendingReportAfterTracker(ref, input, client, log) {
+  const labels = await client.getLabels(ref);
+  const snapshot = readSnapshot(labels);
+  if (snapshot.status !== "in-workflow" || snapshot.state !== STATES.working) return;
+  const comments = await client.listComments(ref);
+  const gateIdentity = await client.getAuthenticatedUser();
+  const epoch = currentEpochFromComments(
+    comments,
+    input.repositoryId,
+    input.issueNumber,
+    gateIdentity.login,
+    input.trustedHumansInput,
+    input.repoOwner
+  );
+  if (!epoch.ok) return;
+  const plan = validateCurrentPlan({
+    comments,
+    repositoryId: input.repositoryId,
+    issueNumber: input.issueNumber,
+    workflowEpoch: epoch.record.workflow_epoch,
+    input,
+    gateIdentity
+  });
+  if (!plan.ok) return;
+  const expected = expectedExecuteDispatchId(
+    input.repositoryId,
+    input.issueNumber,
+    epoch.record.workflow_epoch,
+    plan.plan.comment.id
+  );
+  if (expected === null) return;
+  const reports = comments.filter(
+    (comment) => detectCommentMarker(comment.body) === MARKERS.completionReport && validateExpectedDispatchId(findDispatchId(comment.body), expected).ok
+  );
+  const report = reports[reports.length - 1];
+  if (report === void 0) return;
+  if (!isTrustedHuman(report.user, input.repoOwner, input.trustedHumansInput) && !isTrustedAgent(report.user, input.trustedAgentsInput)) {
+    log.warning(`Report #${report.id} for ${expected} has an untrusted publisher; recovery is ignored.`);
+    return;
+  }
+  const chain = validateMarkerChain({
+    marker: MARKERS.completionReport,
+    source: report,
+    comments,
+    input,
+    gateIdentity
+  });
+  if (!chain.ok) {
+    log.warning(`Pending Report #${report.id} for ${expected} failed recovery validation: ${chain.reason}`);
+    return;
+  }
+  await applyMarkerTransition(
+    ref,
+    snapshot,
+    STATES.working,
+    STATES.done,
+    "T6",
+    "completion report recovered after execution Tracker",
+    "recovered marker publisher",
+    report.user,
+    client,
+    log
+  );
 }
 async function applyApprove(ref, snapshot, args, input, client, log) {
   if (snapshot.status === "ambiguous") {
@@ -25332,14 +25925,51 @@ async function applyApprove(ref, snapshot, args, input, client, log) {
   if (referencedComment === null) {
     return false;
   }
-  const epoch = await readCurrentEpoch(client, ref, allComments);
+  const gateIdentity = await client.getAuthenticatedUser();
+  const epoch = await readCurrentEpoch(
+    client,
+    ref,
+    input.repositoryId,
+    gateIdentity.login,
+    allComments,
+    input.trustedHumansInput,
+    input.repoOwner
+  );
   if (!epoch.ok) {
     log.warning(`Invalid /approve on #${ref.issueNumber}: ${epoch.reason}; no record, no transition.`);
     return false;
   }
-  if (input.commentId === void 0) {
+  const currentPlan = validateCurrentPlan({
+    comments: allComments,
+    planCommentId: args.planCommentId,
+    repositoryId: input.repositoryId,
+    issueNumber: ref.issueNumber,
+    workflowEpoch: epoch.record.workflow_epoch,
+    input,
+    gateIdentity
+  });
+  if (!currentPlan.ok) {
+    log.warning(
+      `Invalid /approve on #${ref.issueNumber}: ${currentPlan.reason}; the approval must name the current planning task; no transition, no reaction.`
+    );
+    return false;
+  }
+  if (referencedComment.id !== currentPlan.plan.comment.id || referencedComment.body !== currentPlan.plan.comment.body || !sameLogin(referencedComment.user, currentPlan.plan.comment.user)) {
+    log.warning(
+      `Invalid /approve on #${ref.issueNumber}: the referenced Plan changed while it was being validated; no record, no transition, no reaction.`
+    );
+    return false;
+  }
+  if (input.commentId === void 0 || input.commentId < 1) {
     log.warning(
       `Invalid /approve on #${ref.issueNumber}: event carries no comment id, so the approval command cannot be anchored in a record; no transition, no reaction.`
+    );
+    return false;
+  }
+  const approvalCommand = allComments.find((comment) => comment.id === input.commentId);
+  if (approvalCommand === void 0 || approvalCommand.body !== input.commentBody || !sameLogin(approvalCommand.user, input.actor)) {
+    log.warning(
+      `Invalid /approve on #${ref.issueNumber}: source command comment #${input.commentId} could not be re-read consistently on this issue; no record, no transition, no reaction.`
     );
     return false;
   }
@@ -25348,7 +25978,6 @@ async function applyApprove(ref, snapshot, args, input, client, log) {
       `/approve on #${ref.issueNumber}: payload carries no actor id; recording approved_by_id 0.`
     );
   }
-  const identity = await client.getAuthenticatedUser();
   const record = {
     schema: 2,
     kind: "approval",
@@ -25360,8 +25989,8 @@ async function applyApprove(ref, snapshot, args, input, client, log) {
     approval_command_comment_id: input.commentId,
     approved_by_id: input.actorId ?? 0,
     approved_by_login: input.actor,
-    gate_login: identity.login,
-    gate_user_id: identity.id,
+    gate_login: gateIdentity.login,
+    gate_user_id: gateIdentity.id,
     created_at: (/* @__PURE__ */ new Date()).toISOString(),
     operation_id: approvalOperationId(
       input.repositoryId,
@@ -25423,7 +26052,16 @@ async function acceptFeedbackEvent(ref, input, client, log) {
     );
     return false;
   }
-  const epoch = await readCurrentEpoch(client, ref);
+  const gateIdentity = await client.getAuthenticatedUser();
+  const epoch = await readCurrentEpoch(
+    client,
+    ref,
+    input.repositoryId,
+    gateIdentity.login,
+    void 0,
+    input.trustedHumansInput,
+    input.repoOwner
+  );
   if (!epoch.ok) {
     log.warning(`/${feedbackKind} on #${ref.issueNumber}: ${epoch.reason}; no record, no reaction.`);
     return false;
@@ -25435,6 +26073,13 @@ async function acceptFeedbackEvent(ref, input, client, log) {
     input.commentId
   );
   const comments = await client.listComments(ref);
+  const source = comments.find((comment) => comment.id === input.commentId);
+  if (source === void 0 || source.body !== input.commentBody || !sameLogin(source.user, input.actor)) {
+    log.warning(
+      `/${feedbackKind} on #${ref.issueNumber}: source command comment #${input.commentId} could not be re-read consistently on this issue; no record, no reaction.`
+    );
+    return false;
+  }
   const { records, invalid } = parseRecords("feedback_accepted", comments);
   if (invalid.length > 0) {
     log.warning(
@@ -25448,7 +26093,6 @@ async function acceptFeedbackEvent(ref, input, client, log) {
     );
     return true;
   }
-  const identity = await client.getAuthenticatedUser();
   const record = {
     schema: 2,
     kind: "feedback_accepted",
@@ -25458,8 +26102,8 @@ async function acceptFeedbackEvent(ref, input, client, log) {
     event_id: `fe${input.commentId}`,
     feedback_comment_id: input.commentId,
     feedback_kind: feedbackKind,
-    gate_login: identity.login,
-    gate_user_id: identity.id,
+    gate_login: gateIdentity.login,
+    gate_user_id: gateIdentity.id,
     created_at: (/* @__PURE__ */ new Date()).toISOString(),
     operation_id: operationId
   };

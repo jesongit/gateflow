@@ -1,0 +1,8 @@
+{
+  "id": "old-report",
+  "expected": {
+    "labelsExclude": "ai:done"
+  },
+  "record": "integration fixture: Report is bound to an old execution task",
+  "limitReason": "No isolated GitHub Issue runner was provided; this case is recorded for the integration/security fixture layer."
+}

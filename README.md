@@ -237,6 +237,12 @@ npm run typecheck  # tsc --noEmit（strict）
 npm test           # vitest
 ```
 
+正式发布顺序是：`npm ci` → `npm run typecheck` → `npm test` → `npm run build` → `npm run check:dist` → `npm run e2e:release` → 可选的 Real ChatGPT/ZCode smoke → tag/release。完整的本地可验证 E2E 说明、临时私有仓库清理规则和故障排查见 [docs/release.md](docs/release.md)。
+
+`e2e:release` 当前由 `scripts/e2e-release.mjs` 提供：preflight 从本机 `gh auth token` 内存取得 token，注入 Bootstrap/Driver 子进程，记录当前 HEAD SHA；随后创建 `private --add-readme` 临时仓库，用 `jesongit/gateflow@<HEAD SHA>` 执行 Bootstrap，并验证 README、config、`.gitignore`、workflow ref 和 6 个 labels。测试使用 Fake Agent，不依赖 AI；正常成功删除临时仓库和 clone，失败保留现场，`--keep` 可保留成功现场。
+
+使用 `--prepare-agent` 时，入口会真实完成 Bootstrap、创建 Issue、发布 `/ai-plan`、等待 `planning/epoch`、运行一次 Driver，并输出 `repository/issue/task/workspace` 后停止；该成功现场会保留供 Agent 继续使用。当前四项安全 smoke 都有内置 real-GitHub 路径；如果协议、GitHub 上下文或注入的 runner 不可用，相关用例会回退为 fixture-only/`limited`，不会冒充远端通过。real-GitHub 前置条件满足时默认入口可通过；出现 `limited` 时默认入口会失败，`--skip-security` 才会跳过整个安全场景。CLI 参数和实际行为见 [docs/release.md](docs/release.md)。CI 不会在每次运行完整真实 GitHub E2E；完整 E2E 只在正式发布前显式运行，ChatGPT/ZCode 仍是独立的可选 smoke；未执行的真实 E2E 必须记录为未执行/阻塞及原因。
+
 ## 文档导航
 
 | 文档 | 内容 |

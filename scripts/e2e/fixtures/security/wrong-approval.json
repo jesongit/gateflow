@@ -1,0 +1,8 @@
+{
+  "id": "wrong-approval",
+  "expected": {
+    "labelsExclude": "ai:ready"
+  },
+  "record": "integration fixture: /approve points at a non-existent Plan comment",
+  "limitReason": "No isolated GitHub Issue runner was provided; this case is recorded for the integration/security fixture layer."
+}

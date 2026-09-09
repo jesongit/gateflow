@@ -1,0 +1,8 @@
+{
+  "id": "fake-ready",
+  "expected": {
+    "noExecuteTask": true
+  },
+  "record": "integration fixture: ai:ready exists without a valid Gate-issued Approval",
+  "limitReason": "A real READY label mutation is intentionally not performed by this smoke layer because it bypasses the Gate identity model."
+}

@@ -16,7 +16,7 @@ const artifacts = [
 
 // Rebuild one entry in memory. Flags EXACTLY mirror the `build:gate` /
 // `build:cli` scripts in package.json (`esbuild <entry> --bundle
-// --platform=node --target=node20 --outfile=<dist>`); only `write: false` is
+// --platform=node --target=node24 --outfile=<dist>`); only `write: false` is
 // added so we compare bytes without touching the working tree.
 async function rebuild(entry, outfile) {
   const result = await build({
@@ -24,7 +24,7 @@ async function rebuild(entry, outfile) {
     entryPoints: [entry],
     bundle: true,
     platform: 'node',
-    target: 'node20',
+    target: 'node24',
     outfile,
     write: false,
     logLevel: 'silent',

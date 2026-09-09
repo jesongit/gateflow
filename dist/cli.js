@@ -487,8 +487,8 @@ var require_light = __commonJS({
           return this.Promise.resolve();
         }
         yieldLoop(t = 0) {
-          return new this.Promise(function(resolve4, reject) {
-            return setTimeout(resolve4, t);
+          return new this.Promise(function(resolve5, reject) {
+            return setTimeout(resolve5, t);
           });
         }
         computePenalty() {
@@ -699,15 +699,15 @@ var require_light = __commonJS({
           return this._queue.length === 0;
         }
         async _tryToRun() {
-          var args, cb, error, reject, resolve4, returned, task;
+          var args, cb, error, reject, resolve5, returned, task;
           if (this._running < 1 && this._queue.length > 0) {
             this._running++;
-            ({ task, args, resolve: resolve4, reject } = this._queue.shift());
+            ({ task, args, resolve: resolve5, reject } = this._queue.shift());
             cb = await (async function() {
               try {
                 returned = await task(...args);
                 return function() {
-                  return resolve4(returned);
+                  return resolve5(returned);
                 };
               } catch (error1) {
                 error = error1;
@@ -722,13 +722,13 @@ var require_light = __commonJS({
           }
         }
         schedule(task, ...args) {
-          var promise, reject, resolve4;
-          resolve4 = reject = null;
+          var promise, reject, resolve5;
+          resolve5 = reject = null;
           promise = new this.Promise(function(_resolve, _reject) {
-            resolve4 = _resolve;
+            resolve5 = _resolve;
             return reject = _reject;
           });
-          this._queue.push({ task, args, resolve: resolve4, reject });
+          this._queue.push({ task, args, resolve: resolve5, reject });
           this._tryToRun();
           return promise;
         }
@@ -1129,14 +1129,14 @@ var require_light = __commonJS({
                 counts = this._states.counts;
                 return counts[0] + counts[1] + counts[2] + counts[3] === at;
               };
-              return new this.Promise((resolve4, reject) => {
+              return new this.Promise((resolve5, reject) => {
                 if (finished()) {
-                  return resolve4();
+                  return resolve5();
                 } else {
                   return this.on("done", () => {
                     if (finished()) {
                       this.removeAllListeners("done");
-                      return resolve4();
+                      return resolve5();
                     }
                   });
                 }
@@ -1229,9 +1229,9 @@ var require_light = __commonJS({
               options = parser$5.load(options, this.jobDefaults);
             }
             task = (...args2) => {
-              return new this.Promise(function(resolve4, reject) {
+              return new this.Promise(function(resolve5, reject) {
                 return fn(...args2, function(...args3) {
-                  return (args3[0] != null ? reject : resolve4)(args3);
+                  return (args3[0] != null ? reject : resolve5)(args3);
                 });
               });
             };
@@ -5314,10 +5314,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep: sep3, value } = collItem;
+        const { start, key, sep: sep4, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep3?.[0],
+          next: key ?? sep4?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -5331,7 +5331,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep3) {
+          if (!keyProps.anchor && !keyProps.tag && !sep4) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -5355,7 +5355,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep3 ?? [], {
+        const valueProps = resolveProps.resolveProps(sep4 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -5371,7 +5371,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep3, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep4, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -5462,7 +5462,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep3 = "";
+        let sep4 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -5476,13 +5476,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep3 + cb;
-              sep3 = "";
+                comment += sep4 + cb;
+              sep4 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep3 += source;
+                sep4 += source;
               hasSpace = true;
               break;
             default:
@@ -5525,18 +5525,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep: sep3, value } = collItem;
+        const { start, key, sep: sep4, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep3?.[0],
+          next: key ?? sep4?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep3 && !value) {
+          if (!props.anchor && !props.tag && !sep4 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -5590,8 +5590,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep3 && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep3, null, props, onError);
+        if (!isMap && !sep4 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep4, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -5603,7 +5603,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep3 ?? [], {
+          const valueProps = resolveProps.resolveProps(sep4 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -5614,8 +5614,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep3)
-                for (const st of sep3) {
+              if (sep4)
+                for (const st of sep4) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -5632,7 +5632,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep3, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep4, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -5812,7 +5812,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep3 = "";
+      let sep4 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -5829,24 +5829,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep3 + indent.slice(trimIndent) + content;
-          sep3 = "\n";
+          value += sep4 + indent.slice(trimIndent) + content;
+          sep4 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep3 === " ")
-            sep3 = "\n";
-          else if (!prevMoreIndented && sep3 === "\n")
-            sep3 = "\n\n";
-          value += sep3 + indent.slice(trimIndent) + content;
-          sep3 = "\n";
+          if (sep4 === " ")
+            sep4 = "\n";
+          else if (!prevMoreIndented && sep4 === "\n")
+            sep4 = "\n\n";
+          value += sep4 + indent.slice(trimIndent) + content;
+          sep4 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep3 === "\n")
+          if (sep4 === "\n")
             value += "\n";
           else
-            sep3 = "\n";
+            sep4 = "\n";
         } else {
-          value += sep3 + content;
-          sep3 = " ";
+          value += sep4 + content;
+          sep4 = " ";
           prevMoreIndented = false;
         }
       }
@@ -6028,25 +6028,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep3 = " ";
+      let sep4 = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep3 === "\n")
-            res += sep3;
+          if (sep4 === "\n")
+            res += sep4;
           else
-            sep3 = "\n";
+            sep4 = "\n";
         } else {
-          res += sep3 + match[1];
-          sep3 = " ";
+          res += sep4 + match[1];
+          sep4 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep3 + (match?.[1] ?? "");
+      return res + sep4 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -6856,14 +6856,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep: sep3, value }) {
+    function stringifyItem({ start, key, sep: sep4, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep3)
-        for (const st of sep3)
+      if (sep4)
+        for (const st of sep4)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -8030,18 +8030,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep3;
+          let sep4;
           if (scalar.end) {
-            sep3 = scalar.end;
-            sep3.push(this.sourceToken);
+            sep4 = scalar.end;
+            sep4.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep3 = [this.sourceToken];
+            sep4 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep: sep3 }]
+            items: [{ start, key: scalar, sep: sep4 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -8194,15 +8194,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep3 = it.sep;
-                  sep3.push(this.sourceToken);
+                  const sep4 = it.sep;
+                  sep4.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep: sep3 }]
+                    items: [{ start: start2, key, sep: sep4 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -8396,13 +8396,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep3 = fc.end.splice(1, fc.end.length);
-            sep3.push(this.sourceToken);
+            const sep4 = fc.end.splice(1, fc.end.length);
+            sep4.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep: sep3 }]
+              items: [{ start, key: fc, sep: sep4 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -8688,7 +8688,7 @@ __export(cli_exports, {
 module.exports = __toCommonJS(cli_exports);
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
-var nodePath5 = __toESM(require("node:path"));
+var nodePath6 = __toESM(require("node:path"));
 var import_node_url = require("node:url");
 var import_node_process = __toESM(require("node:process"));
 
@@ -13440,7 +13440,7 @@ function getCachedAuthentication(state, auth22) {
   return newScope === currentScope ? authentication : false;
 }
 async function wait(seconds) {
-  await new Promise((resolve4) => setTimeout(resolve4, seconds * 1e3));
+  await new Promise((resolve5) => setTimeout(resolve5, seconds * 1e3));
 }
 async function waitForAccessToken(request2, clientId, clientType, verification) {
   try {
@@ -14446,7 +14446,7 @@ async function sendRequestWithRetries(state, request2, options, createdAt, retri
     state.log.warn(
       `[@octokit/auth-app] Retrying after 401 response to account for token replication delay (retry: ${retries}, wait: ${awaitTime / 1e3}s)`
     );
-    await new Promise((resolve4) => setTimeout(resolve4, awaitTime));
+    await new Promise((resolve5) => setTimeout(resolve5, awaitTime));
     return sendRequestWithRetries(state, request2, options, createdAt, retries);
   }
 }
@@ -16131,8 +16131,62 @@ function createDriverGitHubClient(octokit, repository) {
 
 // src/driver/config.ts
 var import_promises = require("node:fs/promises");
-var nodePath = __toESM(require("node:path"));
+var nodePath2 = __toESM(require("node:path"));
 var import_yaml = __toESM(require_dist());
+
+// src/workspace/binding.ts
+var nodePath = __toESM(require("node:path"));
+var REPOSITORY_SLUG_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$/;
+function isRepositorySlug(value) {
+  return typeof value === "string" && REPOSITORY_SLUG_PATTERN.test(value);
+}
+function sameRepositorySlug(left, right) {
+  return left.toLowerCase() === right.toLowerCase();
+}
+function isAbsolutePath(value) {
+  return nodePath.isAbsolute(value) || nodePath.win32.isAbsolute(value);
+}
+function hasTraversalSegment(value) {
+  return value.split(/[\\/]+/u).some((segment) => segment === "..");
+}
+function normalizeTargetWorkspace(value) {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("target_workspace must be null or a non-empty absolute path");
+  }
+  if (value.includes("\0") || hasTraversalSegment(value)) {
+    throw new Error(`target_workspace contains a forbidden path segment: ${JSON.stringify(value)}`);
+  }
+  if (!isAbsolutePath(value)) {
+    throw new Error(`target_workspace must be absolute, got ${JSON.stringify(value)}`);
+  }
+  const normalized = nodePath.isAbsolute(value) ? nodePath.normalize(nodePath.resolve(value)) : nodePath.win32.normalize(value);
+  if (normalized === "." || normalized.endsWith(nodePath.sep + "..")) {
+    throw new Error(`target_workspace resolves to an unsafe path: ${JSON.stringify(value)}`);
+  }
+  return normalized;
+}
+function isPathInside(base, candidate) {
+  const resolvedBase = nodePath.resolve(base);
+  const resolvedCandidate = nodePath.resolve(candidate);
+  return resolvedCandidate === resolvedBase || resolvedCandidate.startsWith(resolvedBase + nodePath.sep);
+}
+function assertTargetOutsideRuntime(projectRoot, workspaceDir, targetWorkspace) {
+  const normalized = normalizeTargetWorkspace(targetWorkspace);
+  if (normalized === null) return null;
+  const runtimeRoot = nodePath.resolve(projectRoot, workspaceDir);
+  if (isPathInside(runtimeRoot, normalized)) {
+    throw new Error(`target_workspace must not point inside the Driver runtime directory: ${normalized}`);
+  }
+  return normalized;
+}
+function workspaceKey(value) {
+  if (value === null) return null;
+  const normalized = normalizeTargetWorkspace(value);
+  return process.platform === "win32" ? normalized?.toLowerCase() ?? null : normalized;
+}
+
+// src/driver/config.ts
 var ConfigError = class extends Error {
   constructor(message) {
     super(message);
@@ -16151,7 +16205,7 @@ function defaultConfig() {
     requireExplicitHumans: true
   };
 }
-var REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+var REPOSITORY_PATTERN = isRepositorySlug;
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -16198,11 +16252,22 @@ function parseConfig(raw) {
   const config = defaultConfig();
   const repository = optionalString(raw, "repository", errors);
   if (repository !== void 0) {
-    if (!REPOSITORY_PATTERN.test(repository)) {
-      errors.push(`repository: must be "owner/name", got ${JSON.stringify(repository)}`);
+    if (!REPOSITORY_PATTERN(repository)) {
+      errors.push(`repository: must be a GitHub owner/name slug, got ${JSON.stringify(repository)}`);
     } else {
       config.repository = repository;
     }
+  }
+  const controlRepository2 = optionalString(raw, "control_repository", errors);
+  if (controlRepository2 !== void 0) {
+    if (!REPOSITORY_PATTERN(controlRepository2)) {
+      errors.push(`control_repository: must be a GitHub owner/name slug, got ${JSON.stringify(controlRepository2)}`);
+    } else {
+      config.controlRepository = controlRepository2;
+    }
+  }
+  if (config.repository !== void 0 && config.controlRepository !== void 0 && config.repository.toLowerCase() !== config.controlRepository.toLowerCase()) {
+    errors.push("repository and control_repository must identify the same Control Repository");
   }
   const driver = section(raw, "driver", errors);
   const workspaceDir = optionalString(driver, "workspace_dir", errors, "driver.workspace_dir");
@@ -16239,7 +16304,7 @@ function parseConfig(raw) {
   return config;
 }
 async function loadConfig(projectRoot, fileName = "gateflow.config.yml") {
-  const file = nodePath.resolve(projectRoot, fileName);
+  const file = nodePath2.resolve(projectRoot, fileName);
   let text;
   try {
     text = await (0, import_promises.readFile)(file, "utf8");
@@ -16276,21 +16341,21 @@ function parseGitRemoteRepository(gitRemoteUrl) {
   return null;
 }
 function resolveRepository(config, env, gitRemoteUrl) {
-  const candidate = config.repository ?? env.GATEFLOW_REPOSITORY ?? parseGitRemoteRepository(gitRemoteUrl);
+  const candidate = config.controlRepository ?? config.repository ?? env.GATEFLOW_REPOSITORY ?? parseGitRemoteRepository(gitRemoteUrl);
   if (candidate === void 0 || candidate === null) {
     throw new ConfigError(
-      'repository could not be resolved: set `repository: owner/name` in gateflow.config.yml, export GATEFLOW_REPOSITORY=owner/name, or add a GitHub git remote named "origin"'
+      'Control Repository could not be resolved: set `control_repository: owner/name` (or the bootstrap alias `repository: owner/name`) in gateflow.config.yml, export GATEFLOW_REPOSITORY=owner/name, or add a GitHub git remote named "origin"'
     );
   }
-  if (!REPOSITORY_PATTERN.test(candidate)) {
-    throw new ConfigError(`repository must be "owner/name", got ${JSON.stringify(candidate)}`);
+  if (!REPOSITORY_PATTERN(candidate)) {
+    throw new ConfigError(`Control Repository must be a GitHub owner/name slug, got ${JSON.stringify(candidate)}`);
   }
   return candidate;
 }
 
 // src/workspace/paths.ts
 var import_promises2 = require("node:fs/promises");
-var nodePath2 = __toESM(require("node:path"));
+var nodePath3 = __toESM(require("node:path"));
 
 // src/workspace/protocol.ts
 var WORKSPACE_SCHEMA_VERSION = 3;
@@ -16352,16 +16417,16 @@ var TASK_STATES = [
 // src/workspace/paths.ts
 var DEFAULT_WORKSPACE_DIR = ".gateflow";
 function resolveWorkspace(projectRoot, dirName = DEFAULT_WORKSPACE_DIR) {
-  const root = nodePath2.resolve(projectRoot, dirName);
-  const driver = nodePath2.join(root, "driver");
+  const root = nodePath3.resolve(projectRoot, dirName);
+  const driver = nodePath3.join(root, "driver");
   return {
     root,
-    current: nodePath2.join(root, "current.json"),
-    tasks: nodePath2.join(root, "tasks"),
+    current: nodePath3.join(root, "current.json"),
+    tasks: nodePath3.join(root, "tasks"),
     driver,
-    state: nodePath2.join(driver, "state.json"),
-    locks: nodePath2.join(driver, "locks"),
-    logs: nodePath2.join(driver, "logs")
+    state: nodePath3.join(driver, "state.json"),
+    locks: nodePath3.join(driver, "locks"),
+    logs: nodePath3.join(driver, "logs")
   };
 }
 async function ensureWorkspace(paths) {
@@ -16380,15 +16445,15 @@ function assertTaskId(taskId) {
   }
 }
 function assertInsideBase(base, candidate, label) {
-  const resolvedBase = nodePath2.resolve(base);
-  const resolved = nodePath2.resolve(candidate);
-  if (resolved !== resolvedBase && !resolved.startsWith(resolvedBase + nodePath2.sep)) {
+  const resolvedBase = nodePath3.resolve(base);
+  const resolved = nodePath3.resolve(candidate);
+  if (resolved !== resolvedBase && !resolved.startsWith(resolvedBase + nodePath3.sep)) {
     throw new Error(`${label} escapes workspace: ${candidate}`);
   }
 }
 function safeTaskDir(base, taskId, label) {
   assertTaskId(taskId);
-  const dir = nodePath2.join(base, taskId);
+  const dir = nodePath3.join(base, taskId);
   assertInsideBase(base, dir, label);
   return dir;
 }
@@ -16414,11 +16479,15 @@ async function listTaskDirs(base) {
 
 // src/driver/workspace-lock.ts
 var import_promises3 = require("node:fs/promises");
-var nodePath3 = __toESM(require("node:path"));
+var nodePath4 = __toESM(require("node:path"));
 function driverLockFile(paths) {
-  return nodePath3.join(paths.locks, "driver.lock");
+  return nodePath4.join(paths.locks, "driver.lock");
+}
+function executorLockFile(paths) {
+  return nodePath4.join(paths.locks, "executor.lock");
 }
 var DRIVER_LOCK_HOLDER = "gateflow-driver";
+var EXECUTOR_LOCK_HOLDER = "gateflow-executor";
 var MAX_LOCK_AGE_MS = 6 * 60 * 60 * 1e3;
 function isAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -16430,30 +16499,80 @@ function isAlive(pid) {
     return code === "EPERM";
   }
 }
-async function readLock(file) {
+function candidatePid(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+function parseLock(raw) {
+  let parsed;
   try {
-    const raw = await (0, import_promises3.readFile)(file, "utf8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const candidate = parsed;
-    if (typeof candidate.pid !== "number" || typeof candidate.holder !== "string") return null;
-    return candidate;
+    parsed = JSON.parse(raw);
   } catch {
-    return null;
+    return { kind: "invalid", raw, pid: null };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { kind: "invalid", raw, pid: null };
+  }
+  const candidate = parsed;
+  const pid = candidatePid(candidate.pid);
+  const holder = typeof candidate.holder === "string" ? candidate.holder : null;
+  const acquiredAt = typeof candidate.acquired_at === "string" ? candidate.acquired_at : null;
+  const taskId = candidate.task_id;
+  const taskIdValid = taskId === void 0 || typeof taskId === "string" && taskId.length > 0;
+  const acquiredAtValid = acquiredAt !== null && !Number.isNaN(Date.parse(acquiredAt));
+  if (pid === null || holder === null || holder.trim().length === 0 || !acquiredAtValid || !taskIdValid) {
+    return { kind: "invalid", raw, pid };
+  }
+  return {
+    kind: "valid",
+    raw,
+    contents: {
+      pid,
+      holder,
+      acquired_at: acquiredAt,
+      ...typeof taskId === "string" ? { task_id: taskId } : {}
+    }
+  };
+}
+async function readLockState(file) {
+  let raw;
+  try {
+    raw = await (0, import_promises3.readFile)(file, "utf8");
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT") return { kind: "missing" };
+    return {
+      kind: "unreadable",
+      reason: `lock file could not be read: ${err.message}`
+    };
+  }
+  return parseLock(raw);
+}
+async function readValidLock(file) {
+  const state = await readLockState(file);
+  return state.kind === "valid" ? state.contents : null;
+}
+async function unlinkObserved(file, observedRaw) {
+  const current = await readLockState(file);
+  if (current.kind === "missing") return true;
+  if (current.kind === "unreadable" || current.raw !== observedRaw) return false;
+  try {
+    await (0, import_promises3.unlink)(file);
+    return true;
+  } catch {
+    return false;
   }
 }
-async function lockAgeMs(file, nowMs) {
-  try {
-    const raw = await (0, import_promises3.readFile)(file, "utf8");
-    const parsed = JSON.parse(raw);
-    const at = typeof parsed.acquired_at === "string" ? Date.parse(parsed.acquired_at) : NaN;
-    if (Number.isNaN(at)) return MAX_LOCK_AGE_MS + 1;
-    return nowMs - at;
-  } catch {
-    return MAX_LOCK_AGE_MS + 1;
-  }
+function executorTaskId(taskId) {
+  const parsed = parseTaskId(taskId);
+  return parsed !== null && Number.isSafeInteger(parsed.repositoryId) && parsed.repositoryId > 0 && Number.isSafeInteger(parsed.issueNumber) && parsed.issueNumber > 0 && parsed.mode === "execute" && /^p\d+$/.test(parsed.revision);
+}
+function lockHolder(state) {
+  return state.kind === "valid" ? state.contents : state.kind === "invalid" && state.pid !== null ? { pid: state.pid, holder: "unknown", acquired_at: "" } : null;
 }
 async function acquireLock(file, holder, now = () => /* @__PURE__ */ new Date()) {
+  if (holder.trim().length === 0) {
+    return { ok: false, reason: "lock holder must be non-empty", holder: null };
+  }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const contents = {
       pid: process.pid,
@@ -16468,17 +16587,27 @@ async function acquireLock(file, holder, now = () => /* @__PURE__ */ new Date())
       if (code !== "EEXIST") {
         return { ok: false, reason: `lock file could not be created: ${err.message}`, holder: null };
       }
-      const existing = await readLock(file);
-      const age = await lockAgeMs(file, now().getTime());
-      const stale = existing === null || !isAlive(existing.pid) || age > MAX_LOCK_AGE_MS;
-      if (!stale) {
-        return { ok: false, reason: "workspace busy: lock held by a live process", holder: existing };
+      const existing = await readLockState(file);
+      if (existing.kind === "missing") continue;
+      if (existing.kind === "unreadable") {
+        return { ok: false, reason: existing.reason, holder: null };
       }
-      try {
-        await (0, import_promises3.unlink)(file);
-      } catch {
+      if (existing.kind === "valid" && isAlive(existing.contents.pid)) {
+        return { ok: false, reason: "workspace busy: lock held by a live process", holder: existing.contents };
       }
-      continue;
+      if (existing.kind === "invalid" && existing.pid !== null && isAlive(existing.pid)) {
+        return {
+          ok: false,
+          reason: "workspace lock metadata is corrupt but its recorded process is live; refusing to reclaim it",
+          holder: lockHolder(existing)
+        };
+      }
+      if (await unlinkObserved(file, existing.raw)) continue;
+      return {
+        ok: false,
+        reason: "workspace lock changed while recovering it; refusing to guess ownership",
+        holder: lockHolder(existing)
+      };
     }
     try {
       await fd.writeFile(JSON.stringify(contents, null, 2) + "\n", "utf8");
@@ -16487,18 +16616,80 @@ async function acquireLock(file, holder, now = () => /* @__PURE__ */ new Date())
     }
     return { ok: true };
   }
-  return { ok: false, reason: "workspace busy: lock held by a live process", holder: await readLock(file) };
+  return { ok: false, reason: "workspace busy: lock could not be recovered safely", holder: await readValidLock(file) };
+}
+async function acquireExecutorLock(file, taskId, now = () => /* @__PURE__ */ new Date()) {
+  if (!executorTaskId(taskId)) {
+    return { ok: false, reason: `invalid execute task_id for Executor lock: ${JSON.stringify(taskId)}`, holder: null };
+  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const contents = {
+      pid: process.pid,
+      holder: EXECUTOR_LOCK_HOLDER,
+      task_id: taskId,
+      acquired_at: now().toISOString()
+    };
+    let fd;
+    try {
+      fd = await (0, import_promises3.open)(file, "wx");
+    } catch (err) {
+      const code = err.code;
+      if (code !== "EEXIST") {
+        return { ok: false, reason: `executor lock could not be created: ${err.message}`, holder: null };
+      }
+      const existing = await readLockState(file);
+      if (existing.kind === "missing") continue;
+      if (existing.kind === "unreadable") {
+        return { ok: false, reason: `executor lock state is unknown: ${existing.reason}`, holder: null };
+      }
+      const existingExecutor = existing.kind === "valid" && typeof existing.contents.task_id === "string" && executorTaskId(existing.contents.task_id) ? existing.contents : null;
+      if (existingExecutor !== null) {
+        if (isAlive(existingExecutor.pid)) {
+          return { ok: false, reason: "executor workspace busy: a live Executor holds the lock", holder: existingExecutor };
+        }
+        if (await unlinkObserved(file, existing.raw)) continue;
+        return { ok: false, reason: "executor lock changed while recovering it; refusing to guess ownership", holder: existingExecutor };
+      }
+      if (existing.kind === "valid" && isAlive(existing.contents.pid)) {
+        return {
+          ok: false,
+          reason: "executor lock state is unknown or belongs to another writer; refusing to start a second Executor",
+          holder: null
+        };
+      }
+      if (existing.kind === "invalid" && (existing.pid === null || isAlive(existing.pid))) {
+        return {
+          ok: false,
+          reason: "executor lock state is unknown or corrupt; refusing to start a second Executor",
+          holder: null
+        };
+      }
+      if (await unlinkObserved(file, existing.raw)) continue;
+      return { ok: false, reason: "executor lock changed while recovering it; refusing to guess ownership", holder: null };
+    }
+    try {
+      await fd.writeFile(JSON.stringify(contents, null, 2) + "\n", "utf8");
+    } finally {
+      await fd.close();
+    }
+    return { ok: true };
+  }
+  return { ok: false, reason: "executor workspace busy: lock could not be recovered safely", holder: null };
 }
 async function releaseLock(file, holder) {
-  const existing = await readLock(file);
-  if (existing === null) return false;
-  if (existing.pid !== process.pid || existing.holder !== holder) return false;
-  try {
-    await (0, import_promises3.unlink)(file);
-    return true;
-  } catch {
+  const existing = await readLockState(file);
+  if (existing.kind !== "valid") return false;
+  if (existing.contents.pid !== process.pid || existing.contents.holder !== holder) return false;
+  return unlinkObserved(file, existing.raw);
+}
+async function releaseExecutorLock(file, taskId) {
+  if (!executorTaskId(taskId)) return false;
+  const existing = await readLockState(file);
+  if (existing.kind !== "valid") return false;
+  if (existing.contents.pid !== process.pid || existing.contents.holder !== EXECUTOR_LOCK_HOLDER || existing.contents.task_id !== taskId) {
     return false;
   }
+  return unlinkObserved(file, existing.raw);
 }
 
 // src/gate/protocol.ts
@@ -16611,6 +16802,43 @@ function inspectCommentMarkers(body) {
   return { kind: "none" };
 }
 
+// src/gate/commands.ts
+var EXACT_COMMANDS = /* @__PURE__ */ new Set([
+  COMMANDS.aiPlan,
+  COMMANDS.cancel
+]);
+var APPROVE_PATTERN = /^\/approve (\d+)$/;
+var CHANGE_PATTERN = /^\/change (.+)$/;
+function parseCommand(body) {
+  if (body === null || body === void 0) {
+    return null;
+  }
+  const trimmed = body.trim();
+  if (EXACT_COMMANDS.has(trimmed)) {
+    return { command: trimmed, args: null };
+  }
+  const approve = APPROVE_PATTERN.exec(trimmed);
+  if (approve !== null) {
+    const planCommentId = Number(approve[1] ?? "0");
+    if (!Number.isSafeInteger(planCommentId) || planCommentId < 1) {
+      return null;
+    }
+    return {
+      command: COMMANDS.approve,
+      args: { planCommentId }
+    };
+  }
+  const change = CHANGE_PATTERN.exec(trimmed);
+  if (change !== null) {
+    const text = (change[1] ?? "").trim();
+    if (text.length === 0) {
+      return null;
+    }
+    return { command: COMMANDS.change, args: { text } };
+  }
+  return null;
+}
+
 // src/protocol/epoch.ts
 var EPOCH_BODY_PATTERN = /^wf_[0-9a-z]{12}$/;
 function isWorkflowEpoch(value) {
@@ -16631,6 +16859,9 @@ function isObj(value) {
 }
 function epochOperationId(repositoryId, issueNumber, epoch) {
   return `epoch:${repositoryId}:${issueNumber}:${epoch}`;
+}
+function gateEpochOperationId(repositoryId, issueNumber, commandCommentId) {
+  return `epoch:${repositoryId}:${issueNumber}:c${commandCommentId}`;
 }
 function approvalOperationId(repositoryId, issueNumber, epoch, planCommentId) {
   return `approval:${repositoryId}:${issueNumber}:${epoch}:p${planCommentId}`;
@@ -16717,9 +16948,9 @@ function parseRecord(commentId, body) {
       return validateFeedbackRecord(commentId, raw);
   }
 }
-function checkFields(raw, required, what, errors) {
+function checkFields(raw, required, what, errors, optional = []) {
   for (const key of Object.keys(raw)) {
-    if (!required.includes(key)) {
+    if (!required.includes(key) && !optional.includes(key)) {
       errors.push(`${what}: unknown key "${key}"`);
     }
   }
@@ -16745,6 +16976,14 @@ function num(raw, key, errors) {
   }
   return value;
 }
+function positiveNum(raw, key, errors) {
+  const value = num(raw, key, errors);
+  if (value !== null && value < 1) {
+    errors.push(`${key}: expected a positive integer, got ${JSON.stringify(value)}`);
+    return null;
+  }
+  return value;
+}
 function validateEpochRecord(commentId, raw) {
   const errors = [];
   const required = [
@@ -16757,24 +16996,26 @@ function validateEpochRecord(commentId, raw) {
     "issued_by",
     "operation_id"
   ];
-  checkFields(raw, required, "workflow_epoch record", errors);
+  checkFields(raw, required, "workflow_epoch record", errors, ["request_comment_id"]);
   if (raw["schema"] !== RECORD_SCHEMA_VERSION) {
     errors.push(`schema: expected ${RECORD_SCHEMA_VERSION}, got ${JSON.stringify(raw["schema"])}`);
   }
   if (raw["kind"] !== "workflow_epoch") {
     errors.push(`kind: expected "workflow_epoch", got ${JSON.stringify(raw["kind"])}`);
   }
-  const repositoryId = num(raw, "repository_id", errors);
-  const issueNumber = num(raw, "issue_number", errors);
+  const repositoryId = positiveNum(raw, "repository_id", errors);
+  const issueNumber = positiveNum(raw, "issue_number", errors);
   const epoch = isWorkflowEpoch(raw["workflow_epoch"]) ? raw["workflow_epoch"] : null;
   if (epoch === null) errors.push("workflow_epoch: malformed epoch string");
   const createdAt = str(raw, "created_at", ISO_DATE, errors);
   const issuedBy = str(raw, "issued_by", LOGIN, errors);
   const operationId = str(raw, "operation_id", OPERATION_ID, errors);
-  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || createdAt === null || issuedBy === null || operationId === null) {
+  const requestCommentId = raw["request_comment_id"] === void 0 ? void 0 : positiveNum(raw, "request_comment_id", errors);
+  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || createdAt === null || issuedBy === null || operationId === null || requestCommentId === null) {
     return { ok: false, reason: `invalid workflow_epoch record: ${errors.join("; ")}` };
   }
-  if (operationId !== epochOperationId(repositoryId, issueNumber, epoch)) {
+  const operationBindsRecord = requestCommentId === void 0 ? operationId === epochOperationId(repositoryId, issueNumber, epoch) : operationId === gateEpochOperationId(repositoryId, issueNumber, requestCommentId);
+  if (!operationBindsRecord) {
     return { ok: false, reason: `invalid workflow_epoch record: operation_id "${operationId}" does not bind repository/issue/epoch` };
   }
   return {
@@ -16788,7 +17029,8 @@ function validateEpochRecord(commentId, raw) {
       workflow_epoch: epoch,
       created_at: createdAt,
       issued_by: issuedBy,
-      operation_id: operationId
+      operation_id: operationId,
+      ...requestCommentId !== void 0 ? { request_comment_id: requestCommentId } : {}
     }
   };
 }
@@ -16961,6 +17203,71 @@ function parseRecords(kind, comments) {
   }
   return { records, invalid };
 }
+function readTrustedWorkflowEpoch(comments, repositoryId, issueNumber, gateLogins) {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) {
+    return { ok: false, reason: `repository id ${String(repositoryId)} is not positive` };
+  }
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) {
+    return { ok: false, reason: `issue number ${String(issueNumber)} is not positive` };
+  }
+  const parsed = parseRecords(
+    "workflow_epoch",
+    comments
+  );
+  if (parsed.invalid.length > 0) {
+    return {
+      ok: false,
+      reason: `unparsable workflow_epoch record(s) (fail closed): ` + parsed.invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(", ")
+    };
+  }
+  if (parsed.records.length === 0) {
+    return { ok: false, reason: "no workflow_epoch record" };
+  }
+  const trustedLogins = new Set([...gateLogins].map((login) => login.toLowerCase()));
+  const ordered = [...parsed.records].sort((left, right) => left.commentId - right.commentId);
+  const byOperation = /* @__PURE__ */ new Map();
+  for (const entry of ordered) {
+    const record = entry.record;
+    if (record.repository_id !== repositoryId || record.issue_number !== issueNumber) {
+      return {
+        ok: false,
+        reason: `workflow_epoch record #${entry.commentId} does not bind the current repository/issue`
+      };
+    }
+    const commentLogin = entry.comment.user.toLowerCase();
+    const issuedLogin = record.issued_by.toLowerCase();
+    if (!trustedLogins.has(commentLogin) || !trustedLogins.has(issuedLogin) || commentLogin !== issuedLogin) {
+      return {
+        ok: false,
+        reason: `workflow_epoch record #${entry.commentId} is not authored by a trusted Gate identity`
+      };
+    }
+    if (record.request_comment_id !== void 0) {
+      const source = comments.find((comment) => comment.id === record.request_comment_id);
+      if (source === void 0 || source.body.trim() !== "/ai-plan") {
+        return {
+          ok: false,
+          reason: `workflow_epoch record #${entry.commentId} points to a missing or non-/ai-plan source comment #${record.request_comment_id}`
+        };
+      }
+    }
+    const existing = byOperation.get(record.operation_id);
+    if (existing === void 0) {
+      byOperation.set(record.operation_id, record);
+      continue;
+    }
+    const sameFacts = existing.repository_id === record.repository_id && existing.issue_number === record.issue_number && existing.workflow_epoch === record.workflow_epoch && existing.issued_by.toLowerCase() === record.issued_by.toLowerCase() && existing.request_comment_id === record.request_comment_id;
+    if (!sameFacts) {
+      return {
+        ok: false,
+        reason: `conflicting workflow_epoch records for operation ${record.operation_id}`
+      };
+    }
+  }
+  const latest = ordered[ordered.length - 1];
+  if (latest === void 0) return { ok: false, reason: "no workflow_epoch record" };
+  return { ok: true, record: latest.record, commentId: latest.commentId, records: ordered };
+}
 
 // src/gate/tracker.ts
 var TRACKER_STATUSES = ["In Progress", "Blocked", "Completed"];
@@ -16993,10 +17300,41 @@ function parseTrackerStatus(body) {
 }
 
 // src/github/comments.ts
-var DISPATCH_ID_COMMENT_PATTERN = /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:plan|execute|consumer|executor)_\S+) -->/;
+var DISPATCH_ID_OCCURRENCE = /<!-- gateflow:dispatch-id: (\S+) -->/g;
+var DISPATCH_ID_TOKEN = "<!-- gateflow:dispatch-id:";
 var STATUS_LINE_PATTERN = /^\*\*Status:\*\*\s*(.*)$/;
 function findDispatchIdInComment(body) {
-  return DISPATCH_ID_COMMENT_PATTERN.exec(body)?.[1] ?? null;
+  let insideFence = false;
+  const ids = [];
+  let malformedOccurrence = false;
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      insideFence = !insideFence;
+      continue;
+    }
+    if (insideFence) continue;
+    const matches = [...trimmed.matchAll(DISPATCH_ID_OCCURRENCE)];
+    for (const match of matches) {
+      const candidate = match[1] ?? "";
+      if (isSchema3DispatchId(candidate)) {
+        ids.push(candidate);
+      } else {
+        malformedOccurrence = true;
+      }
+    }
+    if (trimmed.split(DISPATCH_ID_TOKEN).length - 1 > matches.length) {
+      malformedOccurrence = true;
+    }
+  }
+  return ids.length === 1 && !malformedOccurrence ? ids[0] ?? null : null;
+}
+function isSchema3DispatchId(id) {
+  const parsed = parseTaskId(id);
+  if (parsed === null || !Number.isSafeInteger(parsed.repositoryId) || parsed.repositoryId < 1 || !Number.isSafeInteger(parsed.issueNumber) || parsed.issueNumber < 1) {
+    return false;
+  }
+  return parsed.mode === "plan" ? /^\d+$/.test(parsed.revision) : /^p[1-9]\d*$/.test(parsed.revision);
 }
 function dispatchIdComment(dispatchId) {
   return `<!-- gateflow:dispatch-id: ${dispatchId} -->`;
@@ -17073,7 +17411,6 @@ function findCompletionReportComments(comments, dispatchId) {
   }
   return reports;
 }
-var CHANGE_PATTERN = /^\/change (.+)$/;
 function isTrustedAuthor(comment, trustedHumans, repoOwner) {
   const login = comment.user.toLowerCase();
   if (login === repoOwner.toLowerCase()) {
@@ -17087,16 +17424,20 @@ function isTrustedAuthor(comment, trustedHumans, repoOwner) {
   return false;
 }
 function isKnownLogin(login, allowlist) {
-  return allowlist.has(login.toLowerCase());
+  const normalized = login.toLowerCase();
+  if (allowlist.has(normalized)) return true;
+  for (const allowed of allowlist) {
+    if (allowed.toLowerCase() === normalized) return true;
+  }
+  return false;
 }
-var APPROVE_PATTERN = /^\/approve (\d+)$/;
 function approvalRecordAnchorFailure(record, comments, trustedHumans, repoOwner) {
   const command = comments.find((entry) => entry.id === record.approval_command_comment_id);
   if (command === void 0) {
     return `approval command comment ${record.approval_command_comment_id} no longer exists`;
   }
-  const match = APPROVE_PATTERN.exec(command.body.trim());
-  if (match === null || Number.parseInt(match[1] ?? "", 10) !== record.plan_comment_id) {
+  const parsed = parseCommand(command.body);
+  if (parsed?.command !== COMMANDS.approve || parsed.args.planCommentId !== record.plan_comment_id) {
     return `approval command comment ${command.id} is not an anchored "/approve ${record.plan_comment_id}"`;
   }
   if (!isTrustedAuthor(command, trustedHumans, repoOwner)) {
@@ -17146,13 +17487,17 @@ function acceptedFeedbackEvents(view, comments, trustedHumans, repoOwner) {
   const epoch = view.epoch.record.workflow_epoch;
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   const accepted = [];
+  const seenOperations = /* @__PURE__ */ new Set();
   for (const { record } of view.feedback) {
     if (record.workflow_epoch !== epoch) continue;
+    if (seenOperations.has(record.operation_id)) continue;
     const comment = byId.get(record.feedback_comment_id);
     if (comment === void 0) continue;
     if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) continue;
     if (record.feedback_kind !== "change") continue;
-    if (CHANGE_PATTERN.exec(comment.body.trim()) === null) continue;
+    const parsed = parseCommand(comment.body);
+    if (parsed?.command !== COMMANDS.change) continue;
+    seenOperations.add(record.operation_id);
     accepted.push({ comment, kind: "change" });
   }
   return accepted;
@@ -17317,9 +17662,22 @@ function deriveIntents(issue, comments, ctx) {
 }
 var GOAL_PLAN = "\u5206\u6790\u4EFB\u52A1\u5E76\u4EA7\u51FA\u53EF\u6267\u884C\u7684\u6267\u884C\u8BA1\u5212\uFF08\u5199\u5165\u672C\u76EE\u5F55 plan.md\uFF09\uFF0C\u5B8C\u6210\u540E\u5199 result.json\uFF08status=completed, report=plan.md\uFF09";
 var GOAL_EXECUTE = "\u4E25\u683C\u6309\u7167\u5DF2\u6279\u51C6\u7684 plan.md \u6267\u884C\u5E76\u901A\u8FC7\u771F\u5B9E\u9A8C\u8BC1\uFF0C\u5B8C\u6210\u540E\u5199 report.md \u4E0E result.json\uFF08status=completed, validation=passed\uFF09";
-function buildTaskMarkdown(issue, mode) {
+function buildTaskMarkdown(issue, mode, binding) {
   const body = issue.body.length > 0 ? issue.body : "(no body)";
   const goal = mode === "execute" ? GOAL_EXECUTE : GOAL_PLAN;
+  const scope = binding === void 0 ? "" : `
+## Control Repository
+
+${binding.control_repository}
+
+## Target Repository
+
+${binding.target_repository ?? "(unknown / not selected)"}
+
+## Target Workspace
+
+${binding.target_workspace ?? "(unknown / not selected)"}
+`;
   return `# ${issue.title}
 
 ${body}
@@ -17331,7 +17689,7 @@ ${mode}
 ## Goal
 
 ${goal}
-`;
+${scope}`;
 }
 function formatTimestamp(iso) {
   const date = new Date(iso);
@@ -17411,10 +17769,13 @@ async function discoverWork(client, repository, config, repositoryInfo, log) {
   return discoveries;
 }
 
+// src/driver/prepare.ts
+var import_promises6 = require("node:fs/promises");
+
 // src/workspace/tasks.ts
 var import_node_crypto6 = require("node:crypto");
 var import_promises4 = require("node:fs/promises");
-var nodePath4 = __toESM(require("node:path"));
+var nodePath5 = __toESM(require("node:path"));
 
 // src/workspace/validation.ts
 var REASON_MAX = 1e3;
@@ -17453,7 +17814,7 @@ function checkUnknownKeys(raw, allowed, what, errors) {
 }
 function checkRequiredKeys(raw, required, what, errors) {
   for (const key of required) {
-    if (!(key in raw)) {
+    if (!(key in raw) || raw[key] === void 0) {
       errors.push(`${what}: missing required key "${key}"`);
     }
   }
@@ -17487,6 +17848,27 @@ function checkNull(value, what, errors) {
   if (value === void 0) return;
   if (value !== null) {
     errors.push(`${what}: must be null, got ${JSON.stringify(value)}`);
+  }
+}
+function checkRepository(value, what, errors, nullable = false) {
+  if (value === void 0) return;
+  if (nullable && value === null) return;
+  if (!isRepositorySlug(value)) {
+    errors.push(`${what}: must be a GitHub owner/name slug, got ${JSON.stringify(value)}`);
+  } else if (value.length > REPOSITORY_MAX) {
+    errors.push(`${what}: exceeds maximum length of ${REPOSITORY_MAX}`);
+  }
+}
+function checkTargetWorkspace(value, what, errors) {
+  if (value === void 0) return;
+  if (value === null) return;
+  try {
+    const normalized = normalizeTargetWorkspace(value);
+    if (normalized !== value) {
+      errors.push(`${what}: must be a normalized absolute path, got ${JSON.stringify(value)}`);
+    }
+  } catch (err) {
+    errors.push(`${what}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 function checkIsoDate(value, what, errors) {
@@ -17525,10 +17907,12 @@ function checkMode(value, what, errors) {
 var TASK_FILE_KEYS = [
   "schema",
   "task_id",
-  "repository",
+  "control_repository",
   "repository_id",
   "issue_number",
   "workflow_epoch",
+  "target_repository",
+  "target_workspace",
   "mode",
   "reason",
   "created_at",
@@ -17559,14 +17943,25 @@ function validateTaskFile(raw) {
       }
     }
   }
-  checkString(raw["repository"], `${what}.repository`, errors, { min: 1, max: REPOSITORY_MAX });
+  checkRepository(raw["control_repository"], `${what}.control_repository`, errors);
   checkPositiveInt(raw["repository_id"], `${what}.repository_id`, errors);
   checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
+  checkRepository(raw["target_repository"], `${what}.target_repository`, errors, true);
+  checkTargetWorkspace(raw["target_workspace"], `${what}.target_workspace`, errors);
   if (raw["workflow_epoch"] !== void 0) {
     if (typeof raw["workflow_epoch"] !== "string" || !EPOCH_SHAPE.test(raw["workflow_epoch"])) {
       errors.push(
         `${what}.workflow_epoch: must be a workflow epoch ("wf_" + 12 base36 chars), got ${JSON.stringify(raw["workflow_epoch"])}`
       );
+    }
+  }
+  const parsedTaskId = taskId === void 0 ? null : parseTaskId(taskId);
+  if (parsedTaskId !== null) {
+    if (typeof raw["repository_id"] === "number" && parsedTaskId.repositoryId !== raw["repository_id"]) {
+      errors.push(`${what}.repository_id does not match the Control Repository id encoded in task_id`);
+    }
+    if (typeof raw["issue_number"] === "number" && parsedTaskId.issueNumber !== raw["issue_number"]) {
+      errors.push(`${what}.issue_number does not match the Control Issue encoded in task_id`);
     }
   }
   checkIsoDate(raw["created_at"], `${what}.created_at`, errors);
@@ -17695,18 +18090,52 @@ function validateResultForTask(raw, expected) {
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value };
 }
-var CURRENT_KEYS = ["schema", "task_id", "mode", "issue_number", "updated_at"];
+var CURRENT_KEYS = [
+  "schema",
+  "task_id",
+  "mode",
+  "control_repository",
+  "repository_id",
+  "issue_number",
+  "workflow_epoch",
+  "target_repository",
+  "target_workspace",
+  "updated_at"
+];
+var CURRENT_REQUIRED = CURRENT_KEYS;
 function validateCurrent(raw) {
   const what = "current";
   if (!isRecord2(raw)) return fail(what, "expected a JSON object");
   const errors = [];
   checkUnknownKeys(raw, CURRENT_KEYS, what, errors);
-  checkRequiredKeys(raw, CURRENT_KEYS, what, errors);
+  checkRequiredKeys(raw, CURRENT_REQUIRED, what, errors);
   checkSchema(raw["schema"], what, errors);
-  checkTaskId(raw["task_id"], `${what}.task_id`, errors);
-  checkMode(raw["mode"], `${what}.mode`, errors);
+  const taskId = checkTaskId(raw["task_id"], `${what}.task_id`, errors);
+  const mode = checkMode(raw["mode"], `${what}.mode`, errors);
+  checkRepository(raw["control_repository"], `${what}.control_repository`, errors);
+  checkPositiveInt(raw["repository_id"], `${what}.repository_id`, errors);
   checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
+  if (raw["workflow_epoch"] !== void 0 && (typeof raw["workflow_epoch"] !== "string" || !EPOCH_SHAPE.test(raw["workflow_epoch"]))) {
+    errors.push(`${what}.workflow_epoch: malformed workflow epoch`);
+  }
+  checkRepository(raw["target_repository"], `${what}.target_repository`, errors, true);
+  checkTargetWorkspace(raw["target_workspace"], `${what}.target_workspace`, errors);
   checkIsoDate(raw["updated_at"], `${what}.updated_at`, errors);
+  const parsed = taskId === void 0 ? null : parseTaskId(taskId);
+  if (parsed !== null) {
+    if (mode !== void 0 && parsed.mode !== mode) {
+      errors.push(`${what}.task_id: mode component does not match mode`);
+    }
+    if (typeof raw["repository_id"] === "number" && parsed.repositoryId !== raw["repository_id"]) {
+      errors.push(`${what}.repository_id does not match task_id`);
+    }
+    if (typeof raw["issue_number"] === "number" && parsed.issueNumber !== raw["issue_number"]) {
+      errors.push(`${what}.issue_number does not match task_id`);
+    }
+    if (typeof raw["workflow_epoch"] === "string" && raw["workflow_epoch"] !== `wf_${parsed.epochCode}`) {
+      errors.push(`${what}.workflow_epoch does not match task_id`);
+    }
+  }
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: raw };
 }
@@ -17715,8 +18144,13 @@ var TASK_RECORD_KEYS = [
   "status",
   "attempts",
   "mode",
+  "control_repository",
+  "repository_id",
   "issue_number",
   "workflow_epoch",
+  "target_repository",
+  "target_workspace",
+  "executor_lock_task_id",
   "input_snapshot_sha256",
   "plan_comment_id",
   "approval_comment_id",
@@ -17726,7 +18160,18 @@ var TASK_RECORD_KEYS = [
   "last_sync_at",
   "error"
 ];
-var TASK_RECORD_REQUIRED = ["task_id", "status", "attempts", "mode", "issue_number", "workflow_epoch"];
+var TASK_RECORD_REQUIRED = [
+  "task_id",
+  "status",
+  "attempts",
+  "mode",
+  "control_repository",
+  "repository_id",
+  "issue_number",
+  "workflow_epoch",
+  "target_repository",
+  "target_workspace"
+];
 function validateTaskRecord(rawObj, what, errors) {
   if (!isRecord2(rawObj)) {
     errors.push(`${what}: expected a JSON object`);
@@ -17735,17 +18180,41 @@ function validateTaskRecord(rawObj, what, errors) {
   const raw = rawObj;
   checkUnknownKeys(raw, TASK_RECORD_KEYS, what, errors);
   checkRequiredKeys(raw, TASK_RECORD_REQUIRED, what, errors);
-  checkTaskId(raw["task_id"], `${what}.task_id`, errors);
   const status = raw["status"];
   if (status !== void 0 && !TASK_STATES.includes(status)) {
     errors.push(`${what}.status: must be one of ${TASK_STATES.join("|")}, got ${JSON.stringify(status)}`);
   }
   checkPositiveInt(raw["attempts"], `${what}.attempts`, errors);
   checkMode(raw["mode"], `${what}.mode`, errors);
+  const taskId = checkTaskId(raw["task_id"], `${what}.task_id`, errors);
+  checkRepository(raw["control_repository"], `${what}.control_repository`, errors);
+  checkPositiveInt(raw["repository_id"], `${what}.repository_id`, errors);
   checkPositiveInt(raw["issue_number"], `${what}.issue_number`, errors);
+  checkRepository(raw["target_repository"], `${what}.target_repository`, errors, true);
+  checkTargetWorkspace(raw["target_workspace"], `${what}.target_workspace`, errors);
   if (raw["workflow_epoch"] !== void 0) {
     if (typeof raw["workflow_epoch"] !== "string" || !EPOCH_SHAPE.test(raw["workflow_epoch"])) {
       errors.push(`${what}.workflow_epoch: malformed epoch string`);
+    }
+  }
+  const parsed = taskId === void 0 ? null : parseTaskId(taskId);
+  if (parsed !== null) {
+    if (typeof raw["repository_id"] === "number" && parsed.repositoryId !== raw["repository_id"]) {
+      errors.push(`${what}.repository_id does not match task_id`);
+    }
+    if (typeof raw["issue_number"] === "number" && parsed.issueNumber !== raw["issue_number"]) {
+      errors.push(`${what}.issue_number does not match task_id`);
+    }
+    if (typeof raw["workflow_epoch"] === "string" && raw["workflow_epoch"] !== `wf_${parsed.epochCode}`) {
+      errors.push(`${what}.workflow_epoch does not match task_id`);
+    }
+    if (typeof raw["mode"] === "string" && parsed.mode !== raw["mode"]) {
+      errors.push(`${what}.mode does not match task_id`);
+    }
+  }
+  if (raw["executor_lock_task_id"] !== void 0) {
+    if (raw["mode"] !== "execute" || raw["executor_lock_task_id"] !== raw["task_id"]) {
+      errors.push(`${what}.executor_lock_task_id: must equal an execute task_id while the lock is held`);
     }
   }
   if (raw["input_snapshot_sha256"] !== void 0 && (typeof raw["input_snapshot_sha256"] !== "string" || !SHA256_PATTERN.test(raw["input_snapshot_sha256"]))) {
@@ -17799,7 +18268,7 @@ function validateDriverState(raw) {
 // src/workspace/tasks.ts
 var RENAME_MAX_ATTEMPTS = 5;
 function sleep(ms) {
-  return new Promise((resolve4) => setTimeout(resolve4, ms));
+  return new Promise((resolve5) => setTimeout(resolve5, ms));
 }
 function tempPathFor(file) {
   const random = Math.random().toString(36).slice(2, 10);
@@ -17829,7 +18298,7 @@ async function renameOverExisting(tmp, target) {
   }
 }
 async function atomicWriteText(file, content) {
-  await (0, import_promises4.mkdir)(nodePath4.dirname(file), { recursive: true });
+  await (0, import_promises4.mkdir)(nodePath5.dirname(file), { recursive: true });
   const tmp = tempPathFor(file);
   await (0, import_promises4.writeFile)(tmp, content, "utf8");
   await renameOverExisting(tmp, file);
@@ -17841,14 +18310,14 @@ async function atomicWriteJson(file, value) {
 async function writeTaskDir(paths, build) {
   const dir = taskDir(paths, build.taskFile.task_id);
   await (0, import_promises4.mkdir)(dir, { recursive: true });
-  await atomicWriteText(nodePath4.join(dir, "task.md"), build.task);
+  await atomicWriteText(nodePath5.join(dir, "task.md"), build.task);
   if (build.plan !== null) {
-    await atomicWriteText(nodePath4.join(dir, "plan.md"), build.plan);
+    await atomicWriteText(nodePath5.join(dir, "plan.md"), build.plan);
   }
   if (build.feedback !== null) {
-    await atomicWriteText(nodePath4.join(dir, "feedback.md"), build.feedback);
+    await atomicWriteText(nodePath5.join(dir, "feedback.md"), build.feedback);
   }
-  await atomicWriteJson(nodePath4.join(dir, "task.json"), build.taskFile);
+  await atomicWriteJson(nodePath5.join(dir, "task.json"), build.taskFile);
 }
 function sha256Hex2(content) {
   return (0, import_node_crypto6.createHash)("sha256").update(content, "utf8").digest("hex");
@@ -17861,7 +18330,7 @@ function inputSnapshotSha256(content) {
 async function readTaskFile(paths, taskId) {
   let file;
   try {
-    file = nodePath4.join(taskDir(paths, taskId), "task.json");
+    file = nodePath5.join(taskDir(paths, taskId), "task.json");
   } catch {
     return null;
   }
@@ -17902,7 +18371,7 @@ async function writeCurrent(paths, pointer) {
 async function readTaskFileByName(paths, taskId, name) {
   let file;
   try {
-    file = nodePath4.join(taskDir(paths, taskId), name);
+    file = nodePath5.join(taskDir(paths, taskId), name);
   } catch {
     return null;
   }
@@ -17935,7 +18404,7 @@ function readOutputMarkdown(paths, taskId, name) {
 async function readResultJson(paths, taskId) {
   let file;
   try {
-    file = nodePath4.join(taskDir(paths, taskId), "result.json");
+    file = nodePath5.join(taskDir(paths, taskId), "result.json");
   } catch {
     return null;
   }
@@ -18044,7 +18513,52 @@ function buildTaskPrompt(info) {
 function errorMessage(err) {
   return err instanceof Error ? err.message : String(err);
 }
-async function prepareTask(deps, repositoryInfo, discovery, intent) {
+function controlRepository(repositoryInfo) {
+  return `${repositoryInfo.owner}/${repositoryInfo.name}`;
+}
+function resolveTargetBinding(deps, repositoryInfo, intent, state, selection = {}) {
+  const control = controlRepository(repositoryInfo);
+  const prior = Object.values(state.tasks).filter(
+    (record) => record.repository_id === repositoryInfo.id && sameRepositorySlug(record.control_repository, control) && record.issue_number === intent.issueNumber && record.workflow_epoch === intent.epoch
+  ).sort((left, right) => (right.last_sync_at ?? "").localeCompare(left.last_sync_at ?? ""))[0];
+  const hasExplicitRepository = Object.prototype.hasOwnProperty.call(selection, "targetRepository");
+  const hasExplicitWorkspace = Object.prototype.hasOwnProperty.call(selection, "targetWorkspace");
+  let targetRepository = hasExplicitRepository ? selection.targetRepository ?? null : prior?.target_repository ?? null;
+  let targetWorkspace = hasExplicitWorkspace ? selection.targetWorkspace ?? null : prior?.target_workspace ?? null;
+  if (hasExplicitRepository && !hasExplicitWorkspace) {
+    targetWorkspace = null;
+  }
+  if (targetRepository !== null && !isRepositorySlug(targetRepository)) {
+    throw new Error(`target_repository must be a GitHub owner/name slug, got ${JSON.stringify(targetRepository)}`);
+  }
+  targetWorkspace = assertTargetOutsideRuntime(
+    deps.projectRoot,
+    deps.config.driver.workspaceDir,
+    targetWorkspace
+  );
+  if (intent.mode === "execute" && !hasExplicitRepository && !hasExplicitWorkspace && prior?.target_repository === null && prior?.target_workspace === null) {
+    targetRepository = control;
+    targetWorkspace = assertTargetOutsideRuntime(
+      deps.projectRoot,
+      deps.config.driver.workspaceDir,
+      deps.projectRoot
+    );
+  }
+  return { target_repository: targetRepository, target_workspace: targetWorkspace };
+}
+function activeWorkspaceConflict(state, taskId, target) {
+  const key = workspaceKey(target.target_workspace);
+  if (key === null) return null;
+  for (const record of Object.values(state.tasks)) {
+    if (record.task_id === taskId) continue;
+    if (record.status !== "prepared" && record.status !== "publishing") continue;
+    if (workspaceKey(record.target_workspace) === key) {
+      return `target workspace is already bound to unfinished task ${record.task_id}`;
+    }
+  }
+  return null;
+}
+async function prepareTask(deps, repositoryInfo, discovery, intent, selection = {}) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   const now = deps.now ?? (() => /* @__PURE__ */ new Date());
   const { id: repositoryId, owner, name } = repositoryInfo;
@@ -18058,13 +18572,59 @@ async function prepareTask(deps, repositoryInfo, discovery, intent) {
     deps.log.info(`skip ${taskId}: ${verdict.reason}`);
     return { prepared: false, taskId, reason: verdict.reason, issueNumber, mode: intent.mode };
   }
-  const task = buildTaskMarkdown(discovery.issue, intent.mode);
   const feedback = buildFeedbackMarkdown(discovery.feedback);
+  const target = resolveTargetBinding(deps, repositoryInfo, intent, state, selection);
+  const task = buildTaskMarkdown(discovery.issue, intent.mode, {
+    control_repository: repository,
+    ...target
+  });
+  const conflict = activeWorkspaceConflict(state, taskId, target);
+  if (conflict !== null) {
+    deps.log.warning(`skip ${taskId}: ${conflict}`);
+    return { prepared: false, taskId, reason: "target-workspace-busy", issueNumber, mode: intent.mode };
+  }
+  let executorLockAcquired = false;
+  if (intent.mode === "execute") {
+    const otherLock = Object.values(state.tasks).find(
+      (entry) => entry.task_id !== taskId && entry.executor_lock_task_id !== void 0
+    );
+    if (otherLock !== void 0) {
+      return {
+        prepared: false,
+        taskId,
+        reason: `executor workspace lock is held by unfinished task ${otherLock.task_id}`,
+        issueNumber,
+        mode: intent.mode
+      };
+    }
+    if (existing?.executor_lock_task_id !== taskId) {
+      try {
+        await (0, import_promises6.access)(executorLockFile(paths));
+        if (existing?.executor_lock_task_id === void 0) {
+          return {
+            prepared: false,
+            taskId,
+            reason: "executor-lock-state-unknown",
+            issueNumber,
+            mode: intent.mode
+          };
+        }
+      } catch {
+      }
+      const acquired = await acquireExecutorLock(executorLockFile(paths), taskId, now);
+      if (!acquired.ok) {
+        deps.log.warning(`skip ${taskId}: ${acquired.reason}`);
+        return { prepared: false, taskId, reason: "executor-lock-unavailable", issueNumber, mode: intent.mode };
+      }
+      executorLockAcquired = true;
+    }
+  }
   let plan = null;
   if (intent.mode === "execute") {
     const planComment = intent.planCommentId !== null ? discovery.comments.find((comment) => comment.id === intent.planCommentId) ?? null : null;
     if (planComment === null) {
       deps.log.warning(`skip ${taskId}: approved plan comment vanished mid-cycle`);
+      if (executorLockAcquired) await releaseExecutorLock(executorLockFile(paths), taskId);
       return { prepared: false, taskId, reason: "plan-comment-not-found", issueNumber, mode: intent.mode };
     }
     plan = canonicalPlanContent(planComment.body);
@@ -18075,16 +18635,19 @@ async function prepareTask(deps, repositoryInfo, discovery, intent) {
     deps.log.warning(
       `skip ${taskId}: input snapshot changed since the task was prepared (refusing to overwrite a possibly-running task)`
     );
+    if (executorLockAcquired) await releaseExecutorLock(executorLockFile(paths), taskId);
     return { prepared: false, taskId, reason: "input-changed", issueNumber, mode: intent.mode };
   }
   const createdAt = now().toISOString();
   const taskFile = {
     schema: 3,
     task_id: taskId,
-    repository,
+    control_repository: repository,
     repository_id: repositoryId,
     issue_number: issueNumber,
     workflow_epoch: intent.epoch,
+    target_repository: target.target_repository,
+    target_workspace: target.target_workspace,
     mode: intent.mode,
     reason: intent.reason,
     created_at: createdAt,
@@ -18096,30 +18659,48 @@ async function prepareTask(deps, repositoryInfo, discovery, intent) {
       feedback: feedback !== null ? "feedback.md" : null
     }
   };
-  await writeTaskDir(paths, { taskFile, task, plan, feedback });
-  await writeCurrent(paths, {
-    schema: 3,
-    task_id: taskId,
-    mode: intent.mode,
-    issue_number: issueNumber,
-    updated_at: createdAt
-  });
-  await writeDriverState(
-    paths,
-    withTaskRecord(state, {
-      ...existing ?? {},
+  try {
+    await writeTaskDir(paths, {
+      taskFile,
+      task,
+      plan,
+      feedback
+    });
+    await writeCurrent(paths, {
+      schema: 3,
       task_id: taskId,
-      status: existing?.status === "publishing" ? "publishing" : "prepared",
-      attempts: (existing?.attempts ?? 0) + 1,
       mode: intent.mode,
+      control_repository: repository,
+      repository_id: repositoryId,
       issue_number: issueNumber,
       workflow_epoch: intent.epoch,
-      input_snapshot_sha256: snapshot,
-      plan_comment_id: intent.planCommentId ?? void 0,
-      approval_comment_id: intent.approvalCommentId ?? void 0,
-      error: null
-    })
-  );
+      ...target,
+      updated_at: createdAt
+    });
+    await writeDriverState(
+      paths,
+      withTaskRecord(state, {
+        ...existing ?? {},
+        task_id: taskId,
+        status: existing?.status === "publishing" ? "publishing" : "prepared",
+        attempts: (existing?.attempts ?? 0) + 1,
+        mode: intent.mode,
+        control_repository: repository,
+        repository_id: repositoryId,
+        issue_number: issueNumber,
+        workflow_epoch: intent.epoch,
+        ...target,
+        ...intent.mode === "execute" ? { executor_lock_task_id: taskId } : {},
+        input_snapshot_sha256: snapshot,
+        plan_comment_id: intent.planCommentId ?? void 0,
+        approval_comment_id: intent.approvalCommentId ?? void 0,
+        error: null
+      })
+    );
+  } catch (err) {
+    if (executorLockAcquired) await releaseExecutorLock(executorLockFile(paths), taskId);
+    throw err;
+  }
   const prompt = buildTaskPrompt({
     taskId,
     mode: intent.mode,
@@ -18188,7 +18769,7 @@ async function prepareCurrentTask(deps, repositoryInfo, discoveries, opts = {}) 
     return { prepared: false, taskId: null, reason: "no pending task matched the selection" };
   }
   try {
-    return await prepareTask(deps, repositoryInfo, chosen.discovery, chosen.intent);
+    return await prepareTask(deps, repositoryInfo, chosen.discovery, chosen.intent, opts);
   } catch (err) {
     deps.log.error(
       `preparation failed for issue #${chosen.intent.issueNumber} (${chosen.intent.mode}/${chosen.intent.revision}): ${errorMessage(err)}`
@@ -18203,11 +18784,97 @@ async function prepareCurrentTask(deps, repositoryInfo, discoveries, opts = {}) 
   }
 }
 
+// src/gate/execution-chain.ts
+var DISPATCH_ID_OCCURRENCE2 = /<!-- gateflow:dispatch-id: (\S+) -->/g;
+var DISPATCH_ID_TOKEN2 = "<!-- gateflow:dispatch-id:";
+function findDispatchId(body) {
+  if (!body) return null;
+  let insideFence = false;
+  const ids = [];
+  let malformedOccurrence = false;
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      insideFence = !insideFence;
+      continue;
+    }
+    if (insideFence) continue;
+    const matches = [...trimmed.matchAll(DISPATCH_ID_OCCURRENCE2)];
+    if (matches.length > 0) {
+      for (const match of matches) ids.push(match[1]);
+      if (trimmed.split(DISPATCH_ID_TOKEN2).length - 1 > matches.length) malformedOccurrence = true;
+    } else if (trimmed.includes(DISPATCH_ID_TOKEN2)) {
+      malformedOccurrence = true;
+    }
+  }
+  if (ids.length !== 1 || malformedOccurrence) return null;
+  return ids[0] ?? null;
+}
+function inspectDispatchId(id) {
+  if (typeof id !== "string") return { ok: false, reason: "dispatch id is missing" };
+  const parsed = parseTaskId(id);
+  if (parsed === null || !Number.isSafeInteger(parsed.repositoryId) || !Number.isSafeInteger(parsed.issueNumber) || parsed.repositoryId < 1 || parsed.issueNumber < 1) {
+    return { ok: false, reason: `dispatch id "${id}" has an invalid task-id shape` };
+  }
+  if (parsed.mode === "plan" && !/^\d+$/.test(parsed.revision)) {
+    return { ok: false, reason: `dispatch id "${id}" has a non-plan revision` };
+  }
+  if (parsed.mode === "execute" && !/^p[1-9]\d*$/.test(parsed.revision)) {
+    return { ok: false, reason: `dispatch id "${id}" has a non-execute revision` };
+  }
+  const canonical = `gf_r${parsed.repositoryId}_i${parsed.issueNumber}_w${parsed.epochCode}_${parsed.mode}_${parsed.revision}`;
+  if (id !== canonical) {
+    return { ok: false, reason: `dispatch id "${id}" is not canonically encoded` };
+  }
+  return {
+    ok: true,
+    id,
+    binding: {
+      repositoryId: parsed.repositoryId,
+      issueNumber: parsed.issueNumber,
+      workflowEpoch: `wf_${parsed.epochCode}`,
+      mode: parsed.mode,
+      revision: parsed.revision
+    }
+  };
+}
+function expectedPlanDispatchId(repositoryId, issueNumber, workflowEpoch, revision) {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) return null;
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) return null;
+  if (!Number.isSafeInteger(revision) || revision < 1) return null;
+  if (!/^wf_[0-9a-z]{12}$/.test(workflowEpoch)) return null;
+  return `gf_r${repositoryId}_i${issueNumber}_w${workflowEpoch.slice(3)}_plan_${String(revision).padStart(2, "0")}`;
+}
+function expectedExecuteDispatchId(repositoryId, issueNumber, workflowEpoch, planCommentId) {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) return null;
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) return null;
+  if (!Number.isSafeInteger(planCommentId) || planCommentId < 1) return null;
+  if (!/^wf_[0-9a-z]{12}$/.test(workflowEpoch)) return null;
+  return `gf_r${repositoryId}_i${issueNumber}_w${workflowEpoch.slice(3)}_execute_p${planCommentId}`;
+}
+function validateExpectedDispatchId(id, expected) {
+  const inspected = inspectDispatchId(id);
+  if (!inspected.ok) return inspected;
+  if (expected === null || inspected.id !== expected) {
+    return {
+      ok: false,
+      reason: `dispatch id "${id ?? ""}" does not match current task "${expected ?? "none"}"`
+    };
+  }
+  return { ok: true, binding: inspected.binding };
+}
+
 // src/driver/preflight.ts
-async function runPreflight(client, repositoryInfo, task, identity) {
+async function runPreflight(client, repositoryInfo, task, identity, workspaceContext) {
   const parsed = parseTaskId(task.task_id);
   if (parsed === null) {
     return { ok: false, reason: `task id "${task.task_id}" violates the frozen grammar`, obsolete: true };
+  }
+  if (parsed.mode !== task.mode) {
+    return { ok: false, reason: "task id mode disagrees with the task document", obsolete: true };
+  }
+  if (!isWorkflowEpoch(task.workflow_epoch)) {
+    return { ok: false, reason: "task document carries a malformed workflow epoch", obsolete: true };
   }
   if (parsed.repositoryId !== task.repository_id || parsed.issueNumber !== task.issue_number) {
     return { ok: false, reason: "task id components disagree with the task document", obsolete: true };
@@ -18218,6 +18885,45 @@ async function runPreflight(client, repositoryInfo, task, identity) {
   if (task.repository_id !== repositoryInfo.id) {
     return { ok: false, reason: `task targets repository ${task.repository_id}, driver operates on ${repositoryInfo.id}`, obsolete: true };
   }
+  const controlRepository2 = `${repositoryInfo.owner}/${repositoryInfo.name}`;
+  if (!isRepositorySlug(task.control_repository) || !sameRepositorySlug(task.control_repository, controlRepository2)) {
+    return {
+      ok: false,
+      reason: `task Control Repository ${JSON.stringify(task.control_repository)} does not match the Driver Control Repository ${controlRepository2}`,
+      obsolete: true
+    };
+  }
+  if (task.target_repository !== null && !isRepositorySlug(task.target_repository)) {
+    return { ok: false, reason: "task target_repository is malformed", obsolete: true };
+  }
+  try {
+    if (workspaceContext === void 0) {
+      normalizeTargetWorkspace(task.target_workspace);
+    } else {
+      assertTargetOutsideRuntime(workspaceContext.projectRoot, workspaceContext.workspaceDir, task.target_workspace);
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `task target_workspace is unsafe: ${err instanceof Error ? err.message : String(err)}`,
+      obsolete: true
+    };
+  }
+  const expectedTaskId = task.mode === "plan" ? /^\d+$/.test(parsed.revision) ? expectedPlanDispatchId(
+    task.repository_id,
+    task.issue_number,
+    task.workflow_epoch,
+    Number(parsed.revision)
+  ) : null : expectedExecuteDispatchId(
+    task.repository_id,
+    task.issue_number,
+    task.workflow_epoch,
+    task.plan_comment_id ?? 0
+  );
+  const taskBinding = validateExpectedDispatchId(task.task_id, expectedTaskId);
+  if (!taskBinding.ok) {
+    return { ok: false, reason: `task id is not canonically bound: ${taskBinding.reason}`, obsolete: true };
+  }
   const ref2 = {
     owner: repositoryInfo.owner,
     repo: repositoryInfo.name,
@@ -18226,6 +18932,13 @@ async function runPreflight(client, repositoryInfo, task, identity) {
   const issue = await client.getIssue(ref2);
   if (issue === null) {
     return { ok: false, reason: `issue #${task.issue_number} does not exist`, obsolete: true };
+  }
+  if (issue.number !== task.issue_number) {
+    return {
+      ok: false,
+      reason: `GitHub returned issue #${issue.number} for requested issue #${task.issue_number}`,
+      obsolete: false
+    };
   }
   if (issue.state === "closed") {
     return { ok: false, reason: `issue #${task.issue_number} is closed (cancel/closure invalidates the task)`, obsolete: true };
@@ -18238,6 +18951,19 @@ async function runPreflight(client, repositoryInfo, task, identity) {
     return { ok: false, reason: `issue #${task.issue_number} carries multiple ai:* labels [${labels.join(", ")}] (corrupted state \u2014 refusing to guess)`, obsolete: false };
   }
   const comments = await client.listComments(ref2);
+  const trustedEpoch = readTrustedWorkflowEpoch(
+    comments,
+    repositoryInfo.id,
+    task.issue_number,
+    identity.gateLogins
+  );
+  if (!trustedEpoch.ok) {
+    return {
+      ok: false,
+      reason: `workflow epoch is not trusted: ${trustedEpoch.reason}`,
+      obsolete: false
+    };
+  }
   const view = readIssueRecords(comments, identity.gateLogins);
   if (view.suspect.length > 0) {
     return {
@@ -18246,28 +18972,64 @@ async function runPreflight(client, repositoryInfo, task, identity) {
       obsolete: false
     };
   }
-  if (view.epoch === null) {
-    return { ok: false, reason: `no workflow_epoch record on #${task.issue_number} (fail closed)`, obsolete: false };
-  }
-  if (view.epoch.record.workflow_epoch !== task.workflow_epoch) {
+  if (trustedEpoch.record.workflow_epoch !== task.workflow_epoch) {
     return {
       ok: false,
-      reason: `task epoch ${task.workflow_epoch} is superseded by current epoch ${view.epoch.record.workflow_epoch} (old task invalid)`,
+      reason: `task epoch ${task.workflow_epoch} is superseded by current epoch ${trustedEpoch.record.workflow_epoch} (old task invalid)`,
       obsolete: true
     };
   }
+  if (trustedEpoch.record.request_comment_id !== void 0) {
+    const source = comments.find((comment) => comment.id === trustedEpoch.record.request_comment_id);
+    if (source === void 0 || !identity.trustedHumans.has(source.user.toLowerCase())) {
+      return {
+        ok: false,
+        reason: `workflow epoch source comment #${trustedEpoch.record.request_comment_id} is not authored by a trusted human (fail closed)`,
+        obsolete: false
+      };
+    }
+  }
+  for (const entry of [...view.approvals, ...view.feedback]) {
+    if (entry.record.repository_id !== repositoryInfo.id || entry.record.issue_number !== task.issue_number) {
+      return {
+        ok: false,
+        reason: `record #${entry.commentId} does not bind the current repository/issue (fail closed)`,
+        obsolete: false
+      };
+    }
+    const source = comments.find((comment) => comment.id === entry.commentId);
+    const gateLogin = "gate_login" in entry.record ? entry.record.gate_login : null;
+    if (source === void 0 || gateLogin === null || !identity.gateLogins.has(gateLogin.toLowerCase()) || !identity.gateLogins.has(source.user.toLowerCase())) {
+      return {
+        ok: false,
+        reason: `record #${entry.commentId} is not authored by the configured Gate identity (fail closed)`,
+        obsolete: false
+      };
+    }
+  }
   let planCommentId = null;
   let planHash = null;
+  const currentPlan = findLatestPlanComment(comments);
+  let planAccepted = false;
+  let currentTracker = null;
+  let currentReports = [];
   if (task.mode === "execute") {
-    const plan = findLatestPlanComment(comments);
-    if (plan === null || plan.id !== task.plan_comment_id) {
+    if (currentPlan === null || currentPlan.id !== task.plan_comment_id) {
       return {
         ok: false,
         reason: `approved plan comment ${String(task.plan_comment_id)} is no longer the current plan`,
         obsolete: true
       };
     }
-    const hash = planSha256(plan.body);
+    const planDispatch = inspectDispatchId(findDispatchId(currentPlan.body));
+    if (!planDispatch.ok || planDispatch.binding.repositoryId !== task.repository_id || planDispatch.binding.issueNumber !== task.issue_number || planDispatch.binding.workflowEpoch !== task.workflow_epoch || planDispatch.binding.mode !== "plan") {
+      return {
+        ok: false,
+        reason: `current Plan #${currentPlan.id} is not bound to the task epoch/repository/issue`,
+        obsolete: true
+      };
+    }
+    const hash = planSha256(currentPlan.body);
     const candidates = view.approvals.filter(
       (entry) => entry.record.workflow_epoch === task.workflow_epoch && entry.record.plan_comment_id === task.plan_comment_id && entry.record.plan_sha256 === hash && approvalRecordAnchorFailure(entry.record, comments, identity.trustedHumans, identity.repoOwner) === null
     );
@@ -18282,21 +19044,61 @@ async function runPreflight(client, repositoryInfo, task, identity) {
     if (conflict.conflict) {
       return { ok: false, reason: `conflicting approval records: ${conflict.reason ?? "divergent content"}`, obsolete: true };
     }
-    planCommentId = plan.id;
+    planAccepted = candidates.length > 0;
+    planCommentId = currentPlan.id;
     planHash = hash;
+    currentTracker = findBoundComment(comments, MARKERS.executionTracker, task.task_id);
+    currentReports = findBoundComments(comments, MARKERS.completionReport, task.task_id);
+  } else if (currentPlan !== null) {
+    const currentPlanDispatch = validateExpectedDispatchId(
+      findDispatchId(currentPlan.body),
+      findDispatchId(currentPlan.body)
+    );
+    if (currentPlanDispatch.ok) {
+      const candidates = view.approvals.filter(
+        (entry) => entry.record.workflow_epoch === task.workflow_epoch && entry.record.repository_id === task.repository_id && entry.record.issue_number === task.issue_number && entry.record.plan_comment_id === currentPlan.id && entry.record.plan_sha256 === planSha256(currentPlan.body) && approvalRecordAnchorFailure(entry.record, comments, identity.trustedHumans, identity.repoOwner) === null
+      );
+      const conflict = approvalRecordsConflict(candidates);
+      if (conflict.conflict) {
+        return {
+          ok: false,
+          reason: `conflicting approval records: ${conflict.reason ?? "divergent content"}`,
+          obsolete: true
+        };
+      }
+      planAccepted = candidates.length > 0;
+    }
   }
   return {
     ok: true,
     snapshot: {
       issue,
       comments,
-      epoch: view.epoch.record.workflow_epoch,
+      epoch: trustedEpoch.record.workflow_epoch,
       view,
       planCommentId,
       planSha256: planHash,
+      planAccepted,
+      currentPlan,
+      currentTracker,
+      currentReports,
       aiState: labels[0] ?? ""
     }
   };
+}
+function findBoundComment(comments, marker, taskId) {
+  const matches = findBoundComments(comments, marker, taskId);
+  return matches[matches.length - 1] ?? null;
+}
+function findBoundComments(comments, marker, taskId) {
+  const matches = [];
+  for (const comment of comments) {
+    if (detectCommentMarker(comment.body) !== marker) continue;
+    const id = findDispatchId(comment.body);
+    const binding = validateExpectedDispatchId(id, taskId);
+    if (binding.ok) matches.push(comment);
+  }
+  return matches;
 }
 
 // src/driver/sync.ts
@@ -18311,14 +19113,38 @@ function noticeKey(body) {
 }
 function recordBase(record, taskId) {
   return {
-    ...record ?? {},
+    ...record,
     task_id: taskId,
-    status: record?.status ?? "prepared",
-    attempts: record?.attempts ?? 1,
-    mode: record?.mode ?? "plan",
-    issue_number: record?.issue_number ?? 0,
-    workflow_epoch: record?.workflow_epoch ?? ""
+    status: record.status,
+    attempts: record.attempts,
+    mode: record.mode,
+    control_repository: record.control_repository,
+    repository_id: record.repository_id,
+    issue_number: record.issue_number,
+    workflow_epoch: record.workflow_epoch,
+    target_repository: record.target_repository,
+    target_workspace: record.target_workspace
   };
+}
+function taskRecordBindingFailure(task, record) {
+  if (record.task_id !== task.task_id || record.control_repository !== task.control_repository || record.repository_id !== task.repository_id || record.issue_number !== task.issue_number || record.workflow_epoch !== task.workflow_epoch || record.mode !== task.mode || record.target_repository !== task.target_repository || workspaceKey(record.target_workspace) !== workspaceKey(task.target_workspace)) {
+    return "task.json and driver-state target/control binding disagree (refusing to sync a possibly cross-wired task)";
+  }
+  if (task.mode === "plan" && record.executor_lock_task_id !== void 0) {
+    return "plan task unexpectedly carries an Executor lock lifecycle record";
+  }
+  return null;
+}
+function withoutExecutorMarker(record) {
+  const { executor_lock_task_id: _executorLockTaskId, ...rest } = record;
+  return rest;
+}
+async function releaseExecutorLifecycle(paths, taskId, now) {
+  const file = executorLockFile(paths);
+  if (await releaseExecutorLock(file, taskId)) return true;
+  const reacquired = await acquireExecutorLock(file, taskId, now);
+  if (!reacquired.ok) return false;
+  return releaseExecutorLock(file, taskId);
 }
 async function readOutputCapped(paths, taskId, name) {
   try {
@@ -18355,9 +19181,19 @@ async function inputBindingFailure(paths, taskId, task, record) {
 function resolveTrackerFrom(comments, taskId, record) {
   if (record?.tracker_comment_id !== void 0) {
     const found = comments.find((comment) => comment.id === record.tracker_comment_id);
-    if (found !== void 0) return found;
+    if (found !== void 0 && findTrackerComment([found], taskId) !== null) return found;
   }
   return findTrackerComment(comments, taskId);
+}
+function preflightIdentity(deps, repositoryInfo) {
+  return {
+    gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
+    trustedHumans: /* @__PURE__ */ new Set([
+      repositoryInfo.owner.toLowerCase(),
+      ...deps.config.trustedHumans.map((login) => login.toLowerCase())
+    ]),
+    repoOwner: repositoryInfo.owner
+  };
 }
 async function syncTask(deps, repositoryInfo, taskId) {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
@@ -18380,6 +19216,11 @@ async function syncTask(deps, repositoryInfo, taskId) {
       detail: "no driver-state record for this task (never prepared here \u2014 run `gateflow run` first)"
     };
   }
+  const bindingFailure = taskRecordBindingFailure(task, record);
+  if (bindingFailure !== null) {
+    deps.log.warning(`rejected ${taskId}: ${bindingFailure}`);
+    return { taskId, action: "rejected", detail: bindingFailure };
+  }
   const rawResult = await readResultJson(paths, taskId);
   if (rawResult !== null && rawResult.error !== null) {
     deps.log.warning(`rejected ${taskId}: unparseable result.json \u2014 ${rawResult.error}`);
@@ -18400,23 +19241,27 @@ async function syncTask(deps, repositoryInfo, taskId) {
     deps.log.warning(`rejected ${taskId}: ${binding}`);
     return { taskId, action: "rejected", detail: binding };
   }
-  const preflight = await runPreflight(deps.client, repositoryInfo, task, {
-    gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
-    trustedHumans: /* @__PURE__ */ new Set([
-      repositoryInfo.owner.toLowerCase(),
-      ...deps.config.trustedHumans.map((login) => login.toLowerCase())
-    ]),
-    repoOwner: repositoryInfo.owner
-  });
+  const preflight = await runPreflight(
+    deps.client,
+    repositoryInfo,
+    task,
+    preflightIdentity(deps, repositoryInfo),
+    { projectRoot: deps.projectRoot, workspaceDir: deps.config.driver.workspaceDir }
+  );
   if (!preflight.ok) {
     if (preflight.obsolete) {
+      const lockReleased = task.mode === "execute" ? await releaseExecutorLifecycle(paths, taskId, now) : true;
+      const obsoleteRecord = {
+        ...recordBase(record, taskId),
+        status: "obsolete",
+        error: lockReleased ? preflight.reason : `${preflight.reason}; Executor lock is still held or unknown and was not reclaimed`,
+        last_sync_at: nowIso
+      };
       await writeDriverState(paths, {
-        ...withTaskRecord(state, {
-          ...recordBase(record, taskId),
-          status: "obsolete",
-          error: preflight.reason,
-          last_sync_at: nowIso
-        })
+        ...withTaskRecord(
+          state,
+          lockReleased ? withoutExecutorMarker(obsoleteRecord) : obsoleteRecord
+        )
       });
       deps.log.warning(`obsolete ${taskId}: ${preflight.reason}`);
       return { taskId, action: "obsolete", detail: preflight.reason };
@@ -18426,20 +19271,35 @@ async function syncTask(deps, repositoryInfo, taskId) {
   }
   const snapshot = preflight.snapshot;
   if (record.status === "published" && record.published_comment_id !== void 0) {
-    const isPlanAccepted = task.mode === "plan" && snapshot.view.approvals.some(
-      (entry) => entry.record.workflow_epoch === snapshot.epoch && entry.record.plan_comment_id === record.published_comment_id
-    );
-    const isReportAccepted = task.mode === "execute" && snapshot.aiState === "ai:done";
+    const isPlanAccepted = await isPublishedPlanAccepted(task, record, snapshot, paths);
+    const isReportAccepted = await isPublishedReportAccepted(task, record, snapshot, paths);
     if (isPlanAccepted || isReportAccepted) {
+      const lockReleased = task.mode === "execute" ? await releaseExecutorLifecycle(paths, taskId, now) : true;
+      const acceptedRecord = {
+        ...recordBase(record, taskId),
+        status: "accepted",
+        last_sync_at: nowIso
+      };
       await writeDriverState(paths, {
-        ...withTaskRecord(state, {
-          ...recordBase(record, taskId),
-          status: "accepted",
-          last_sync_at: nowIso
-        })
+        ...withTaskRecord(state, lockReleased ? withoutExecutorMarker(acceptedRecord) : acceptedRecord)
       });
       return { taskId, action: "accepted", detail: `Gate accepted the ${task.mode} output (${snapshot.aiState})` };
     }
+  }
+  if (record.status === "published" && task.mode === "execute" && result?.status === "completed") {
+    return syncExecuteMode(
+      deps,
+      repositoryInfo,
+      ref(repositoryInfo, task.issue_number),
+      paths,
+      state,
+      taskId,
+      task,
+      record,
+      result,
+      snapshot,
+      nowIso
+    );
   }
   if (record.status === "published" || record.status === "accepted") {
     return {
@@ -18451,7 +19311,19 @@ async function syncTask(deps, repositoryInfo, taskId) {
   if (task.mode === "plan") {
     return syncPlanMode(deps, ref(repositoryInfo, task.issue_number), paths, state, taskId, task, record, result, snapshot, nowIso);
   }
-  return syncExecuteMode(deps, ref(repositoryInfo, task.issue_number), paths, state, taskId, task, record, result, snapshot, nowIso);
+  return syncExecuteMode(
+    deps,
+    repositoryInfo,
+    ref(repositoryInfo, task.issue_number),
+    paths,
+    state,
+    taskId,
+    task,
+    record,
+    result,
+    snapshot,
+    nowIso
+  );
 }
 function ref(repositoryInfo, issueNumber) {
   return { owner: repositoryInfo.owner, repo: repositoryInfo.name, issueNumber };
@@ -18476,7 +19348,13 @@ async function syncPlanMode(deps, issueRef, paths, state, taskId, task, record, 
       if (plan.content === null) {
         return { taskId, action: "rejected", detail: "status=completed but plan.md is missing or empty" };
       }
-      const reconciliation = reconcileMarkerComment(snapshot.comments, taskId, plan.content, "plan");
+      const reconciliation = reconcileMarkerComment(
+        snapshot.comments,
+        taskId,
+        plan.content,
+        "plan",
+        record.status === "publishing" ? record.published_comment_id : void 0
+      );
       if (reconciliation.verdict === "conflict") {
         await persistRecord(paths, state, {
           ...recordBase(record, taskId),
@@ -18486,6 +19364,13 @@ async function syncPlanMode(deps, issueRef, paths, state, taskId, task, record, 
         });
         deps.log.error(`conflict ${taskId}: ${reconciliation.detail}`);
         return { taskId, action: "rejected", detail: reconciliation.detail };
+      }
+      if (reconciliation.verdict === "pending") {
+        return {
+          taskId,
+          action: "unchanged",
+          detail: "plan publication is awaiting remote confirmation; retry reconciles before creating another comment"
+        };
       }
       let commentId;
       if (reconciliation.verdict === "adopt") {
@@ -18498,7 +19383,44 @@ async function syncPlanMode(deps, issueRef, paths, state, taskId, task, record, 
           last_sync_at: nowIso
         });
         const published = await publishPlanComment(deps.client, issueRef, plan.content, taskId);
-        commentId = published.id;
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: "publishing",
+          published_comment_id: published.id,
+          last_sync_at: nowIso
+        });
+        const confirmed = reconcileMarkerComment(
+          await deps.client.listComments(issueRef),
+          taskId,
+          plan.content,
+          "plan",
+          published.id
+        );
+        if (confirmed.verdict === "conflict") {
+          await persistRecord(paths, state, {
+            ...recordBase(record, taskId),
+            status: "failed",
+            published_comment_id: published.id,
+            error: confirmed.detail,
+            last_sync_at: nowIso
+          });
+          return { taskId, action: "rejected", detail: confirmed.detail };
+        }
+        if (confirmed.verdict === "pending") {
+          return {
+            taskId,
+            action: "unchanged",
+            detail: `plan comment #${published.id} was created but is not visible in the fresh remote read; retry will reconcile it`
+          };
+        }
+        if (confirmed.verdict === "absent") {
+          return {
+            taskId,
+            action: "unchanged",
+            detail: `plan comment #${published.id} could not be reconciled after publication; retry will inspect the remote issue`
+          };
+        }
+        commentId = confirmed.comment.id;
       }
       await persistRecord(paths, state, {
         ...recordBase(record, taskId),
@@ -18532,7 +19454,7 @@ async function syncPlanMode(deps, issueRef, paths, state, taskId, task, record, 
     detail: "no result.json yet; the agent has not reported a terminal result"
   };
 }
-async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, record, result, snapshot, nowIso) {
+async function syncExecuteMode(deps, repositoryInfo, issueRef, paths, state, taskId, task, record, result, snapshot, nowIso) {
   if (result !== null) {
     if (result.status === "completed") {
       if (result.validation !== "passed") {
@@ -18542,11 +19464,12 @@ async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, recor
           detail: `status=completed requires validation="passed", got ${JSON.stringify(result.validation ?? null)}`
         };
       }
-      if (snapshot.aiState !== "ai:ready" && snapshot.aiState !== "ai:working" && snapshot.aiState !== "ai:blocked") {
+      const canRecoverDone = snapshot.aiState === "ai:done" && snapshot.currentTracker !== null && snapshot.currentReports.length > 0;
+      if (snapshot.aiState !== "ai:ready" && snapshot.aiState !== "ai:working" && snapshot.aiState !== "ai:blocked" && !canRecoverDone) {
         return {
           taskId,
           action: "unchanged",
-          detail: `completion report requires ai:ready|ai:working|ai:blocked, current state is ${snapshot.aiState}`
+          detail: `completion report requires ai:ready|ai:working|ai:blocked, or a recoverable ai:done chain; current state is ${snapshot.aiState}`
         };
       }
       const report = await readOutputCapped(paths, taskId, "report.md");
@@ -18556,9 +19479,23 @@ async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, recor
       if (report.content === null) {
         return { taskId, action: "rejected", detail: "status=completed but report.md is missing or empty" };
       }
-      let tracker2 = resolveTrackerFrom(snapshot.comments, taskId, record);
+      let tracker2 = snapshot.currentTracker ?? resolveTrackerFrom(snapshot.comments, taskId, record);
       let trackerId2 = tracker2?.id;
       if (tracker2 === null) {
+        if (record.tracker_comment_id !== void 0) {
+          return {
+            taskId,
+            action: "unchanged",
+            detail: `tracker comment #${record.tracker_comment_id} is not visible or valid yet; retry will reconcile before creating another`
+          };
+        }
+        if (snapshot.aiState === "ai:blocked") {
+          return {
+            taskId,
+            action: "unchanged",
+            detail: "completion report is waiting for the current execution Tracker while the issue is blocked"
+          };
+        }
         const created = await publishTrackerComment(deps.client, issueRef, {
           taskId,
           issueNumber: issueRef.issueNumber
@@ -18572,21 +19509,112 @@ async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, recor
           updatedAt: nowIso
         };
         deps.log.info(`repaired ${taskId}: lawful tracker #${created.id} created before report publication`);
-      }
-      if (snapshot.aiState === "ai:blocked") {
-        await updateTracker(deps.client, issueRef, tracker2.id, tracker2.body, { status: "In Progress" });
-        deps.log.info(`resumed ${taskId}: tracker #${tracker2.id} set back to In Progress before the report (T5)`);
-      }
-      const reconciliation = reconcileMarkerComment(snapshot.comments, taskId, report.content, "report");
-      if (reconciliation.verdict === "conflict") {
         await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          tracker_comment_id: trackerId2,
+          last_sync_at: nowIso
+        });
+        const fresh = await runPreflight(
+          deps.client,
+          repositoryInfo,
+          task,
+          preflightIdentity(deps, repositoryInfo),
+          { projectRoot: deps.projectRoot, workspaceDir: deps.config.driver.workspaceDir }
+        );
+        if (!fresh.ok || fresh.snapshot.currentTracker === null || fresh.snapshot.aiState !== "ai:working") {
+          return {
+            taskId,
+            action: "tracker-created",
+            detail: `tracker comment #${created.id} created; waiting for Gate acceptance of WORKING before report publication`
+          };
+        }
+        const refreshedTracker = fresh.snapshot.currentTracker;
+        snapshot = fresh.snapshot;
+        tracker2 = refreshedTracker;
+        trackerId2 = refreshedTracker.id;
+      }
+      if (tracker2 === null) {
+        return {
+          taskId,
+          action: "unchanged",
+          detail: "execution Tracker is not currently visible; retry will reconcile before publishing the Report"
+        };
+      }
+      if (snapshot.aiState === "ai:blocked" || findTrackerStatus(tracker2.body) !== "In Progress") {
+        await updateTracker(deps.client, issueRef, tracker2.id, tracker2.body, { status: "In Progress" });
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          tracker_comment_id: tracker2.id,
+          last_sync_at: nowIso
+        });
+        const fresh = await runPreflight(
+          deps.client,
+          repositoryInfo,
+          task,
+          preflightIdentity(deps, repositoryInfo),
+          { projectRoot: deps.projectRoot, workspaceDir: deps.config.driver.workspaceDir }
+        );
+        if (!fresh.ok || fresh.snapshot.currentTracker === null || fresh.snapshot.aiState !== "ai:working") {
+          return {
+            taskId,
+            action: "resumed",
+            detail: `tracker #${tracker2.id} set to In Progress; waiting for Gate acceptance of WORKING before report publication`
+          };
+        }
+        const refreshedTracker = fresh.snapshot.currentTracker;
+        snapshot = fresh.snapshot;
+        tracker2 = refreshedTracker;
+        trackerId2 = refreshedTracker.id;
+      }
+      if (snapshot.aiState === "ai:ready") {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          tracker_comment_id: tracker2.id,
+          last_sync_at: nowIso
+        });
+        return {
+          taskId,
+          action: "unchanged",
+          detail: `tracker #${tracker2.id} exists; waiting for Gate acceptance of WORKING before report publication`
+        };
+      }
+      if (snapshot.aiState !== "ai:working" && snapshot.aiState !== "ai:done") {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          tracker_comment_id: tracker2.id,
+          last_sync_at: nowIso
+        });
+        return {
+          taskId,
+          action: "unchanged",
+          detail: `tracker #${tracker2.id} is present, but the Gate has not accepted WORKING yet`
+        };
+      }
+      const reconciliation = reconcileMarkerComment(
+        snapshot.comments,
+        taskId,
+        report.content,
+        "report",
+        record.status === "publishing" ? record.published_comment_id : void 0
+      );
+      if (reconciliation.verdict === "conflict") {
+        const lockReleased3 = await releaseExecutorLifecycle(paths, taskId, deps.now ?? (() => /* @__PURE__ */ new Date()));
+        const failedRecord = {
           ...recordBase(record, taskId),
           status: "failed",
           error: reconciliation.detail,
           last_sync_at: nowIso
-        });
+        };
+        await persistRecord(paths, state, lockReleased3 ? withoutExecutorMarker(failedRecord) : failedRecord);
         deps.log.error(`conflict ${taskId}: ${reconciliation.detail}`);
         return { taskId, action: "rejected", detail: reconciliation.detail };
+      }
+      if (reconciliation.verdict === "pending") {
+        return {
+          taskId,
+          action: "unchanged",
+          detail: "report publication is awaiting remote confirmation; retry reconciles before creating another comment"
+        };
       }
       let reportId;
       if (reconciliation.verdict === "adopt") {
@@ -18599,20 +19627,63 @@ async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, recor
           last_sync_at: nowIso
         });
         const published = await publishCompletionReport(deps.client, issueRef, report.content, taskId);
-        reportId = published.id;
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: "publishing",
+          published_comment_id: published.id,
+          tracker_comment_id: trackerId2,
+          last_sync_at: nowIso
+        });
+        const confirmed = reconcileMarkerComment(
+          await deps.client.listComments(issueRef),
+          taskId,
+          report.content,
+          "report",
+          published.id
+        );
+        if (confirmed.verdict === "conflict") {
+          const lockReleased3 = await releaseExecutorLifecycle(paths, taskId, deps.now ?? (() => /* @__PURE__ */ new Date()));
+          const failedRecord = {
+            ...recordBase(record, taskId),
+            status: "failed",
+            published_comment_id: published.id,
+            tracker_comment_id: trackerId2,
+            error: confirmed.detail,
+            last_sync_at: nowIso
+          };
+          await persistRecord(paths, state, lockReleased3 ? withoutExecutorMarker(failedRecord) : failedRecord);
+          return { taskId, action: "rejected", detail: confirmed.detail };
+        }
+        if (confirmed.verdict === "pending") {
+          return {
+            taskId,
+            action: "unchanged",
+            detail: `completion report #${published.id} was created but is not visible in the fresh remote read; retry will reconcile it`
+          };
+        }
+        if (confirmed.verdict === "absent") {
+          return {
+            taskId,
+            action: "unchanged",
+            detail: `completion report #${published.id} could not be reconciled after publication; retry will inspect the remote issue`
+          };
+        }
+        reportId = confirmed.comment.id;
       }
-      await persistRecord(paths, state, {
+      const lockReleased2 = await releaseExecutorLifecycle(paths, taskId, deps.now ?? (() => /* @__PURE__ */ new Date()));
+      const completedRecord = {
         ...recordBase(record, taskId),
         status: "published",
         published_comment_id: reportId,
         tracker_comment_id: trackerId2,
         last_sync_at: nowIso,
-        error: null
-      });
+        error: lockReleased2 ? null : "report published, but Executor lock remains held or unknown"
+      };
+      await persistRecord(paths, state, lockReleased2 ? withoutExecutorMarker(completedRecord) : completedRecord);
       return {
         taskId,
         action: "completed",
-        detail: `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`
+        detail: `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)` + (lockReleased2 ? "" : "; Executor lock remains held or unknown")
       };
     }
     if (snapshot.aiState !== "ai:working" && snapshot.aiState !== "ai:blocked") {
@@ -18631,12 +19702,19 @@ async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, recor
         detail: "blocked notice already posted for this task"
       };
     }
-    let tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+    let tracker = snapshot.currentTracker ?? resolveTrackerFrom(snapshot.comments, taskId, record);
     let trackerId;
     if (tracker !== null) {
       await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: "Blocked" });
       trackerId = tracker.id;
     } else {
+      if (record.tracker_comment_id !== void 0) {
+        return {
+          taskId,
+          action: "unchanged",
+          detail: `tracker comment #${record.tracker_comment_id} is not visible or valid yet; retry will reconcile before creating another`
+        };
+      }
       const created = await publishTrackerComment(deps.client, issueRef, {
         taskId,
         issueNumber: issueRef.issueNumber
@@ -18652,17 +19730,30 @@ async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, recor
     }
     const body = pendingBody;
     await deps.client.addIssueComment(issueRef, body);
-    await persistRecord(paths, state, {
+    const lockReleased = await releaseExecutorLifecycle(paths, taskId, deps.now ?? (() => /* @__PURE__ */ new Date()));
+    const noticeRecord = {
       ...recordBase(record, taskId),
       tracker_comment_id: trackerId,
       last_notice_key: noticeKey(body),
       last_sync_at: nowIso
-    });
-    return { taskId, action: "notice", detail: `execute ${result.status}: tracker #${trackerId} set to Blocked, notice posted` };
+    };
+    await persistRecord(paths, state, lockReleased ? withoutExecutorMarker(noticeRecord) : noticeRecord);
+    return {
+      taskId,
+      action: "notice",
+      detail: `execute ${result.status}: tracker #${trackerId} set to Blocked, notice posted` + (lockReleased ? "" : "; Executor lock remains held or unknown")
+    };
   }
-  if (snapshot.aiState === "ai:ready") {
-    const tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+  if (snapshot.aiState === "ai:ready" || snapshot.aiState === "ai:working") {
+    const tracker = snapshot.currentTracker ?? resolveTrackerFrom(snapshot.comments, taskId, record);
     if (tracker === null) {
+      if (record.tracker_comment_id !== void 0) {
+        return {
+          taskId,
+          action: "unchanged",
+          detail: `tracker comment #${record.tracker_comment_id} is not visible or valid yet; retry will reconcile before creating another`
+        };
+      }
       const created = await publishTrackerComment(deps.client, issueRef, {
         taskId,
         issueNumber: issueRef.issueNumber
@@ -18689,11 +19780,37 @@ async function syncExecuteMode(deps, issueRef, paths, state, taskId, task, recor
     detail: "no result.json yet; the agent is still working"
   };
 }
-function reconcileMarkerComment(comments, taskId, localContent, kind) {
+async function isPublishedPlanAccepted(task, record, snapshot, paths) {
+  if (task.mode !== "plan" || record.published_comment_id === void 0) return false;
+  const plan = snapshot.comments.find((comment) => comment.id === record.published_comment_id);
+  if (plan === void 0 || snapshot.currentPlan?.id !== plan.id) return false;
+  if (detectCommentMarker(plan.body) !== MARKERS.plan) return false;
+  const dispatch = validateExpectedDispatchId(findDispatchId(plan.body), task.task_id);
+  if (!dispatch.ok) return false;
+  if (!snapshot.planAccepted) return false;
+  const local = await readOutputCapped(paths, task.task_id, "plan.md");
+  return local.content !== null && canonicalPlanContent(plan.body) === canonicalPlanContent(local.content);
+}
+async function isPublishedReportAccepted(task, record, snapshot, paths) {
+  if (task.mode !== "execute" || record.published_comment_id === void 0) return false;
+  if (snapshot.aiState !== "ai:done") return false;
+  const reports = snapshot.currentReports;
+  const report = reports[reports.length - 1];
+  if (report === void 0 || report.id !== record.published_comment_id) return false;
+  if (detectCommentMarker(report.body) !== MARKERS.completionReport) return false;
+  if (!validateExpectedDispatchId(findDispatchId(report.body), task.task_id).ok) return false;
+  if (snapshot.currentTracker === null) return false;
+  if (record.tracker_comment_id !== void 0 && snapshot.currentTracker.id !== record.tracker_comment_id) {
+    return false;
+  }
+  const local = await readOutputCapped(paths, task.task_id, "report.md");
+  return local.content !== null && canonicalPlanContent(report.body) === canonicalPlanContent(local.content);
+}
+function reconcileMarkerComment(comments, taskId, localContent, kind, pendingCommentId) {
   const mine = kind === "plan" ? findPlanComments(comments).filter((plan) => plan.dispatchId === taskId) : findCompletionReportComments(comments, taskId);
-  if (mine.length === 0) return { verdict: "absent" };
+  if (mine.length === 0) return pendingCommentId === void 0 ? { verdict: "absent" } : { verdict: "pending" };
   const latest = mine[mine.length - 1];
-  if (latest === void 0) return { verdict: "absent" };
+  if (latest === void 0) return pendingCommentId === void 0 ? { verdict: "absent" } : { verdict: "pending" };
   const remoteHash = canonicalPlanContent(latest.body);
   const localHash = canonicalPlanContent(localContent);
   if (remoteHash !== localHash) {
@@ -18701,6 +19818,10 @@ function reconcileMarkerComment(comments, taskId, localContent, kind) {
       verdict: "conflict",
       detail: `remote ${kind} comment #${latest.id} exists for ${taskId} with DIFFERENT content (fail closed: no overwrite, no duplicate)`
     };
+  }
+  if (pendingCommentId !== void 0) {
+    const pending = mine.find((comment) => comment.id === pendingCommentId);
+    if (pending !== void 0) return { verdict: "adopt", comment: pending };
   }
   return { verdict: "adopt", comment: latest };
 }
@@ -18719,8 +19840,17 @@ async function syncAll(deps, repositoryInfo) {
 }
 async function clearTask(paths, taskId) {
   const state = await readDriverState(paths);
-  if (getTaskRecord(state, taskId) === null) {
+  const record = getTaskRecord(state, taskId);
+  if (record === null) {
     return false;
+  }
+  if (record.executor_lock_task_id !== void 0) {
+    let released = await releaseExecutorLock(executorLockFile(paths), taskId);
+    if (!released) {
+      const reclaimed = await acquireExecutorLock(executorLockFile(paths), taskId);
+      released = reclaimed.ok && await releaseExecutorLock(executorLockFile(paths), taskId);
+    }
+    if (!released) return false;
   }
   await writeDriverState(paths, withoutTaskRecord(state, taskId));
   return true;
@@ -18756,7 +19886,11 @@ async function runCommand(deps, opts = {}) {
   return withDriverLock(deps, async (repositoryInfo) => {
     const repository = `${repositoryInfo.owner}/${repositoryInfo.name}`;
     const discoveries = await discoverWork(deps.client, repository, deps.config, repositoryInfo, deps.log);
-    return prepareCurrentTask(deps, repositoryInfo, discoveries, { issue: opts.issue });
+    return prepareCurrentTask(deps, repositoryInfo, discoveries, {
+      issue: opts.issue,
+      ...Object.prototype.hasOwnProperty.call(opts, "targetRepository") ? { targetRepository: opts.targetRepository } : {},
+      ...Object.prototype.hasOwnProperty.call(opts, "targetWorkspace") ? { targetWorkspace: opts.targetWorkspace } : {}
+    });
   });
 }
 async function syncCommand(deps) {
@@ -18771,7 +19905,8 @@ var import_meta = {};
 var USAGE = `gateflow \u2014 local GateFlow driver (Manual Activation)
 
 Usage:
-  gateflow run    [--issue <n>] [--root <dir>] [--config <file>]
+  gateflow run    [--issue <n>] [--target-repository <owner/name>]
+                  [--target-workspace <absolute-path>] [--root <dir>] [--config <file>]
                   discover GitHub state, prepare the active task, print the AI prompt
   gateflow sync   [--root <dir>] [--config <file>]
                   validate task results and publish them to GitHub
@@ -18782,22 +19917,36 @@ Usage:
 
 Environment:
   GITHUB_TOKEN          required for run/sync; never written to disk
-  GATEFLOW_REPOSITORY   optional owner/name fallback for repository resolution`;
+  GATEFLOW_REPOSITORY   optional owner/name fallback for Control Repository resolution
+
+Target flags:
+  --target-repository   explicit Target Repository metadata (may not exist yet)
+  --target-workspace    explicit absolute local Target Workspace path`;
 function parseArgs(argv) {
   const positionals = [];
   let root = import_node_process.default.cwd();
   let config = "gateflow.config.yml";
   let issue = null;
+  let targetRepository = null;
+  let targetWorkspace = null;
+  let targetRepositorySet = false;
+  let targetWorkspaceSet = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? "";
-    if (arg === "--root" || arg === "--config" || arg === "--issue") {
+    if (arg === "--root" || arg === "--config" || arg === "--issue" || arg === "--target-repository" || arg === "--target-workspace") {
       const value = argv[i + 1];
       if (value === void 0 || value.startsWith("--")) {
         return { ok: false, error: `flag ${arg} requires a value` };
       }
       if (arg === "--root") root = value;
       else if (arg === "--config") config = value;
-      else {
+      else if (arg === "--target-repository") {
+        targetRepository = value;
+        targetRepositorySet = true;
+      } else if (arg === "--target-workspace") {
+        targetWorkspace = value;
+        targetWorkspaceSet = true;
+      } else {
         const parsed = Number(value);
         if (!Number.isSafeInteger(parsed) || parsed < 1) {
           return { ok: false, error: `--issue must be a positive integer, got ${JSON.stringify(value)}` };
@@ -18823,6 +19972,18 @@ function parseArgs(argv) {
       issue = parsed;
       continue;
     }
+    if (arg.startsWith("--target-repository=")) {
+      targetRepository = arg.slice("--target-repository=".length);
+      if (targetRepository.length === 0) return { ok: false, error: "--target-repository requires a value" };
+      targetRepositorySet = true;
+      continue;
+    }
+    if (arg.startsWith("--target-workspace=")) {
+      targetWorkspace = arg.slice("--target-workspace=".length);
+      if (targetWorkspace.length === 0) return { ok: false, error: "--target-workspace requires a value" };
+      targetWorkspaceSet = true;
+      continue;
+    }
     if (arg.startsWith("--")) {
       return { ok: false, error: `unknown flag "${arg}"` };
     }
@@ -18836,7 +19997,20 @@ function parseArgs(argv) {
   if (command === "retry" && taskId === null) {
     return { ok: false, error: "retry requires a <task-id> argument" };
   }
-  return { ok: true, args: { command, taskId, issue, root, config } };
+  return {
+    ok: true,
+    args: {
+      command,
+      taskId,
+      issue,
+      root,
+      config,
+      targetRepository,
+      targetWorkspace,
+      targetRepositorySet,
+      targetWorkspaceSet
+    }
+  };
 }
 function createLogger3(paths) {
   const emit = (level, msg) => {
@@ -18897,7 +20071,11 @@ async function runOnline(args, command) {
   const deps = await onlineDeps(args);
   deps.log.info(`gateflow ${command}: root=${args.root}`);
   if (command === "run") {
-    const result2 = await runCommand(deps, { issue: args.issue ?? void 0 });
+    const result2 = await runCommand(deps, {
+      issue: args.issue ?? void 0,
+      ...args.targetRepositorySet ? { targetRepository: args.targetRepository } : {},
+      ...args.targetWorkspaceSet ? { targetWorkspace: args.targetWorkspace } : {}
+    });
     if (result2.taskId !== null) {
       console.log(`task: ${result2.taskId} (${result2.mode ?? "?"}, issue #${result2.issueNumber ?? "?"})`);
     }
@@ -19001,7 +20179,7 @@ var invokedDirectly = (() => {
   if (entry === void 0) return false;
   try {
     if (typeof __filename === "string") {
-      return nodePath5.resolve(entry) === nodePath5.resolve(__filename);
+      return nodePath6.resolve(entry) === nodePath6.resolve(__filename);
     }
     return (0, import_node_url.pathToFileURL)(entry).href === import_meta.url;
   } catch {

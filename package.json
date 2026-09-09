@@ -14,6 +14,7 @@
     "build:gate": "esbuild src/index.ts --bundle --platform=node --target=node24 --outfile=dist/index.js",
     "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node24 --outfile=dist/cli.js",
     "check:dist": "node scripts/check-dist.mjs",
+    "e2e:release": "node scripts/e2e-release.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
