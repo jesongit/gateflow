@@ -116,4 +116,78 @@ describe('release E2E bootstrap commit boundary', () => {
       await rm(targetDir, { recursive: true, force: true });
     }
   });
+
+  it('keeps an already configured Gate token workflow and still sets the secret, login, commit, and push', async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), 'gateflow-token-existing-test-'));
+    const token = 'test-token';
+    try {
+      await mkdir(join(targetDir, '.github', 'workflows'), { recursive: true });
+      const expression = '${{ secrets.GATEFLOW_GATE_TOKEN }}';
+      await writeFile(join(targetDir, '.github', 'workflows', 'ai-workflow.yml'),
+        `uses: ${ACTION_REF}\nwith:\n  github-token: ${expression}\n`, 'utf8');
+      await writeFile(join(targetDir, 'gateflow.config.yml'), 'version: 1\n', 'utf8');
+      const context = {
+        repository: { fullName: 'jesongit/gateflow' },
+        paths: { clone: targetDir },
+        githubToken: token,
+        preflight: { login: 'jesongit' },
+        bootstrapResult: { workflowFile: 'ai-workflow.yml' },
+        driverEnv: {},
+        options: { timeoutMs: 5_000 },
+        log: vi.fn(),
+        gh: { run: vi.fn(async () => ({ stdout: '', stderr: '' })) },
+        runProcess: vi.fn(async () => ({ stdout: '', stderr: '' })),
+      };
+
+      const result = await configureGateToken(context);
+      const workflow = await readFile(join(targetDir, '.github', 'workflows', 'ai-workflow.yml'), 'utf8');
+      const config = await readFile(join(targetDir, 'gateflow.config.yml'), 'utf8');
+      expect(result.workflow.replaced).toBe(0);
+      expect(result.workflow.existing).toBe(1);
+      expect(workflow).toContain(expression);
+      expect(config).toContain('jesongit');
+      expect(context.gh.run).toHaveBeenCalledWith(
+        ['secret', 'set', 'GATEFLOW_GATE_TOKEN', '--repo', 'jesongit/gateflow'],
+        expect.objectContaining({ input: `${token}\n`, redactOutput: true }),
+      );
+      expect(context.runProcess).toHaveBeenCalledWith('git', expect.arrayContaining(['commit', '-m', 'test: configure Gate token secret']), expect.anything());
+      expect(context.runProcess).toHaveBeenCalledWith('git', ['push', '--set-upstream', 'origin', 'HEAD'], expect.anything());
+    } finally {
+      await rm(targetDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['missing both token expressions', 'with:\n  github-token: ${{ secrets.OTHER_TOKEN }}\n', 'neither'],
+    ['mixed token expressions', 'with:\n  github-token: ${{ github.token }}\n  fallback-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}\n', 'mixes'],
+  ])('fails safely when the workflow is %s', async (_label, workflowBody, errorText) => {
+    const targetDir = await mkdtemp(join(tmpdir(), 'gateflow-token-invalid-test-'));
+    const token = 'test-token';
+    try {
+      await mkdir(join(targetDir, '.github', 'workflows'), { recursive: true });
+      const workflowPath = join(targetDir, '.github', 'workflows', 'ai-workflow.yml');
+      const originalWorkflow = `uses: ${ACTION_REF}\n${workflowBody}`;
+      await writeFile(workflowPath, originalWorkflow, 'utf8');
+      await writeFile(join(targetDir, 'gateflow.config.yml'), 'version: 1\n', 'utf8');
+      const context = {
+        repository: { fullName: 'jesongit/gateflow' },
+        paths: { clone: targetDir },
+        githubToken: token,
+        preflight: { login: 'jesongit' },
+        bootstrapResult: { workflowFile: 'ai-workflow.yml' },
+        driverEnv: {},
+        options: { timeoutMs: 5_000 },
+        log: vi.fn(),
+        gh: { run: vi.fn(async () => ({ stdout: '', stderr: '' })) },
+        runProcess: vi.fn(async () => ({ stdout: '', stderr: '' })),
+      };
+
+      await expect(configureGateToken(context)).rejects.toThrow(errorText);
+      expect(await readFile(workflowPath, 'utf8')).toBe(originalWorkflow);
+      expect(context.gh.run).not.toHaveBeenCalled();
+      expect(context.runProcess).not.toHaveBeenCalled();
+    } finally {
+      await rm(targetDir, { recursive: true, force: true });
+    }
+  });
 });

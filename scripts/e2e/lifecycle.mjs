@@ -429,9 +429,21 @@ export async function configureGateToken(context) {
   try {
     workflow = await readFile(workflowPath, 'utf8');
     const config = await readFile(configPath, 'utf8');
-    const replacementCount = workflow.split(GITHUB_TOKEN_EXPRESSION).length - 1;
-    assert(replacementCount > 0, `workflow ${workflowPath} has no exact ${GITHUB_TOKEN_EXPRESSION} expression`);
-    const updatedWorkflow = workflow.replaceAll(GITHUB_TOKEN_EXPRESSION, GATE_TOKEN_EXPRESSION);
+    const githubTokenCount = workflow.split(GITHUB_TOKEN_EXPRESSION).length - 1;
+    const gateTokenCount = workflow.split(GATE_TOKEN_EXPRESSION).length - 1;
+    assert(
+      !(githubTokenCount > 0 && gateTokenCount > 0),
+      `workflow ${workflowPath} mixes ${GITHUB_TOKEN_EXPRESSION} and ${GATE_TOKEN_EXPRESSION}; use exactly one token expression`,
+    );
+    assert(
+      githubTokenCount > 0 || gateTokenCount > 0,
+      `workflow ${workflowPath} has neither ${GITHUB_TOKEN_EXPRESSION} nor ${GATE_TOKEN_EXPRESSION}; refusing to configure an ambiguous workflow`,
+    );
+    const replacementCount = githubTokenCount;
+    const updatedWorkflow = replacementCount > 0
+      ? workflow.replaceAll(GITHUB_TOKEN_EXPRESSION, GATE_TOKEN_EXPRESSION)
+      : workflow;
+    const expectedGateTokenCount = gateTokenCount + replacementCount;
     const configUpdate = addGateLogin(config, login);
 
     await context.gh.run(['secret', 'set', GATE_TOKEN_SECRET, '--repo', repository], {
@@ -440,7 +452,7 @@ export async function configureGateToken(context) {
       input: `${context.githubToken}\n`,
       redactOutput: true,
     });
-    await writeFile(workflowPath, updatedWorkflow, 'utf8');
+    if (replacementCount > 0) await writeFile(workflowPath, updatedWorkflow, 'utf8');
     if (configUpdate.changed) await writeFile(configPath, configUpdate.content, 'utf8');
     await context.runProcess('git', ['add', '--', relativeWorkflowPath, relativeConfigPath], {
       cwd: context.paths.clone,
@@ -469,7 +481,8 @@ export async function configureGateToken(context) {
     const verifiedConfig = await readFile(configPath, 'utf8');
     assert(!verifiedWorkflow.includes(GITHUB_TOKEN_EXPRESSION), `workflow still contains ${GITHUB_TOKEN_EXPRESSION}`);
     const verifiedCount = verifiedWorkflow.split(GATE_TOKEN_EXPRESSION).length - 1;
-    assert(verifiedCount === replacementCount, `workflow replacement count changed: expected ${replacementCount}, received ${verifiedCount}`);
+    assert(verifiedCount === expectedGateTokenCount,
+      `workflow token expression count changed: expected ${expectedGateTokenCount}, received ${verifiedCount}`);
     const driverGateLogins = verifyGateLogin(verifiedConfig, login);
     const result = {
       status: 'passed',
@@ -479,6 +492,7 @@ export async function configureGateToken(context) {
         path: workflowPath,
         workflowFile,
         replaced: replacementCount,
+        existing: gateTokenCount,
         expression: GATE_TOKEN_EXPRESSION,
       },
       config: {
