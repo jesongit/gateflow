@@ -82,6 +82,8 @@ $env:GITHUB_TOKEN = $null
 
 `--github-config` 才会访问 GitHub；它需要 `--token <token>` 或 `GITHUB_TOKEN`。`--generate-only` 与 `--github-config` 不能同时使用。非交互环境下要明确批准本地写入，请使用 `--yes`；只有 `--non-interactive` 而没有 `--yes` 时，未获批准的写入会跳过。`--no-github-config` 可显式保持默认的本地模式。完整参数以 `node scripts/bootstrap.mjs --help` 为准。
 
+Bootstrap 默认生成 `uses: jesongit/gateflow@v1`。如需锁定到具体版本或使用其他可访问的 Action 发布仓库，可显式传入 `--action-ref`，例如 `--action-ref jesongit/gateflow@v1.0.0`。
+
 Bootstrap 的本地结果通常是：
 
 * `.github/workflows/ai-workflow.yml`；

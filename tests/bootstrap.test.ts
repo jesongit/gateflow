@@ -12,7 +12,7 @@ const TEMPLATE = [
   'name: AI Workflow Gate',
   'permissions:',
   '  issues: write',
-  'uses: jesongit/gateflow@v0',
+  'uses: jesongit/gateflow@v1',
   'with:',
   '  github-token: ${{ secrets.GATEFLOW_GATE_TOKEN }}',
   "trusted-humans: ''",
@@ -116,7 +116,7 @@ describe('local bootstrap idempotency and boundaries', () => {
     );
 
     expect(result.target).toBe(nodePath.join(root, '.github', 'workflows', 'ai-workflow.yml'));
-    expect(await readFile(result.target, 'utf8')).toContain('uses: jesongit/gateflow@v0');
+    expect(await readFile(result.target, 'utf8')).toContain('uses: jesongit/gateflow@v1');
     expect(await readFile(nodePath.join(root, 'gateflow.config.yml'), 'utf8')).toBe(
       'version: 1\nrepository: octo/project\n# Gate records are signed by the user behind GATEFLOW_GATE_TOKEN.\n# gate_logins:\n#   - your-github-login\n',
     );
@@ -139,6 +139,25 @@ describe('local bootstrap idempotency and boundaries', () => {
     );
     expect(rerun).toMatchObject({ workflowStatus: 'same', configStatus: 'present', gitignoreStatus: 'present' });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the explicit action-ref override after the default moves to V1', async () => {
+    const { root, template } = await makeTarget();
+    const captured = testDeps(root, template);
+
+    await runBootstrap(
+      [
+        '--repo', 'octo/project',
+        '--workdir', root,
+        '--action-ref', 'octo/gateflow@v1.0.0',
+        '--generate-only',
+      ],
+      captured.deps,
+    );
+
+    const workflow = await readFile(nodePath.join(root, '.github', 'workflows', 'ai-workflow.yml'), 'utf8');
+    expect(workflow).toContain('uses: octo/gateflow@v1.0.0');
+    expect(workflow).not.toContain('uses: jesongit/gateflow@v1');
   });
 
   it('does not overwrite an identical or different existing workflow', async () => {

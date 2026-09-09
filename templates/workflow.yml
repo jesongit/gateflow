@@ -27,8 +27,8 @@ jobs:
 
     steps:
       - name: AI Workflow Gate
-        # 占位引用：Phase 9 发布时以实际 owner/repo@ref 为准；bootstrap.mjs --action-ref 可替换。
-        uses: jesongit/gateflow@v0
+        # 默认使用 V1 浮动 ref；需要固定版本或使用其他发布仓库时，可由 bootstrap.mjs --action-ref 替换。
+        uses: jesongit/gateflow@v1
         with:
           # GATEFLOW_GATE_TOKEN 应配置为该 Gate User 的 fine-grained PAT；要求
           # permissions.issues: write（上方已授予）。Gate 的登录名还需加入

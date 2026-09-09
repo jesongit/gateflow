@@ -82,7 +82,7 @@ Bootstrap 的实际选项为：
 | `--token <token>` | GitHub 配置用 token；也可从 `GITHUB_TOKEN` 读取 |
 | `--workdir <dir>` / `--target-dir <dir>` | 目标仓库检出目录，默认当前目录 |
 | `--install-mode existing 或 new` | 已有项目或新项目创建后的初始化模式 |
-| `--action-ref <ref>` | Workflow 的 Action 引用，默认 `jesongit/gateflow@v0` |
+| `--action-ref <ref>` | Workflow 的 Action 引用，默认 `jesongit/gateflow@v1` |
 | `--workflow-file <name>` | Workflow 文件名，默认 `ai-workflow.yml` |
 | `--github-config` | 检查仓库和写权限，并创建缺失的 6 个 `ai:*` 标签 |
 | `--no-github-config` | 显式跳过 GitHub 配置；默认也是跳过 |
@@ -130,7 +130,7 @@ gate_logins:
   - your-github-login # 用 gh api user --jq .login 获取；这里只写登录名
 ```
 
-`gate_logins` 是 Gate-issued 记录的发布者白名单，不是 `trusted-agents`；不要把该用户登录名放入 `trusted-agents`。默认 Action 引用是 `jesongit/gateflow@v0`；若改用自己的发布仓库或 ref，使用 `--action-ref`，并先确认 Target 能访问该 Action。个人仓库的 User-type owner 默认是 Trusted Human，因此通常不需要填写 `trusted-humans`。Organization 仓库必须配置显式 `trusted-humans`，否则默认 fail closed。
+`gate_logins` 是 Gate-issued 记录的发布者白名单，不是 `trusted-agents`；不要把该用户登录名放入 `trusted-agents`。默认 Action 引用是 `jesongit/gateflow@v1`；若需锁定到具体版本、改用自己的发布仓库或其他 ref，使用 `--action-ref`，并先确认 Target 能访问该 Action。个人仓库的 User-type owner 默认是 Trusted Human，因此通常不需要填写 `trusted-humans`。Organization 仓库必须配置显式 `trusted-humans`，否则默认 fail closed。
 
 确认 GitHub Settings → Actions → General 中 Actions 未被禁用，然后提交：
 

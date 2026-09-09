@@ -28,8 +28,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 
-/** Placeholder reference written in templates/workflow.yml. */
-export const DEFAULT_ACTION_REF = 'jesongit/gateflow@v0';
+/** Default published reference written in templates/workflow.yml. */
+export const DEFAULT_ACTION_REF = 'jesongit/gateflow@v1';
 export const DEFAULT_WORKFLOW_FILE = 'ai-workflow.yml';
 export const DEFAULT_INSTALL_MODE = 'existing';
 export const GITHUB_API_BASE = 'https://api.github.com';

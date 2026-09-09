@@ -23,9 +23,9 @@ npm ci
 
 ---
 
-## 1. 发布步骤清单（未来实际执行用）
+## 1. 发布步骤清单（V1.0.0 已发布；后续版本沿用）
 
-假设发布 `v1.0.0`（V1 首个公开版本）。V1 有**两个消费入口**：
+`v1.0.0` 已作为 V1 首个公开版本发布，`v1.0.0` 与 `v1` ref 均已创建并推送。后续版本按本节步骤执行。V1 有**两个消费入口**：
 
 ```text
 Gate Action：  action.yml → dist/index.js（目标仓库 workflow 的 `uses:` 引用）
@@ -116,7 +116,7 @@ git push origin v1.0.0
 
 ### Step 5：创建 GitHub Release
 
-在 GitHub 上基于 `v1.0.0` tag 创建 Release。Release notes 至少包含：
+V1.0.0 Release 已基于 `v1.0.0` tag 创建。后续版本在 GitHub 上基于对应 tag 创建 Release 时，Release notes 至少包含：
 
 - 本次行为变化摘要（含 `GATE_VERSION` 从 / 到）；
 - 协议状态声明：Gate-issued records 为 **schema 2**，Workspace Protocol 为 **schema 3**，`gateflow.config.yml` 为 `version: 1`；当前实现没有 `protocol/*.json` 镜像；
@@ -125,7 +125,7 @@ git push origin v1.0.0
 
 ### Step 6：固定 Action 引用
 
-Bootstrap 当前默认生成 `uses: jesongit/gateflow@v0`，这是脚本中的真实默认值，不代表本轮已完成真实发布。实际发布前应在批准的发布流程中显式传入已存在且可访问的 ref，例如：
+Bootstrap 当前默认生成 `uses: jesongit/gateflow@v1`，对应已发布的 V1 浮动 ref。若要锁定到具体版本或使用其他已存在且可访问的 ref，可在批准的发布流程中显式传入，例如：
 
 ```bash
 node scripts/bootstrap.mjs \
@@ -135,11 +135,11 @@ node scripts/bootstrap.mjs \
   --generate-only --yes
 ```
 
-当前按显式 Action ref 发布；Bootstrap 的默认值仍是脚本中的 `jesongit/gateflow@v0`。
+常规 V1 接入使用默认的 `jesongit/gateflow@v1`；需要复现或审计固定版本时使用上面的显式 `--action-ref`，并先确认远端 ref 确实存在。
 
-> 下方保留的旧 tag 策略仅作发布历史，不是当前 V1 的接入指引；当前消费者应使用上面的显式 `--action-ref`，并先确认远端 ref 确实存在。
+> 下方关于旧 tag 的处置策略仅作发布历史，不是当前 V1 的接入指引。
 
-- 发布 tag 或浮动 tag 的创建、移动和可访问性必须在实际发布变更中单独验证，本文不预先宣称任何远端 tag 已存在。
+- 发布流程仍需在实际发布变更中单独验证 tag 或浮动 tag 的创建、移动和可访问性；当前 V1 的 `v1` 与 `v1.0.0` ref 已发布并可供消费者引用。
 - **`@v0` 的处置**：`v0` **停留在最后一个 V0 release commit 不再移动**——V1 引入了新的组件（Driver）与新的交互边界（Workspace Protocol），属于消费者可感知的架构变更，不应该静默浮动给仍按 V0 文档接入的仓库。仍写 `@v0` 的消费者拿到的是最后的 V0 行为；迁移到 V1 按 [usage.md](usage.md) "从 V0 迁移"与 [integration.md](integration.md) Part 2 执行；
 - **消费者写法**：`uses: <owner>/gateflow@v1`（自动获得 v1.x 内的全部修复与新能力）。想锁死版本可以把 ref 写成完整 tag（如 `@v1.0.0`），但常规使用不需要；
 - **何时引入 `@v2`**：只有发生协议升级（Gate schema / Workspace schema → 2、marker 后缀变更、命令 / 迁移表 / config 语义破坏性变更）时冻结被打破——届时引入新浮动 tag，`v1` 停留在最后一个冻结版本。
