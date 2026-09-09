@@ -69,6 +69,7 @@ export async function runReleaseE2E(argv = process.argv.slice(2), deps = {}) {
     const actionRef = refIndex >= 0 ? args[refIndex + 1] : context.actionRef;
     return bootstrapRepository(context, targetDir, repository, installMode, actionRef, { commit });
   };
+  context.configureGateToken = () => configureGateToken(context);
   let success = false;
   try {
     await runStage(context, 'preflight', () => runPreflight(context));

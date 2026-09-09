@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { bootstrapRepository } from '../../scripts/e2e/lifecycle.mjs';
+import { bootstrapRepository, configureGateToken } from '../../scripts/e2e/lifecycle.mjs';
 
 const ACTION_REF = 'jesongit/gateflow@06b5bf9123b9844a5dc6738003ed5f6717a08358';
 const LABELS = ['ai:planning', 'ai:review', 'ai:ready', 'ai:working', 'ai:blocked', 'ai:done'];
@@ -77,6 +77,43 @@ describe('release E2E bootstrap commit boundary', () => {
       expect(fixture.calls.filter((call) => call.program === 'git').map((call) => call.args[0])).toEqual(['status']);
     } finally {
       await rm(fixture.targetDir, { recursive: true, force: true });
+    }
+  });
+
+  it('patches a restored workflow to the secret without writing the token', async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), 'gateflow-token-test-'));
+    const token = 'test-token';
+    try {
+      await mkdir(join(targetDir, '.github', 'workflows'), { recursive: true });
+      await writeFile(join(targetDir, '.github', 'workflows', 'ai-workflow.yml'),
+        `uses: ${ACTION_REF}\nwith:\n  github-token: \${{ github.token }}\n`, 'utf8');
+      await writeFile(join(targetDir, 'gateflow.config.yml'), 'version: 1\n', 'utf8');
+      const context = {
+        repository: { fullName: 'jesongit/gateflow' },
+        paths: { clone: targetDir },
+        githubToken: token,
+        preflight: { login: 'jesongit' },
+        bootstrapResult: { workflowFile: 'ai-workflow.yml' },
+        driverEnv: {},
+        options: { timeoutMs: 5_000 },
+        log: vi.fn(),
+        gh: { run: vi.fn(async () => ({ stdout: '', stderr: '' })) },
+        runProcess: vi.fn(async () => ({ stdout: '', stderr: '' })),
+      };
+      await configureGateToken(context);
+      const workflow = await readFile(join(targetDir, '.github', 'workflows', 'ai-workflow.yml'), 'utf8');
+      const config = await readFile(join(targetDir, 'gateflow.config.yml'), 'utf8');
+      expect(workflow).toContain('${{ secrets.GATEFLOW_GATE_TOKEN }}');
+      expect(workflow).not.toContain(token);
+      expect(config).toContain('jesongit');
+      expect(config).not.toContain(token);
+      expect(context.log).not.toHaveBeenCalledWith(expect.stringContaining(token));
+      expect(context.gh.run).toHaveBeenCalledWith(
+        ['secret', 'set', 'GATEFLOW_GATE_TOKEN', '--repo', 'jesongit/gateflow'],
+        expect.objectContaining({ input: `${token}\n`, redactOutput: true }),
+      );
+    } finally {
+      await rm(targetDir, { recursive: true, force: true });
     }
   });
 });

@@ -372,7 +372,12 @@ export async function reconnectExistingProject(context, removed) {
     'test: reconnect gateflow',
   );
   if (afterReconnect.log[1] !== removed.afterRemoval.head) fail('reconnect commit changed history ordering');
-  return { ...removed, bootstrapResult, afterBootstrap, afterReconnect, actionRef };
+  const configure = value(context, 'configureGateToken');
+  if (typeof configure !== 'function') {
+    fail('shared context must provide configureGateToken before the second Issue');
+  }
+  const gateToken = await configure();
+  return { ...removed, bootstrapResult, afterBootstrap, afterReconnect, gateToken, actionRef };
 }
 
 function workflowRunner(context) {
