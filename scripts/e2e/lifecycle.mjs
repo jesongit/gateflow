@@ -7,6 +7,7 @@ import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 
 import {
   E2EError,
@@ -42,6 +43,71 @@ const EXPECTED_BOOTSTRAP_LABELS = Object.freeze([
 const GATE_TOKEN_SECRET = 'GATEFLOW_GATE_TOKEN';
 const GITHUB_TOKEN_EXPRESSION = '${{ github.token }}';
 const GATE_TOKEN_EXPRESSION = '${{ secrets.GATEFLOW_GATE_TOKEN }}';
+
+function addGateLogin(config, login) {
+  let parsed;
+  try {
+    parsed = parseYaml(config);
+  } catch (error) {
+    throw new E2EError(`gateflow.config.yml is not valid YAML: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  assert(parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed), 'gateflow.config.yml must contain a top-level mapping');
+  const existing = parsed.gate_logins;
+  if (existing !== undefined && (!Array.isArray(existing) || existing.some((value) => typeof value !== 'string' || value.length === 0))) {
+    throw new E2EError('gateflow.config.yml gate_logins must be a list of non-empty strings');
+  }
+  if (Array.isArray(existing) && existing.some((value) => value.toLowerCase() === login.toLowerCase())) {
+    return { content: config, changed: false };
+  }
+
+  const newline = config.includes('\r\n') ? '\r\n' : '\n';
+  const lines = config.split(/\r?\n/);
+  const keyIndex = lines.findIndex((line) => /^gate_logins\s*:/.test(line));
+  if (keyIndex < 0) {
+    const separator = config.length === 0 || config.endsWith('\n') ? '' : newline;
+    return {
+      content: `${config}${separator}gate_logins:${newline}  - ${JSON.stringify(login)}${newline}`,
+      changed: true,
+    };
+  }
+
+  const keyLine = lines[keyIndex];
+  const keyIndent = /^\s*/.exec(keyLine)[0].length;
+  const keyMatch = /^(\s*gate_logins\s*:\s*)(.*?)(\s*(?:#.*)?)$/.exec(keyLine);
+  const valueText = keyMatch?.[2]?.trim() ?? '';
+  if (valueText.startsWith('[') && valueText.endsWith(']')) {
+    const close = keyLine.lastIndexOf(']');
+    const prefix = keyLine.slice(0, close).replace(/\s+$/, '');
+    const inner = keyLine.slice(keyLine.indexOf('[') + 1, close).trim();
+    lines[keyIndex] = `${prefix}${inner.length > 0 ? `, ${JSON.stringify(login)}` : JSON.stringify(login)}]${keyMatch?.[3] ?? ''}`;
+    return { content: lines.join(newline), changed: true };
+  }
+
+  let insertAt = keyIndex + 1;
+  while (insertAt < lines.length) {
+    const line = lines[insertAt];
+    const trimmed = line.trim();
+    const indent = /^\s*/.exec(line)[0].length;
+    if (trimmed === '' || trimmed.startsWith('#') || indent > keyIndent) insertAt += 1;
+    else break;
+  }
+  lines.splice(insertAt, 0, `${' '.repeat(keyIndent + 2)}- ${JSON.stringify(login)}`);
+  return { content: lines.join(newline), changed: true };
+}
+
+function verifyGateLogin(config, login) {
+  let parsed;
+  try {
+    parsed = parseYaml(config);
+  } catch (error) {
+    throw new E2EError(`updated gateflow.config.yml is not valid YAML: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const logins = parsed?.gate_logins;
+  assert(Array.isArray(logins), 'updated gateflow.config.yml gate_logins is not a list');
+  assert(logins.some((value) => typeof value === 'string' && value.toLowerCase() === login.toLowerCase()),
+    `Driver configuration does not contain gate login ${login}`);
+  return logins;
+}
 
 export async function runStage(context, name, action) {
   context.currentStage = name;
@@ -352,12 +418,18 @@ export async function configureGateToken(context) {
   );
   const relativeWorkflowPath = join('.github', 'workflows', workflowFile);
   const workflowPath = resolve(context.paths.clone, relativeWorkflowPath);
+  const configPath = resolve(context.paths.clone, 'gateflow.config.yml');
+  const relativeConfigPath = 'gateflow.config.yml';
+  const login = context.preflight?.login;
+  assert(typeof login === 'string' && login.length > 0, 'preflight login is unavailable for Gate identity binding');
   let workflow;
   try {
     workflow = await readFile(workflowPath, 'utf8');
+    const config = await readFile(configPath, 'utf8');
     const replacementCount = workflow.split(GITHUB_TOKEN_EXPRESSION).length - 1;
     assert(replacementCount > 0, `workflow ${workflowPath} has no exact ${GITHUB_TOKEN_EXPRESSION} expression`);
     const updatedWorkflow = workflow.replaceAll(GITHUB_TOKEN_EXPRESSION, GATE_TOKEN_EXPRESSION);
+    const configUpdate = addGateLogin(config, login);
 
     await context.gh.run(['secret', 'set', GATE_TOKEN_SECRET, '--repo', repository], {
       cwd: context.root,
@@ -366,7 +438,8 @@ export async function configureGateToken(context) {
       redactOutput: true,
     });
     await writeFile(workflowPath, updatedWorkflow, 'utf8');
-    await context.runProcess('git', ['add', '--', relativeWorkflowPath], {
+    if (configUpdate.changed) await writeFile(configPath, configUpdate.content, 'utf8');
+    await context.runProcess('git', ['add', '--', relativeWorkflowPath, relativeConfigPath], {
       cwd: context.paths.clone,
       env: context.driverEnv,
       timeoutMs: context.options.timeoutMs,
@@ -390,9 +463,11 @@ export async function configureGateToken(context) {
     });
 
     const verifiedWorkflow = await readFile(workflowPath, 'utf8');
+    const verifiedConfig = await readFile(configPath, 'utf8');
     assert(!verifiedWorkflow.includes(GITHUB_TOKEN_EXPRESSION), `workflow still contains ${GITHUB_TOKEN_EXPRESSION}`);
     const verifiedCount = verifiedWorkflow.split(GATE_TOKEN_EXPRESSION).length - 1;
     assert(verifiedCount === replacementCount, `workflow replacement count changed: expected ${replacementCount}, received ${verifiedCount}`);
+    const driverGateLogins = verifyGateLogin(verifiedConfig, login);
     const result = {
       status: 'passed',
       secret: { status: 'passed', name: GATE_TOKEN_SECRET, repository },
@@ -402,6 +477,13 @@ export async function configureGateToken(context) {
         workflowFile,
         replaced: replacementCount,
         expression: GATE_TOKEN_EXPRESSION,
+      },
+      config: {
+        status: 'passed',
+        path: configPath,
+        gateLogin: login,
+        gateLogins: driverGateLogins,
+        changed: configUpdate.changed,
       },
       commit: { status: 'passed' },
       push: { status: 'passed' },
@@ -413,6 +495,7 @@ export async function configureGateToken(context) {
       status: 'failed',
       secret: { status: 'unknown', name: GATE_TOKEN_SECRET, repository },
       workflow: { status: 'failed', path: workflowPath, workflowFile },
+      config: { status: 'failed', path: configPath, gateLogin: login },
     };
     throw error;
   }
