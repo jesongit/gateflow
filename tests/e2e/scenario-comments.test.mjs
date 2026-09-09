@@ -5,6 +5,7 @@ import {
   issueView as workflowIssueView,
 } from '../../scripts/e2e/scenarios/workflow.mjs';
 import {
+  approvalRecordCommentId,
   issueComments as securityIssueComments,
   readIssueView as securityIssueView,
 } from '../../scripts/e2e/scenarios/security.mjs';
@@ -27,6 +28,11 @@ function fakeContext() {
 }
 
 describe('release E2E issue comment readers', () => {
+  it('binds Driver execute tasks to the Gate approval record comment', () => {
+    expect(approvalRecordCommentId({ command: { id: 11 }, comment: { id: 12 } })).toBe(12);
+    expect(() => approvalRecordCommentId({ command: { id: 11 } })).toThrow('no numeric comment id');
+  });
+
   it('uses REST numeric database IDs in workflow and security readers', async () => {
     const { context, calls } = fakeContext();
     const workflowIssue = await workflowIssueView(context, 'jesongit/gateflow', 1);

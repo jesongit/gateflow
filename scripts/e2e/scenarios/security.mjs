@@ -632,6 +632,15 @@ function assertExecuteBinding(task, expected) {
   }
 }
 
+/** Driver task approval_comment_id binds the Gate approval record comment. */
+export function approvalRecordCommentId(approval) {
+  const id = Number(approval?.comment?.id);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    throw new Error('[security] Gate approval record has no numeric comment id');
+  }
+  return id;
+}
+
 async function prepareCurrentExecute(context, repository, workspace, protocol) {
   const issue = await createIssue(
     context,
@@ -672,7 +681,7 @@ async function prepareCurrentExecute(context, repository, workspace, protocol) {
     issueNumber,
     workflowEpoch: planned.epoch.record.workflow_epoch,
     planCommentId: reviewed.plan.id,
-    approvalCommentId: approvalCommand.id,
+    approvalCommentId: approvalRecordCommentId(ready.approval),
     repository,
     workspace,
   });
@@ -698,7 +707,7 @@ async function prepareCurrentExecute(context, repository, workspace, protocol) {
     issue: { ...issue, number: issueNumber },
     epoch: planned.epoch.record,
     plan: { taskId: planTaskId, comment: reviewed.plan, sync: planSync },
-    approval: { command: approvalCommand, record: ready.approval.record },
+    approval: { command: approvalCommand, comment: ready.approval.comment, record: ready.approval.record },
     execute: { taskId: executeTaskId, task: executeTask, tracker: working.tracker, sync: trackerSync },
     mutation,
     workingIssue: working.issue,
@@ -800,7 +809,7 @@ async function realOldReport(context) {
         epoch: current.epoch,
         taskId: currentTaskId,
         planCommentId: current.plan.comment.id,
-        approvalCommentId: current.approval.command.id,
+        approvalCommentId: approvalRecordCommentId(current.approval),
         trackerCommentId: current.execute.tracker.id,
         staleReportCommentId: staleReport.id,
         staleObservedIssue: staleObserved.issue,
