@@ -106,6 +106,7 @@ export function runProcess(program, args = [], options = {}) {
         stderr: options.redactOutput ? '<redacted>' : stderr,
       }));
     });
+    if (options.input !== undefined) child.stdin?.end(options.input);
     child.once('close', (code, signal) => {
       if (settled) return;
       settled = true;

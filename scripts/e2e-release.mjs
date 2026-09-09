@@ -7,6 +7,7 @@ import { createReleaseContext, E2EError } from './e2e/context.mjs';
 import {
   cleanup,
   bootstrapRepository,
+  configureGateToken,
   createRepository,
   prepareAgentWorkspace,
   resolveScenarioModules,
@@ -79,6 +80,7 @@ export async function runReleaseE2E(argv = process.argv.slice(2), deps = {}) {
     context.controlWorkspace = context.paths.clone;
     context.targetWorkspace = context.paths.clone;
     await runStage(context, 'Bootstrap', () => bootstrapRepository(context));
+    await runStage(context, 'Gate token configuration', () => configureGateToken(context));
     if (options.prepareAgent) {
       const prepared = await runStage(context, 'prepare-agent', () => prepareAgentWorkspace(context));
       success = true;

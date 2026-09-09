@@ -3,7 +3,7 @@
  * repository lifecycle → cleanup.  Remote creation is intentionally below all
  * preconditions so a failing local check cannot leave a GitHub repository.
  */
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -39,6 +39,9 @@ function escapeRegex(value) {
 const EXPECTED_BOOTSTRAP_LABELS = Object.freeze([
   'ai:planning', 'ai:review', 'ai:ready', 'ai:working', 'ai:blocked', 'ai:done',
 ]);
+const GATE_TOKEN_SECRET = 'GATEFLOW_GATE_TOKEN';
+const GITHUB_TOKEN_EXPRESSION = '${{ github.token }}';
+const GATE_TOKEN_EXPRESSION = '${{ secrets.GATEFLOW_GATE_TOKEN }}';
 
 export async function runStage(context, name, action) {
   context.currentStage = name;
@@ -331,6 +334,86 @@ export async function bootstrapRepository(
       actionRef,
     };
     context.bootstrapResult = result;
+    throw error;
+  }
+}
+
+/** Configure the disposable repository to pass the Gate token to Bootstrap's workflow. */
+export async function configureGateToken(context) {
+  assert(context.repository !== null, 'repository must exist before Gate token configuration');
+  assert(typeof context.paths.clone === 'string', 'clone workspace must exist before Gate token configuration');
+  assert(typeof context.githubToken === 'string' && context.githubToken.length > 0, 'GitHub token is unavailable for Gate token configuration');
+
+  const repository = context.repository.fullName;
+  const workflowFile = context.bootstrapResult?.workflowFile ?? context.workflowFile ?? 'ai-workflow.yml';
+  assert(
+    /^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:yml|yaml)$/.test(workflowFile),
+    `invalid Bootstrap workflow filename: ${workflowFile}`,
+  );
+  const relativeWorkflowPath = join('.github', 'workflows', workflowFile);
+  const workflowPath = resolve(context.paths.clone, relativeWorkflowPath);
+  let workflow;
+  try {
+    workflow = await readFile(workflowPath, 'utf8');
+    const replacementCount = workflow.split(GITHUB_TOKEN_EXPRESSION).length - 1;
+    assert(replacementCount > 0, `workflow ${workflowPath} has no exact ${GITHUB_TOKEN_EXPRESSION} expression`);
+    const updatedWorkflow = workflow.replaceAll(GITHUB_TOKEN_EXPRESSION, GATE_TOKEN_EXPRESSION);
+
+    await context.gh.run(['secret', 'set', GATE_TOKEN_SECRET, '--repo', repository], {
+      cwd: context.root,
+      timeoutMs: context.options.timeoutMs,
+      input: `${context.githubToken}\n`,
+      redactOutput: true,
+    });
+    await writeFile(workflowPath, updatedWorkflow, 'utf8');
+    await context.runProcess('git', ['add', '--', relativeWorkflowPath], {
+      cwd: context.paths.clone,
+      env: context.driverEnv,
+      timeoutMs: context.options.timeoutMs,
+      redactOutput: true,
+    });
+    await context.runProcess('git', [
+      '-c', 'user.name=GateFlow Release E2E',
+      '-c', 'user.email=gateflow-release-e2e@example.invalid',
+      'commit', '-m', 'test: configure Gate token secret',
+    ], {
+      cwd: context.paths.clone,
+      env: context.driverEnv,
+      timeoutMs: context.options.timeoutMs,
+      redactOutput: true,
+    });
+    await context.runProcess('git', ['push', '--set-upstream', 'origin', 'HEAD'], {
+      cwd: context.paths.clone,
+      env: context.driverEnv,
+      timeoutMs: context.options.timeoutMs,
+      redactOutput: true,
+    });
+
+    const verifiedWorkflow = await readFile(workflowPath, 'utf8');
+    assert(!verifiedWorkflow.includes(GITHUB_TOKEN_EXPRESSION), `workflow still contains ${GITHUB_TOKEN_EXPRESSION}`);
+    const verifiedCount = verifiedWorkflow.split(GATE_TOKEN_EXPRESSION).length - 1;
+    assert(verifiedCount === replacementCount, `workflow replacement count changed: expected ${replacementCount}, received ${verifiedCount}`);
+    const result = {
+      status: 'passed',
+      secret: { status: 'passed', name: GATE_TOKEN_SECRET, repository },
+      workflow: {
+        status: 'passed',
+        path: workflowPath,
+        workflowFile,
+        replaced: replacementCount,
+        expression: GATE_TOKEN_EXPRESSION,
+      },
+      commit: { status: 'passed' },
+      push: { status: 'passed' },
+    };
+    context.gateTokenResult = result;
+    return result;
+  } catch (error) {
+    context.gateTokenResult = {
+      status: 'failed',
+      secret: { status: 'unknown', name: GATE_TOKEN_SECRET, repository },
+      workflow: { status: 'failed', path: workflowPath, workflowFile },
+    };
     throw error;
   }
 }
