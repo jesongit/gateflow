@@ -18,7 +18,11 @@ import { waitFor as boundedWaitFor } from '../wait.mjs';
 const execFile = promisify(nodeExecFile);
 const ROOT = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const GATEFLOW_LABEL = /^ai:/i;
-const EXPECTED_HELLO = 'hello gateflow\nworld\n';
+
+/** Preserve the actual project baseline when checking an append-line result. */
+export function expectedAppendedContent(baseContent, line) {
+  return `${baseContent}${baseContent.length > 0 && !baseContent.endsWith('\n') ? '\n' : ''}${line}\n`;
+}
 
 function fail(message) {
   throw new Error(`[reconnect] ${message}`);
@@ -403,6 +407,8 @@ export async function runSecondIssue(context, reconnect) {
   }
   const repository = reconnect.repository;
   const targetDir = reconnect.targetDir;
+  const baseHello = await readFile(join(targetDir, 'hello.txt'), 'utf8');
+  const expectedHello = expectedAppendedContent(baseHello, 'world');
   let driverToken = context.env?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
   if (!driverToken && context.gh && typeof context.gh.text === 'function') {
     driverToken = await context.gh.text(['auth', 'token'], {
@@ -445,16 +451,16 @@ export async function runSecondIssue(context, reconnect) {
     title: 'E2E: append world',
     body: 'Append a second line to hello.txt: world',
     mutation: workflowContext.mutation,
-    helloContent: EXPECTED_HELLO,
-    expectedFile: { path: 'hello.txt', content: EXPECTED_HELLO },
+    helloContent: expectedHello,
+    expectedFile: { path: 'hello.txt', content: expectedHello },
     reconnect,
   });
   // Keep the original context object visible to a harness, but pass the
   // normalized Control/Target bindings to the workflow scenario.
   if (result === undefined) fail('workflow scenario returned no result');
   const local = await readOptional(join(targetDir, 'hello.txt'));
-  if (local !== EXPECTED_HELLO) fail(`second Issue did not leave hello.txt as two lines: ${JSON.stringify(local)}`);
-  return { ...result, title: 'E2E: append world', expectedHello: EXPECTED_HELLO };
+  if (local !== expectedHello) fail(`second Issue did not leave hello.txt with the expected append result: ${JSON.stringify(local)}`);
+  return { ...result, title: 'E2E: append world', expectedHello };
 }
 
 /** Entry point used by scripts/e2e-release.mjs. */
@@ -467,5 +473,3 @@ export async function run(context) {
 }
 
 export const runReconnectScenario = run;
-
-export { EXPECTED_HELLO };

@@ -3,11 +3,17 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { reconnectExistingProject } from '../../scripts/e2e/scenarios/reconnect.mjs';
+import { expectedAppendedContent, reconnectExistingProject } from '../../scripts/e2e/scenarios/reconnect.mjs';
 
 const ACTION_REF = 'jesongit/gateflow@240cf858c075162311acd9ba242584cff01a47e7';
 
 describe('reconnect Gate token configuration', () => {
+  it('derives the append assertion from the checked-out business baseline', () => {
+    expect(expectedAppendedContent('hello from GateFlow release E2E\n', 'world'))
+      .toBe('hello from GateFlow release E2E\nworld\n');
+    expect(expectedAppendedContent('base', 'world')).toBe('base\nworld\n');
+  });
+
   it('configures the restored workflow after the explicit reconnect push', async () => {
     const targetDir = await mkdtemp(join(tmpdir(), 'gateflow-reconnect-test-'));
     const events = [];
