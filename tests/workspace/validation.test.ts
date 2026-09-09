@@ -19,10 +19,12 @@ function baseTask(overrides: Record<string, unknown> = {}): Record<string, unkno
   return {
     schema: 3,
     task_id: TASK_ID,
-    repository: 'octo/repo',
+    control_repository: 'octo/repo',
     repository_id: 123,
     issue_number: 7,
     workflow_epoch: 'wf_abc123def456',
+    target_repository: null,
+    target_workspace: null,
     mode: 'plan',
     reason: 'planning',
     created_at: '2026-09-06T10:00:00Z',
@@ -73,6 +75,15 @@ describe('validateTaskFile', () => {
 
   it('rejects a non-null plan_comment_id on plan tasks', () => {
     expect(validateTaskFile(baseTask({ plan_comment_id: 5 })).ok).toBe(false);
+  });
+
+  it('requires explicit Control/Target fields and rejects unsafe target metadata', () => {
+    expect(validateTaskFile(baseTask({ control_repository: 'octo/repo/extra' })).ok).toBe(false);
+    expect(validateTaskFile(baseTask({ target_repository: 'not a slug' })).ok).toBe(false);
+    expect(validateTaskFile(baseTask({ target_workspace: '' })).ok).toBe(false);
+    expect(validateTaskFile(baseTask({ target_workspace: 'relative/project' })).ok).toBe(false);
+    expect(validateTaskFile(baseTask({ target_workspace: 'C:\\project\\..\\escape' })).ok).toBe(false);
+    expect(validateTaskFile(baseTask({ repository_id: 999 })).ok).toBe(false);
   });
 });
 
@@ -141,9 +152,33 @@ describe('validateResult / validateResultForTask', () => {
 describe('validateCurrent', () => {
   it('accepts a valid pointer and rejects junk', () => {
     expect(
-      validateCurrent({ schema: 3, task_id: TASK_ID, mode: 'plan', issue_number: 7, updated_at: '2026-09-06T10:00:00Z' }).ok,
+      validateCurrent({
+        schema: 3,
+        task_id: TASK_ID,
+        mode: 'plan',
+        control_repository: 'octo/repo',
+        repository_id: 123,
+        issue_number: 7,
+        workflow_epoch: 'wf_abc123def456',
+        target_repository: null,
+        target_workspace: null,
+        updated_at: '2026-09-06T10:00:00Z',
+      }).ok,
     ).toBe(true);
-    expect(validateCurrent({ schema: 3, task_id: '../x', mode: 'plan', issue_number: 7, updated_at: '2026-09-06T10:00:00Z' }).ok).toBe(false);
+    expect(
+      validateCurrent({
+        schema: 3,
+        task_id: '../x',
+        mode: 'plan',
+        control_repository: 'octo/repo',
+        repository_id: 123,
+        issue_number: 7,
+        workflow_epoch: 'wf_abc123def456',
+        target_repository: null,
+        target_workspace: null,
+        updated_at: '2026-09-06T10:00:00Z',
+      }).ok,
+    ).toBe(false);
   });
 });
 
@@ -155,6 +190,10 @@ describe('validateDriverState', () => {
     mode: 'plan',
     issue_number: 7,
     workflow_epoch: 'wf_abc123def456',
+    control_repository: 'octo/repo',
+    repository_id: 123,
+    target_repository: null,
+    target_workspace: null,
     input_snapshot_sha256: 'a'.repeat(64),
   };
 
@@ -173,6 +212,23 @@ describe('validateDriverState', () => {
         schema: 3,
         updated_at: '2026-09-06T10:00:00Z',
         tasks: { [TASK_ID]: { ...record, status: 'synced' } },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it('requires target/control binding and binds an Executor marker to the same execute task', () => {
+    expect(
+      validateDriverState({
+        schema: 3,
+        updated_at: '2026-09-06T10:00:00Z',
+        tasks: { [TASK_ID]: { ...record, target_workspace: undefined } },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateDriverState({
+        schema: 3,
+        updated_at: '2026-09-06T10:00:00Z',
+        tasks: { [TASK_ID]: { ...record, executor_lock_task_id: TASK_ID } },
       }).ok,
     ).toBe(false);
   });

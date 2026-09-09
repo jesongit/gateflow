@@ -1,77 +1,179 @@
-# 接入指南（把 GateFlow 装进你的项目仓库）
+# 项目仓库接入指南
 
-目标：在一个新仓库完成 `安装 → 配置 → 创建 Issue → 规划 → 审批 → 执行 → 报告` 的闭环。只需 README + 本文即可完成，不需要理解历史版本。
+本文说明如何把 GateFlow 接入一个 Target Repository。它既适用于已经存在的项目，也适用于刚用 `gh` 创建的新项目；两者共用同一个 Bootstrap。个人入口仓库的创建、`gh` 登录和完整任务闭环见 [usage.md](usage.md)。
 
-## Part 1 · 接入 Gate（GitHub Action）
+## 1. 先区分 Control 与 Target
 
-### 1.1 前提：让目标仓库能引用 GateFlow
+* **Control Repository** 是保存入口 Issue 的个人仓库。创建项目或接入项目的 Plan、Approval、Tracker、Report 都回到入口 Issue。
+* **Target Repository** 是真正被创建或修改的业务仓库。
+* **Target Workspace** 是 Target Repository 的本地检出目录，Bootstrap 的 `--target-dir` / `--workdir` 指向这里。
 
-目标仓库的 workflow 通过 `uses:` 引用 GateFlow 仓库，三选一：
+普通单仓库任务中，Control 与 Target 可以相同；跨仓库项目任务中，入口 Issue 仍在 Control，代码和 Workflow 在 Target。当前 Driver 的 `control_repository`/`repository` 仍只解析一个 `owner/name`，执行某个 Control Issue 时，应让配置和 `--root` 指向 Control 仓库的本地工作区；Target 只能作为任务的 `--target-repository` / `--target-workspace` 元数据，不会改变评论回写的 Control Issue。
 
-1. **public 仓库**（最简单）：直接 `uses: <you>/gateflow@main`；
-2. **私有仓库 + Access 策略**：在 GateFlow 仓库 Settings → Actions → Access 里允许目标仓库；
-3. **内嵌**：把 gateflow 检出为目标仓库的子目录，用本地路径引用。
+## 2. 前提与权限
 
-### 1.2 bootstrap（幂等，不会覆盖已有文件）
-
-在**目标仓库的本地检出目录**里运行：
+准备 Node.js **≥ 24**、目标仓库的本地检出，以及已登录并有相应权限的 `gh`：
 
 ```bash
-node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHUB_TOKEN"
+node --version                 # v24 或更高
+gh auth login
+gh auth status
+gh repo view owner/target
 ```
 
-它会：创建 6 个 `ai:*` 标签（planning / review / ready / working / blocked / done）+ 生成 `.github/workflows/ai-workflow.yml`。检查生成的 workflow 后手动 commit + push。
+如果是新项目，先在已批准的范围内创建仓库，再检出：
 
-### 1.3 配置身份
+```bash
+gh repo create owner/new-project --private
+gh repo clone owner/new-project /path/to/new-project
+```
 
-在 workflow 中（bootstrap 已生成默认值，按需修改）：
+`gh` 不会自动取得额外权限；上述操作使用当前用户的授权。组织策略、仓库可见性、创建仓库、推送默认分支、修改权限和 Secrets 等都必须纳入 Plan 并经用户批准。
+
+## 3. 运行 Bootstrap
+
+先在 Target Workspace 做无副作用检查：
+
+```bash
+node /path/to/my-gateflow/scripts/bootstrap.mjs \
+  --repo owner/target \
+  --target-dir /path/to/target \
+  --install-mode existing \
+  --dry-run
+```
+
+`--workdir <dir>` 与 `--target-dir <dir>` 等价。`--dry-run` 只打印计划，不访问网络、不修改文件。
+
+检查计划后，按场景执行：
+
+```bash
+# 已有项目：增量接入
+export GITHUB_TOKEN="$(gh auth token)"
+node /path/to/my-gateflow/scripts/bootstrap.mjs \
+  --repo owner/existing-project \
+  --workdir /path/to/existing-project \
+  --install-mode existing \
+  --github-config \
+  --yes
+
+# 新项目：仓库已由 gh 创建后初始化
+node /path/to/my-gateflow/scripts/bootstrap.mjs \
+  --repo owner/new-project \
+  --workdir /path/to/new-project \
+  --install-mode new \
+  --github-config \
+  --yes
+unset GITHUB_TOKEN
+```
+
+PowerShell 可使用：
+
+```powershell
+$env:GITHUB_TOKEN = gh auth token
+node C:\path\to\my-gateflow\scripts/bootstrap.mjs --repo owner/target --target-dir C:\path\to\target --install-mode existing --github-config --yes
+$env:GITHUB_TOKEN = $null
+```
+
+Bootstrap 的实际选项为：
+
+| 选项 | 作用 |
+| --- | --- |
+| `--repo owner/name` | 目标仓库；也可从 `GITHUB_REPOSITORY` 读取 |
+| `--token <token>` | GitHub 配置用 token；也可从 `GITHUB_TOKEN` 读取 |
+| `--workdir <dir>` / `--target-dir <dir>` | 目标仓库检出目录，默认当前目录 |
+| `--install-mode existing 或 new` | 已有项目或新项目创建后的初始化模式 |
+| `--action-ref <ref>` | Workflow 的 Action 引用，默认 `jesongit/gateflow@v0` |
+| `--workflow-file <name>` | Workflow 文件名，默认 `ai-workflow.yml` |
+| `--github-config` | 检查仓库和写权限，并创建缺失的 6 个 `ai:*` 标签 |
+| `--no-github-config` | 显式跳过 GitHub 配置；默认也是跳过 |
+| `--generate-only` | 只生成本地文件，不访问网络；不能与 `--github-config` 同用 |
+| `--non-interactive` | 不询问确认；没有 `--yes` 时跳过未明确批准的本地写入 |
+| `--yes` / `-y` | 批准本次本地文件生成或增量更新 |
+| `--dry-run` | 只打印计划，不访问网络、不修改文件 |
+| `--help` | 显示 Bootstrap 帮助 |
+
+需要离线生成时，用 `--generate-only --yes`；需要完整 GitHub 配置时，显式用 `--github-config` 并提供 token。脚本不会创建、删除或覆盖仓库，也不会覆盖有差异的已有 Workflow。
+
+## 4. 检查生成结果并启用 Workflow
+
+Bootstrap 会按需生成或检查 `.github/workflows/ai-workflow.yml`、不含凭证的最小 `gateflow.config.yml`、`.gitignore` 中的 `.gateflow/`，以及（仅 `--github-config`）缺少的 6 个 `ai:*` 标签。
+
+提交前人工检查 Workflow：
 
 ```yaml
-uses: <you>/gateflow@main
+permissions:
+  issues: write
+  contents: read
+
 with:
-  github-token: ${{ secrets.GITHUB_TOKEN }}
-  trusted-humans: ''            # 额外可信人类（逗号分隔）；repo owner 永远可信
-  trusted-agents: 'gateflow-agent[bot]'   # Driver 的 bot 身份（发布协议评论用）
-  require-explicit-humans: 'true'         # Organization 仓库必须显式配置 trusted-humans
+  github-token: ${{ github.token }}
+  trusted-humans: ''
+  trusted-agents: ''
+  require-explicit-humans: 'true'
 ```
 
-> Driver 需要以某个 GitHub 身份发评论。个人项目最简单的方式：用 PAT 创建 `gateflow-agent[bot]` 风格的账户或 fine-grained token，并在 `trusted-agents` 里登记该登录名。该身份**只有 Driver 使用**，AI 永远接触不到。
+默认 Action 引用是 `jesongit/gateflow@v0`；若改用自己的发布仓库或 ref，使用 `--action-ref`，并先确认 Target 能访问该 Action。个人仓库的 User-type owner 默认是 Trusted Human，因此通常不需要填写 `trusted-humans`，也不要把同一用户登录名放入 `trusted-agents`。Organization 仓库必须配置显式 `trusted-humans`，否则默认 fail closed。
 
-## Part 2 · 安装本地 Driver
+确认 GitHub Settings → Actions → General 中 Actions 未被禁用，然后提交：
 
 ```bash
-git clone <you>/gateflow && cd gateflow
-npm install && npm run build        # dist/cli.js（bin: gateflow）
-export GITHUB_TOKEN=…               # Driver 专用 token（repo 权限）
+git status --short
+git add .github/workflows/ai-workflow.yml gateflow.config.yml .gitignore
+git commit -m "chore: enable GateFlow workflow"
+git push
 ```
 
-在**目标仓库的本地工作检出**里创建可选的 `gateflow.config.yml`（缺失即全默认）：
+若已有 Workflow 与模板完全一致，Bootstrap 会跳过；有差异时会警告并保留原文件。请人工审阅差异后再决定是否修改，不能让 Bootstrap 静默覆盖。
+
+## 5. 在 Target 中准备 Driver 与 Skill
+
+在保存 GateFlow 源码的本地检出目录执行一次：
+
+```bash
+npm ci
+npm run build
+npm link                         # 可选：安装本机 `gateflow` 命令
+```
+
+然后在 Control Workspace 中放置最小配置（也可以省略，让 Driver 从 git remote `origin` 解析）：
 
 ```yaml
 version: 1
-repository: owner/target     # 可省：默认从 git remote origin 解析
-trusted_humans: []           # Organization 仓库必须配置
+repository: owner/target
+# 或使用显式名称：control_repository: owner/target
 ```
 
-安装 AI Skill：把 `skills/gateflow/` 装入你的 AI 客户端（ChatGPT / ZCode 等）。只有一个 Skill，`plan` 与 `execute` 是它的两种模式。
+将同一检出目录的 `skills/gateflow` 安装到 AI 客户端。当前只有这一个 Skill，使用 `plan` 模式生成计划、使用 `execute` 模式开发并生成报告。AI 默认只读写 `.gateflow/`；本地 `GITHUB_TOKEN` 只放在 Driver 进程环境中，不写入配置或任务文件。
 
-## Part 3 · 冒烟闭环（10 分钟验证）
+## 6. Target 冒烟验证
 
-1. 在目标仓库创建一个测试 Issue（写一个真实的小需求）；
-2. 评论 `/ai-plan` → 等 Gate Action 跑完 → Issue 应带 `ai:planning`，且出现一条 Gate 记录评论（`gateflow:workflow:v2`）；
-3. `gateflow run` → 应输出任务目录与提示词；
-4. 把提示词粘给 AI → AI 读写 `.gateflow/tasks/<task-id>/`，产出 plan.md + result.json；
-5. `gateflow sync` → Issue 出现 Plan 评论，标签变 `ai:review`；
-6. `gateflow sync`（再跑一次）→ 应无重复发布（幂等验证）；
-7. 评论 `/approve <plan-comment-id>` → Gate 固化 approval 记录，标签变 `ai:ready`；
-8. `gateflow run` → execute 任务 + 新提示词 → AI 执行并写 report.md + result.json；
-9. `gateflow sync` → Tracker 与 Report 评论出现，标签 `ai:working` → `ai:done`；
-10. 检查结果，关闭 Issue。完成。
+在 Target Repository 创建一个无破坏性测试 Issue：
 
-## Part 4 · CI 提示
+```bash
+gh issue create --repo owner/target \
+  --title "GateFlow smoke test" \
+  --body "新增 SMOKE.md 并在报告列出验证命令；不要修改 CI、权限或 Secrets。"
+gh issue comment --repo owner/target 12 --body "/ai-plan"  # 将 12 换成新 Issue 编号
+```
 
-- Gate workflow 由 `issue_comment`（created/edited）与 `issues` 事件触发（bootstrap 已配置）；
-- 无需为 Driver 配置任何 CI——它只在你本地按需运行；
-- GateFlow 自身仓库的 CI（typecheck + test + check:dist）可作为接入后的健康参照。
+等待 Gate Action 完成并确认 `ai:planning`，再在 Control Workspace 执行：
 
-遇到问题：先看 Gate 的 Actions 日志，再 `gateflow status` 看本地状态；恢复语义速查见 [driver.md](driver.md) §5。
+```bash
+export GITHUB_TOKEN="$(gh auth token)"
+gateflow run --root /path/to/target --config /path/to/target/gateflow.config.yml
+# 把提示词粘贴给 gateflow Skill（plan 模式）
+gateflow sync --root /path/to/target --config /path/to/target/gateflow.config.yml
+```
+
+检查 Plan 评论后，在 Issue 中评论 `/approve <plan-comment-id>`，等待 `ai:ready`，然后执行：
+
+```bash
+gateflow run --root /path/to/target --config /path/to/target/gateflow.config.yml
+# 把新提示词粘贴给 gateflow Skill（execute 模式）
+gateflow sync --root /path/to/target --config /path/to/target/gateflow.config.yml  # 首轮确认/发布 Tracker
+# 等待 Gate 接受 ai:working 后再执行一次，才会发布 Report
+gateflow sync --root /path/to/target --config /path/to/target/gateflow.config.yml
+unset GITHUB_TOKEN
+```
+
+预期结果是 Plan 评论、Tracker/Report 评论和 `ai:done`；人工检查后再关闭 Issue。重复 `gateflow sync` 应通过远端调和而不重复发布。Driver 的运行环境、配置和恢复语义见 [driver.md](driver.md)，日常场景见 [usage.md](usage.md)。

@@ -59,6 +59,19 @@ export function validateIdentityConfig(input: IdentityConfigInput): IdentityConf
   }
 
   const isPersonalOwner = input.ownerType === 'User';
+  // In a personal repository the verified owner is implicitly classified as
+  // the configured Trusted Human by the permission policy. Do not allow that
+  // same login to be configured as a Trusted Agent: the GitHub login is an
+  // authorization identifier, not strong proof of a human/agent boundary.
+  if (isPersonalOwner && agents.some((agent) => loginEquals(agent, input.owner))) {
+    return {
+      ok: false,
+      reason:
+        `repository owner "${input.owner}" is implicitly a Trusted Human for a personal ` +
+        'repository and cannot also be configured as a Trusted Agent. The two roles must ' +
+        'remain separate; refusing to run.',
+    };
+  }
   if (!isPersonalOwner && humans.length === 0 && input.requireExplicitHumans) {
     return {
       ok: false,

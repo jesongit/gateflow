@@ -2,6 +2,10 @@
 
 > ⚠️ **V0 架构文档（历史）— V1 架构见 [docs/architecture-v1.md](architecture-v1.md)。**
 >
+> **当前简化版 V1 以本文档之外的现行说明为准：** Gate-issued records 使用 schema 2，Workspace 机器文件使用 schema 3；运行模型为 Control Repository/Target Repository/Target Workspace、Executor lock，以及单一 `skills/gateflow` 的 `plan`/`execute` 流程。请以 [README.md](../README.md)、[docs/protocol.md](protocol.md) 和 [docs/workspace-protocol.md](workspace-protocol.md) 为当前实现依据。
+>
+> 下方正文全部是历史方案，旧角色、目录、命令和协议文件名仅用于迁移追溯，不应复原或照抄。
+>
 > V1 相对本文（V0）的核心变化：
 >
 > 1. 新增本地确定性 **Driver**（`gateflow` CLI）：任务发现、inbox 派发、outbox 校验与 GitHub 同步；V0 的"人手动对 AI 说'规划 / 执行 #123'"不再是标准流程；

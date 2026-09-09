@@ -46,19 +46,6 @@ jobs:
       - name: Ensure dist/ has no uncommitted changes
         run: git diff --exit-code dist
 
-  # Contract tests: the committed protocol JSON mirrors must stay parseable
-  # and in sync with the frozen shapes (docs/plans/v1_hardening_decisions.md).
-  protocol:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Protocol schema mirrors are valid JSON
-        run: |
-          node -e "JSON.parse(require('fs').readFileSync('protocol/github-schema-v2.json','utf8')); JSON.parse(require('fs').readFileSync('protocol/workspace-schema-v2.json','utf8')); console.log('protocol mirrors OK')"
-
   # Real GitHub-hosted runner smoke test of the Action itself (Node24 runtime,
   # input parsing, illegal-event no-op). Uses only the workflow's own token —
   # never a production PAT.

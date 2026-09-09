@@ -29,16 +29,20 @@
  */
 import { MARKERS } from '../gate/protocol';
 import { parseTrackerStatus, type TrackerStatus } from '../gate/tracker';
+import { parseTaskId } from '../workspace/protocol';
 
 /**
- * Matches the dispatch-id HTML comment and captures the id (schema 3 grammar
- * `gf_r<repo_id>_i<issue>_w<epoch_code>_<mode>_<revision>`; the mode tokens
- * are `plan` | `execute`, and the epoch segment is optional in the pattern so
- * comments published by earlier schema versions still parse). Not anchored to
- * a line: discovery is string-level.
+ * Matches the dispatch-id HTML comment and captures a schema-3 id. The mode
+ * tokens are exactly `plan` | `execute`; old `consumer` / `executor` ids and
+ * ids without the epoch segment are intentionally not protocol comments.
+ * Not anchored to a line: discovery is string-level, while the captured token
+ * is checked again by `parseTaskId` in `findDispatchIdInComment`.
  */
 export const DISPATCH_ID_COMMENT_PATTERN: RegExp =
-  /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+(?:_w[0-9a-z]{12})?_(?:plan|execute|consumer|executor)_\S+) -->/;
+  /<!-- gateflow:dispatch-id: (gf_r\d+_i\d+_w[0-9a-z]{12}_(?:plan_\d+|execute_p\d+)) -->/;
+
+const DISPATCH_ID_OCCURRENCE = /<!-- gateflow:dispatch-id: (\S+) -->/g;
+const DISPATCH_ID_TOKEN = '<!-- gateflow:dispatch-id:';
 
 /**
  * Matches a tracker Status machine line: literal bold label, optional
@@ -49,7 +53,54 @@ export const STATUS_LINE_PATTERN: RegExp = /^\*\*Status:\*\*\s*(.*)$/;
 
 /** Extracts the dispatch id from a comment body; null when absent/junk. */
 export function findDispatchIdInComment(body: string): string | null {
-  return DISPATCH_ID_COMMENT_PATTERN.exec(body)?.[1] ?? null;
+  let insideFence = false;
+  const ids: string[] = [];
+  let malformedOccurrence = false;
+
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      insideFence = !insideFence;
+      continue;
+    }
+    if (insideFence) continue;
+
+    const matches = [...trimmed.matchAll(DISPATCH_ID_OCCURRENCE)];
+    for (const match of matches) {
+      const candidate = match[1] ?? '';
+      if (isSchema3DispatchId(candidate)) {
+        ids.push(candidate);
+      } else {
+        malformedOccurrence = true;
+      }
+    }
+    // A dispatch token without the exact closing shape is malformed rather
+    // than an excuse to accept another valid-looking occurrence on the line.
+    if (trimmed.split(DISPATCH_ID_TOKEN).length - 1 > matches.length) {
+      malformedOccurrence = true;
+    }
+  }
+
+  return ids.length === 1 && !malformedOccurrence ? (ids[0] ?? null) : null;
+}
+
+function isSchema3DispatchId(id: string): boolean {
+  const parsed = parseTaskId(id);
+  if (
+    parsed === null ||
+    !Number.isSafeInteger(parsed.repositoryId) ||
+    parsed.repositoryId < 1 ||
+    !Number.isSafeInteger(parsed.issueNumber) ||
+    parsed.issueNumber < 1
+  ) {
+    return false;
+  }
+  // Keep the mode/revision relationship aligned with the schema-3 builders;
+  // parseTaskId owns the overall grammar, this only checks its cross-field
+  // meaning for comments.
+  return parsed.mode === 'plan'
+    ? /^\d+$/.test(parsed.revision)
+    : /^p[1-9]\d*$/.test(parsed.revision);
 }
 
 /** The dispatch-id HTML comment line for a dispatch. */

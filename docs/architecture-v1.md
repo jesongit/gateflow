@@ -1,7 +1,7 @@
 ﻿# GateFlow V1 架构（冻结）
 
-> 本文是 V1 重构的架构冻结文档。组件边界、职责与禁令以本文为准。
-> 通信协议细节见 [docs/workspace-protocol.md](workspace-protocol.md)；V0 Gate 协议见 [docs/protocol.md](protocol.md)。
+> **[HISTORICAL]** 本文是简化版 V1 之前的架构冻结稿，仅保留迁移和设计追溯价值；不作为当前实现依据。
+> 当前实现以 [README.md](../README.md)、[docs/protocol.md](protocol.md) 和 [docs/workspace-protocol.md](workspace-protocol.md) 为准：Gate-issued records 使用 schema 2，Workspace 机器文件使用 schema 3，运行模型为 Control Repository/Target Repository/Target Workspace、Executor lock、单一 `skills/gateflow` 的 `plan`/`execute` 与 Manual Activation。
 
 ## 1. V1 定位
 

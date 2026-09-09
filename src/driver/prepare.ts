@@ -21,10 +21,18 @@
  *   anywhere) — it only prepares the workspace.
  */
 import type { RepositoryInfo } from '../github/client';
+import { access } from 'node:fs/promises';
 import type { Mode, TaskFile } from '../workspace/protocol';
 import { makeExecuteTaskId, makePlanTaskId } from '../workspace/protocol';
 import { resolveWorkspace } from '../workspace/paths';
 import type { WorkspacePaths } from '../workspace/paths';
+import {
+  assertTargetOutsideRuntime,
+  isRepositorySlug,
+  sameRepositorySlug,
+  workspaceKey,
+} from '../workspace/binding';
+import type { TargetBinding } from '../workspace/binding';
 import {
   inputSnapshotSha256,
   writeCurrent,
@@ -43,6 +51,11 @@ import { buildTaskPrompt } from './prompts';
 import type { TaskIntent } from './intent';
 import type { Discovery } from './discovery';
 import type { DriverDeps } from './driver';
+import {
+  acquireExecutorLock,
+  executorLockFile,
+  releaseExecutorLock,
+} from './workspace-lock';
 
 /** Result of one task preparation attempt for one intent. */
 export interface PrepareOutcome {
@@ -56,8 +69,102 @@ export interface PrepareOutcome {
   issueTitle?: string;
 }
 
+/** Explicit target selection accepted by `run`; omitted means inherit/unknown. */
+export interface TargetSelection {
+  targetRepository?: string | null;
+  targetWorkspace?: string | null;
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function controlRepository(repositoryInfo: RepositoryInfo): string {
+  return `${repositoryInfo.owner}/${repositoryInfo.name}`;
+}
+
+/**
+ * Resolve target metadata without reading any global/current pointer. A
+ * target supplied for a task is either explicit or inherited from a prior
+ * task with the same Control Issue + epoch. Plan tasks may remain unknown;
+ * an unconfigured execute task retains the legacy, explicit control-root
+ * target so existing single-repository work remains usable.
+ */
+function resolveTargetBinding(
+  deps: DriverDeps,
+  repositoryInfo: RepositoryInfo,
+  intent: TaskIntent,
+  state: Awaited<ReturnType<typeof readDriverState>>,
+  selection: TargetSelection = {},
+): TargetBinding {
+  const control = controlRepository(repositoryInfo);
+  const prior = Object.values(state.tasks)
+    .filter(
+      (record) =>
+        record.repository_id === repositoryInfo.id &&
+        sameRepositorySlug(record.control_repository, control) &&
+        record.issue_number === intent.issueNumber &&
+        record.workflow_epoch === intent.epoch,
+    )
+    .sort((left, right) => (right.last_sync_at ?? '').localeCompare(left.last_sync_at ?? ''))[0];
+
+  const hasExplicitRepository = Object.prototype.hasOwnProperty.call(selection, 'targetRepository');
+  const hasExplicitWorkspace = Object.prototype.hasOwnProperty.call(selection, 'targetWorkspace');
+  let targetRepository = hasExplicitRepository
+    ? selection.targetRepository ?? null
+    : prior?.target_repository ?? null;
+  let targetWorkspace = hasExplicitWorkspace
+    ? selection.targetWorkspace ?? null
+    : prior?.target_workspace ?? null;
+
+  if (hasExplicitRepository && !hasExplicitWorkspace) {
+    // A newly selected repository must not accidentally inherit the previous
+    // repository's checkout path.
+    targetWorkspace = null;
+  }
+  if (targetRepository !== null && !isRepositorySlug(targetRepository)) {
+    throw new Error(`target_repository must be a GitHub owner/name slug, got ${JSON.stringify(targetRepository)}`);
+  }
+  targetWorkspace = assertTargetOutsideRuntime(
+    deps.projectRoot,
+    deps.config.driver.workspaceDir,
+    targetWorkspace,
+  );
+
+  if (
+    intent.mode === 'execute' &&
+    !hasExplicitRepository &&
+    !hasExplicitWorkspace &&
+    prior?.target_repository === null &&
+    prior?.target_workspace === null
+  ) {
+    // Existing V1 issues ran in the control checkout. Make that fallback
+    // explicit in the task record; it is not inferred from current.json.
+    targetRepository = control;
+    targetWorkspace = assertTargetOutsideRuntime(
+      deps.projectRoot,
+      deps.config.driver.workspaceDir,
+      deps.projectRoot,
+    );
+  }
+  return { target_repository: targetRepository, target_workspace: targetWorkspace };
+}
+
+function activeWorkspaceConflict(
+  state: Awaited<ReturnType<typeof readDriverState>>,
+  taskId: string,
+  target: TargetBinding,
+): string | null {
+  const key = workspaceKey(target.target_workspace);
+  if (key === null) return null;
+  for (const record of Object.values(state.tasks)) {
+    if (record.task_id === taskId) continue;
+    if (record.status !== 'prepared' && record.status !== 'publishing') continue;
+    if (workspaceKey(record.target_workspace) === key) {
+      return `target workspace is already bound to unfinished task ${record.task_id}`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -76,6 +183,7 @@ export async function prepareTask(
   repositoryInfo: RepositoryInfo,
   discovery: Discovery,
   intent: TaskIntent,
+  selection: TargetSelection = {},
 ): Promise<PrepareOutcome> {
   const paths: WorkspacePaths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
   const now = deps.now ?? (() => new Date());
@@ -96,8 +204,59 @@ export async function prepareTask(
     return { prepared: false, taskId, reason: verdict.reason, issueNumber, mode: intent.mode };
   }
 
-  const task = buildTaskMarkdown(discovery.issue, intent.mode);
   const feedback = buildFeedbackMarkdown(discovery.feedback);
+
+  const target = resolveTargetBinding(deps, repositoryInfo, intent, state, selection);
+  const task = buildTaskMarkdown(discovery.issue, intent.mode, {
+    control_repository: repository,
+    ...target,
+  });
+  const conflict = activeWorkspaceConflict(state, taskId, target);
+  if (conflict !== null) {
+    deps.log.warning(`skip ${taskId}: ${conflict}`);
+    return { prepared: false, taskId, reason: 'target-workspace-busy', issueNumber, mode: intent.mode };
+  }
+
+  let executorLockAcquired = false;
+  if (intent.mode === 'execute') {
+    const otherLock = Object.values(state.tasks).find(
+      (entry) => entry.task_id !== taskId && entry.executor_lock_task_id !== undefined,
+    );
+    if (otherLock !== undefined) {
+      return {
+        prepared: false,
+        taskId,
+        reason: `executor workspace lock is held by unfinished task ${otherLock.task_id}`,
+        issueNumber,
+        mode: intent.mode,
+      };
+    }
+    if (existing?.executor_lock_task_id !== taskId) {
+      // A lock without a matching private state marker is deliberately
+      // unknown. Do not let the lower-level stale-PID recovery turn a lost or
+      // corrupt Driver state into an implicit second Executor.
+      try {
+        await access(executorLockFile(paths));
+        if (existing?.executor_lock_task_id === undefined) {
+          return {
+            prepared: false,
+            taskId,
+            reason: 'executor-lock-state-unknown',
+            issueNumber,
+            mode: intent.mode,
+          };
+        }
+      } catch {
+        // No lock file: acquireExecutorLock will create it below.
+      }
+      const acquired = await acquireExecutorLock(executorLockFile(paths), taskId, now);
+      if (!acquired.ok) {
+        deps.log.warning(`skip ${taskId}: ${acquired.reason}`);
+        return { prepared: false, taskId, reason: 'executor-lock-unavailable', issueNumber, mode: intent.mode };
+      }
+      executorLockAcquired = true;
+    }
+  }
 
   let plan: string | null = null;
   if (intent.mode === 'execute') {
@@ -110,6 +269,7 @@ export async function prepareTask(
       // comment means canonical state changed mid-cycle. Refuse to build a
       // task without the approved Plan.
       deps.log.warning(`skip ${taskId}: approved plan comment vanished mid-cycle`);
+      if (executorLockAcquired) await releaseExecutorLock(executorLockFile(paths), taskId);
       return { prepared: false, taskId, reason: 'plan-comment-not-found', issueNumber, mode: intent.mode };
     }
     plan = canonicalPlanContent(planComment.body);
@@ -129,6 +289,7 @@ export async function prepareTask(
       `skip ${taskId}: input snapshot changed since the task was prepared ` +
         '(refusing to overwrite a possibly-running task)',
     );
+    if (executorLockAcquired) await releaseExecutorLock(executorLockFile(paths), taskId);
     return { prepared: false, taskId, reason: 'input-changed', issueNumber, mode: intent.mode };
   }
 
@@ -136,10 +297,12 @@ export async function prepareTask(
   const taskFile: TaskFile = {
     schema: 3,
     task_id: taskId,
-    repository,
+    control_repository: repository,
     repository_id: repositoryId,
     issue_number: issueNumber,
     workflow_epoch: intent.epoch,
+    target_repository: target.target_repository,
+    target_workspace: target.target_workspace,
     mode: intent.mode,
     reason: intent.reason,
     created_at: createdAt,
@@ -155,30 +318,48 @@ export async function prepareTask(
   // Ready-marker convention: writeTaskDir writes task.json LAST; the state
   // record lands after so a crash between the two still re-prepares
   // idempotently (an identical-content rebuild).
-  await writeTaskDir(paths, { taskFile, task, plan, feedback });
-  await writeCurrent(paths, {
-    schema: 3,
-    task_id: taskId,
-    mode: intent.mode,
-    issue_number: issueNumber,
-    updated_at: createdAt,
-  });
-  await writeDriverState(
-    paths,
-    withTaskRecord(state, {
-      ...(existing ?? {}),
+  try {
+    await writeTaskDir(paths, {
+      taskFile,
+      task,
+      plan,
+      feedback,
+    });
+    await writeCurrent(paths, {
+      schema: 3,
       task_id: taskId,
-      status: existing?.status === 'publishing' ? 'publishing' : 'prepared',
-      attempts: (existing?.attempts ?? 0) + 1,
       mode: intent.mode,
+      control_repository: repository,
+      repository_id: repositoryId,
       issue_number: issueNumber,
       workflow_epoch: intent.epoch,
-      input_snapshot_sha256: snapshot,
-      plan_comment_id: intent.planCommentId ?? undefined,
-      approval_comment_id: intent.approvalCommentId ?? undefined,
-      error: null,
-    }),
-  );
+      ...target,
+      updated_at: createdAt,
+    });
+    await writeDriverState(
+      paths,
+      withTaskRecord(state, {
+        ...(existing ?? {}),
+        task_id: taskId,
+        status: existing?.status === 'publishing' ? 'publishing' : 'prepared',
+        attempts: (existing?.attempts ?? 0) + 1,
+        mode: intent.mode,
+        control_repository: repository,
+        repository_id: repositoryId,
+        issue_number: issueNumber,
+        workflow_epoch: intent.epoch,
+        ...target,
+        ...(intent.mode === 'execute' ? { executor_lock_task_id: taskId } : {}),
+        input_snapshot_sha256: snapshot,
+        plan_comment_id: intent.planCommentId ?? undefined,
+        approval_comment_id: intent.approvalCommentId ?? undefined,
+        error: null,
+      }),
+    );
+  } catch (err) {
+    if (executorLockAcquired) await releaseExecutorLock(executorLockFile(paths), taskId);
+    throw err;
+  }
 
   const prompt = buildTaskPrompt({
     taskId,
@@ -217,7 +398,7 @@ export async function prepareCurrentTask(
   deps: DriverDeps,
   repositoryInfo: RepositoryInfo,
   discoveries: Discovery[],
-  opts: { issue?: number } = {},
+  opts: { issue?: number } & TargetSelection = {},
 ): Promise<PrepareOutcome> {
   const paths = resolveWorkspace(deps.projectRoot, deps.config.driver.workspaceDir);
 
@@ -273,7 +454,7 @@ export async function prepareCurrentTask(
   }
 
   try {
-    return await prepareTask(deps, repositoryInfo, chosen.discovery, chosen.intent);
+    return await prepareTask(deps, repositoryInfo, chosen.discovery, chosen.intent, opts);
   } catch (err) {
     deps.log.error(
       `preparation failed for issue #${chosen.intent.issueNumber} ` +

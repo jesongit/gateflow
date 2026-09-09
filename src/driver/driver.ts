@@ -43,7 +43,7 @@ export interface DriverLogger {
 export interface DriverDeps {
   client: DriverGitHubClient;
   config: DriverConfig;
-  /** Target repository root (contains `.gateflow/`); NOT the workspace dir. */
+  /** Control Repository checkout root (contains `.gateflow/`); Target Workspace is task metadata. */
   projectRoot: string;
   log: DriverLogger;
   /** Clock injection for deterministic tests. */
@@ -54,6 +54,9 @@ export interface DriverDeps {
 export interface RunOptions {
   /** Explicit issue selection (single-active-task switch). */
   issue?: number;
+  /** Explicit target metadata; omitted values are inherited or remain null. */
+  targetRepository?: string | null;
+  targetWorkspace?: string | null;
 }
 
 /** Result of one `run` command. */
@@ -121,7 +124,15 @@ export async function runCommand(deps: DriverDeps, opts: RunOptions = {}): Promi
   return withDriverLock(deps, async (repositoryInfo) => {
     const repository = `${repositoryInfo.owner}/${repositoryInfo.name}`;
     const discoveries = await discoverWork(deps.client, repository, deps.config, repositoryInfo, deps.log);
-    return prepareCurrentTask(deps, repositoryInfo, discoveries, { issue: opts.issue });
+    return prepareCurrentTask(deps, repositoryInfo, discoveries, {
+      issue: opts.issue,
+      ...(Object.prototype.hasOwnProperty.call(opts, 'targetRepository')
+        ? { targetRepository: opts.targetRepository }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(opts, 'targetWorkspace')
+        ? { targetWorkspace: opts.targetWorkspace }
+        : {}),
+    });
   });
 }
 

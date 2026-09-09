@@ -1,8 +1,8 @@
 name: 'GateFlow'
 description: >-
   Deterministic gate for the GitHub-native AI workflow. Validates actor
-  identity, strictly parses comment commands (/ai-plan, /approve, /choose,
-  /change, /cancel), validates comment markers, re-reads issue labels from
+  identity, strictly parses comment commands (/ai-plan, /approve, /change,
+  /cancel), validates comment markers, re-reads issue labels from
   the API and performs the frozen label-based state transitions. Since
   protocol schema 2 the durable authorization facts are Gate-issued record
   comments (workflow epoch / approval / feedback accepted — see
@@ -27,8 +27,8 @@ inputs:
     description: >-
       Comma-separated GitHub logins treated as Trusted Humans in addition to
       a personal (User-type) repository owner. Trusted Humans are the only
-      actors allowed to run commands: /ai-plan, /approve, /choose, /change,
-      /cancel. REQUIRED (fail-closed) for Organization-owned repositories
+      actors allowed to run commands: /ai-plan, /approve, /change, /cancel.
+      REQUIRED (fail-closed) for Organization-owned repositories
       unless require-explicit-humans is false.
     required: false
     default: ''

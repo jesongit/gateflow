@@ -57,6 +57,13 @@ export interface WorkflowEpochRecord {
   created_at: string;
   issued_by: string;
   operation_id: string;
+  /**
+   * The /ai-plan command comment which requested this epoch.  This was added
+   * as an optional field so schema-2 records already on GitHub remain
+   * readable.  It is deliberately not part of operation_id: retries adopt
+   * the same record, while a new command gets a fresh epoch.
+   */
+  request_comment_id?: number;
 }
 
 /** approval record: the durable proof that the Gate accepted an /approve. */
@@ -122,6 +129,27 @@ function isObj(value: unknown): value is Obj {
  */
 export function epochOperationId(repositoryId: number, issueNumber: number, epoch: string): string {
   return `epoch:${repositoryId}:${issueNumber}:${epoch}`;
+}
+
+/**
+ * Deterministic operation identity for a Gate T0 command.  The random epoch
+ * is intentionally not included: a redelivered /ai-plan can find and adopt
+ * the epoch created by the first delivery.
+ */
+export function gateEpochOperationId(
+  repositoryId: number,
+  issueNumber: number,
+  commandCommentId: number,
+): string {
+  return `epoch:${repositoryId}:${issueNumber}:c${commandCommentId}`;
+}
+
+/** Extract the source comment id from a deterministic Gate T0 operation. */
+export function extractEpochCommandCommentId(operationId: string): number | null {
+  const match = /^epoch:(\d+):(\d+):c(\d+)$/.exec(operationId);
+  if (match === null) return null;
+  const id = Number(match[3]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 export function approvalOperationId(
@@ -241,9 +269,10 @@ function checkFields(
   required: readonly string[],
   what: string,
   errors: string[],
+  optional: readonly string[] = [],
 ): void {
   for (const key of Object.keys(raw)) {
-    if (!required.includes(key)) {
+    if (!required.includes(key) && !optional.includes(key)) {
       errors.push(`${what}: unknown key "${key}"`);
     }
   }
@@ -272,30 +301,56 @@ function num(raw: Obj, key: string, errors: string[]): number | null {
   return value;
 }
 
+function positiveNum(raw: Obj, key: string, errors: string[]): number | null {
+  const value = num(raw, key, errors);
+  if (value !== null && value < 1) {
+    errors.push(`${key}: expected a positive integer, got ${JSON.stringify(value)}`);
+    return null;
+  }
+  return value;
+}
+
 function validateEpochRecord(commentId: number, raw: Obj): RecordParseResult {
   const errors: string[] = [];
   const required = [
     'schema', 'kind', 'repository_id', 'issue_number', 'workflow_epoch',
     'created_at', 'issued_by', 'operation_id',
   ] as const;
-  checkFields(raw, required, 'workflow_epoch record', errors);
+  checkFields(raw, required, 'workflow_epoch record', errors, ['request_comment_id']);
   if ((raw['schema'] as unknown) !== RECORD_SCHEMA_VERSION) {
     errors.push(`schema: expected ${RECORD_SCHEMA_VERSION}, got ${JSON.stringify(raw['schema'])}`);
   }
   if ((raw['kind'] as unknown) !== 'workflow_epoch') {
     errors.push(`kind: expected "workflow_epoch", got ${JSON.stringify(raw['kind'])}`);
   }
-  const repositoryId = num(raw, 'repository_id', errors);
-  const issueNumber = num(raw, 'issue_number', errors);
+  const repositoryId = positiveNum(raw, 'repository_id', errors);
+  const issueNumber = positiveNum(raw, 'issue_number', errors);
   const epoch = isWorkflowEpoch(raw['workflow_epoch']) ? (raw['workflow_epoch'] as string) : null;
   if (epoch === null) errors.push('workflow_epoch: malformed epoch string');
   const createdAt = str(raw, 'created_at', ISO_DATE, errors);
   const issuedBy = str(raw, 'issued_by', LOGIN, errors);
   const operationId = str(raw, 'operation_id', OPERATION_ID, errors);
-  if (errors.length > 0 || repositoryId === null || issueNumber === null || epoch === null || createdAt === null || issuedBy === null || operationId === null) {
+  const requestCommentId =
+    raw['request_comment_id'] === undefined
+      ? undefined
+      : positiveNum(raw, 'request_comment_id', errors);
+  if (
+    errors.length > 0 ||
+    repositoryId === null ||
+    issueNumber === null ||
+    epoch === null ||
+    createdAt === null ||
+    issuedBy === null ||
+    operationId === null ||
+    requestCommentId === null
+  ) {
     return { ok: false, reason: `invalid workflow_epoch record: ${errors.join('; ')}` };
   }
-  if (operationId !== epochOperationId(repositoryId, issueNumber, epoch)) {
+  const operationBindsRecord =
+    requestCommentId === undefined
+      ? operationId === epochOperationId(repositoryId, issueNumber, epoch)
+      : operationId === gateEpochOperationId(repositoryId, issueNumber, requestCommentId);
+  if (!operationBindsRecord) {
     return { ok: false, reason: `invalid workflow_epoch record: operation_id "${operationId}" does not bind repository/issue/epoch` };
   }
   return {
@@ -310,6 +365,7 @@ function validateEpochRecord(commentId: number, raw: Obj): RecordParseResult {
       created_at: createdAt,
       issued_by: issuedBy,
       operation_id: operationId,
+      ...(requestCommentId !== undefined ? { request_comment_id: requestCommentId } : {}),
     },
   };
 }
@@ -515,4 +571,100 @@ export function parseRecords<T extends GateRecord['kind'], C extends { id: numbe
     }
   }
   return { records, invalid };
+}
+
+/**
+ * A comment-bearing, fail-closed view of the current workflow epoch.
+ *
+ * `readIssueRecords` intentionally has no repository or identity context and
+ * therefore cannot decide whether an epoch is authoritative.  The Gate and
+ * Driver use this helper at their respective trust boundaries.  Every valid
+ * epoch-looking comment is checked; an untrusted or foreign record is an
+ * error, rather than something that can be skipped in favour of an older
+ * record.
+ */
+export function readTrustedWorkflowEpoch(
+  comments: ReadonlyArray<{ id: number; body: string; user: string }>,
+  repositoryId: number,
+  issueNumber: number,
+  gateLogins: ReadonlySet<string>,
+):
+  | { ok: true; record: WorkflowEpochRecord; commentId: number; records: Array<ParsedRecord<WorkflowEpochRecord, { id: number; body: string; user: string }>> }
+  | { ok: false; reason: string } {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) {
+    return { ok: false, reason: `repository id ${String(repositoryId)} is not positive` };
+  }
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) {
+    return { ok: false, reason: `issue number ${String(issueNumber)} is not positive` };
+  }
+
+  const parsed = parseRecords<'workflow_epoch', { id: number; body: string; user: string }>(
+    'workflow_epoch',
+    comments,
+  );
+  if (parsed.invalid.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `unparsable workflow_epoch record(s) (fail closed): ` +
+        parsed.invalid.map((entry) => `#${entry.commentId} (${entry.reason})`).join(', '),
+    };
+  }
+  if (parsed.records.length === 0) {
+    return { ok: false, reason: 'no workflow_epoch record' };
+  }
+
+  const trustedLogins = new Set([...gateLogins].map((login) => login.toLowerCase()));
+  const ordered = [...parsed.records].sort((left, right) => left.commentId - right.commentId);
+  const byOperation = new Map<string, WorkflowEpochRecord>();
+  for (const entry of ordered) {
+    const record = entry.record;
+    if (record.repository_id !== repositoryId || record.issue_number !== issueNumber) {
+      return {
+        ok: false,
+        reason: `workflow_epoch record #${entry.commentId} does not bind the current repository/issue`,
+      };
+    }
+    const commentLogin = entry.comment.user.toLowerCase();
+    const issuedLogin = record.issued_by.toLowerCase();
+    if (!trustedLogins.has(commentLogin) || !trustedLogins.has(issuedLogin) || commentLogin !== issuedLogin) {
+      return {
+        ok: false,
+        reason: `workflow_epoch record #${entry.commentId} is not authored by a trusted Gate identity`,
+      };
+    }
+    if (record.request_comment_id !== undefined) {
+      const source = comments.find((comment) => comment.id === record.request_comment_id);
+      if (source === undefined || source.body.trim() !== '/ai-plan') {
+        return {
+          ok: false,
+          reason:
+            `workflow_epoch record #${entry.commentId} points to a missing or non-/ai-plan ` +
+            `source comment #${record.request_comment_id}`,
+        };
+      }
+    }
+
+    const existing = byOperation.get(record.operation_id);
+    if (existing === undefined) {
+      byOperation.set(record.operation_id, record);
+      continue;
+    }
+    const sameFacts =
+      existing.repository_id === record.repository_id &&
+      existing.issue_number === record.issue_number &&
+      existing.workflow_epoch === record.workflow_epoch &&
+      existing.issued_by.toLowerCase() === record.issued_by.toLowerCase() &&
+      existing.request_comment_id === record.request_comment_id;
+    if (!sameFacts) {
+      return {
+        ok: false,
+        reason: `conflicting workflow_epoch records for operation ${record.operation_id}`,
+      };
+    }
+  }
+
+  const latest = ordered[ordered.length - 1];
+  if (latest === undefined) return { ok: false, reason: 'no workflow_epoch record' };
+  return { ok: true, record: latest.record, commentId: latest.commentId, records: ordered };
 }

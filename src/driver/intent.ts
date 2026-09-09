@@ -35,6 +35,7 @@ import { planSha256 } from '../protocol/plan';
 import { approvalRecordsConflict } from '../protocol/records';
 import type { Mode } from '../workspace/protocol';
 import type { HumanFeedbackEntry } from '../github/issue-sync';
+import type { TargetBinding } from '../workspace/binding';
 
 /** Inputs the intent derivation reads from canonical state + config. */
 export interface IntentContext {
@@ -198,10 +199,21 @@ const GOAL_EXECUTE =
  * verbatim, then the MODE section and the fixed mode goal. The agent treats
  * this file as task data, never as instructions over the protocol.
  */
-export function buildTaskMarkdown(issue: IssueDetail, mode: Mode): string {
+export function buildTaskMarkdown(
+  issue: IssueDetail,
+  mode: Mode,
+  binding?: { control_repository: string } & TargetBinding,
+): string {
   const body = issue.body.length > 0 ? issue.body : '(no body)';
   const goal = mode === 'execute' ? GOAL_EXECUTE : GOAL_PLAN;
-  return `# ${issue.title}\n\n${body}\n\n## Mode\n\n${mode}\n\n## Goal\n\n${goal}\n`;
+  const scope =
+    binding === undefined
+      ? ''
+      :
+        `\n## Control Repository\n\n${binding.control_repository}\n\n` +
+          `## Target Repository\n\n${binding.target_repository ?? '(unknown / not selected)'}\n\n` +
+          `## Target Workspace\n\n${binding.target_workspace ?? '(unknown / not selected)'}\n`;
+  return `# ${issue.title}\n\n${body}\n\n## Mode\n\n${mode}\n\n## Goal\n\n${goal}\n${scope}`;
 }
 
 /** `YYYY-MM-DD HH:mm` in UTC for feedback.md section headers. */

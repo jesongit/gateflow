@@ -10,11 +10,8 @@
  *  - Authorization facts come from Gate-issued RECORDS (schema 2, shared
  *    parser in ../protocol/records): readIssueRecords is the ONE place the
  *    Driver interprets them. No second copy of the record grammar exists.
- *  - Human command matching for the feedback.md projection (/change) is
- *    REIMPLEMENTED here with the same anchored, case-sensitive,
- *    whole-trimmed-body rules as the gate (src/gate/commands.ts). We
- *    deliberately do NOT import gate/commands.ts; if the frozen protocol ever
- *    changes, mirror the change in both places. Acceptance (revision
+ *  - Human command matching for the feedback.md projection (/change) reuses
+ *    the Gate's strict parser (src/gate/commands.ts). Acceptance (revision
  *    counting) is decided by Gate-issued feedback records, never by the raw
  *    comment count.
  *
@@ -24,7 +21,8 @@
  * belongs to the Gate (docs/architecture-v1.md section 6).
  */
 import { detectCommentMarker } from '../gate/markers';
-import { MARKERS } from '../gate/protocol';
+import { COMMANDS, MARKERS } from '../gate/protocol';
+import { parseCommand } from '../gate/commands';
 import {
   parseRecords,
   type ApprovalRecord,
@@ -103,16 +101,6 @@ export function findCompletionReportComments(
   return reports;
 }
 
-// Anchored patterns over the TRIMMED body: the whole comment must be the
-// command. `.` never matches a newline, so multi-line bodies can never match;
-// the trailing `$` forbids trailing content. Matching is case-sensitive on
-// purpose ("/CHANGE" is not a command). Used ONLY for the feedback.md
-// projection and for cross-checking that an accepted-feedback record still
-// anchors to a real human command — acceptance itself is decided by
-// Gate-issued records (schema 2). V1: /choose is gone; /change is the one
-// feedback channel.
-const CHANGE_PATTERN = /^\/change (.+)$/;
-
 /** A trusted-human feedback command comment. */
 export interface HumanFeedbackEntry {
   comment: CommentDetail;
@@ -156,8 +144,8 @@ export function findHumanFeedbackCommands(
     if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) {
       continue;
     }
-    const trimmed = comment.body.trim();
-    if (CHANGE_PATTERN.exec(trimmed) !== null) {
+    const parsed = parseCommand(comment.body);
+    if (parsed?.command === COMMANDS.change) {
       entries.push({ comment, kind: 'change' });
     }
   }
@@ -166,11 +154,16 @@ export function findHumanFeedbackCommands(
 
 /** Case-insensitive membership test against a login allowlist. */
 export function isKnownLogin(login: string, allowlist: ReadonlySet<string>): boolean {
-  return allowlist.has(login.toLowerCase());
+  const normalized = login.toLowerCase();
+  if (allowlist.has(normalized)) return true;
+  // Callers normally normalize their Set at construction time, but this
+  // helper is part of the Driver-side boundary and promises case-insensitive
+  // matching on its own.
+  for (const allowed of allowlist) {
+    if (allowed.toLowerCase() === normalized) return true;
+  }
+  return false;
 }
-
-// V1: /approve takes the plan COMMENT id it approves (architecture 3.3).
-const APPROVE_PATTERN = /^\/approve (\d+)$/;
 
 /**
  * Independent re-validation of an approval RECORD's human anchor (schema 2,
@@ -192,8 +185,8 @@ export function approvalRecordAnchorFailure(
   if (command === undefined) {
     return `approval command comment ${record.approval_command_comment_id} no longer exists`;
   }
-  const match = APPROVE_PATTERN.exec(command.body.trim());
-  if (match === null || Number.parseInt(match[1] ?? '', 10) !== record.plan_comment_id) {
+  const parsed = parseCommand(command.body);
+  if (parsed?.command !== COMMANDS.approve || parsed.args.planCommentId !== record.plan_comment_id) {
     return `approval command comment ${command.id} is not an anchored "/approve ${record.plan_comment_id}"`;
   }
   if (!isTrustedAuthor(command, trustedHumans, repoOwner)) {
@@ -300,13 +293,20 @@ export function acceptedFeedbackEvents(
   const epoch = view.epoch.record.workflow_epoch;
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   const accepted: HumanFeedbackEntry[] = [];
+  const seenOperations = new Set<string>();
   for (const { record } of view.feedback) {
     if (record.workflow_epoch !== epoch) continue;
+    // Gate retries are idempotent by operation_id. Keep the projection
+    // idempotent as well, so duplicated accepted records cannot inflate the
+    // next plan revision.
+    if (seenOperations.has(record.operation_id)) continue;
     const comment = byId.get(record.feedback_comment_id);
     if (comment === undefined) continue;
     if (!isTrustedAuthor(comment, trustedHumans, repoOwner)) continue;
     if (record.feedback_kind !== 'change') continue;
-    if (CHANGE_PATTERN.exec(comment.body.trim()) === null) continue;
+    const parsed = parseCommand(comment.body);
+    if (parsed?.command !== COMMANDS.change) continue;
+    seenOperations.add(record.operation_id);
     accepted.push({ comment, kind: 'change' });
   }
   return accepted;

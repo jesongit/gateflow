@@ -28,13 +28,14 @@ import type {
   TaskFile,
   TaskRecord,
 } from './protocol';
+import { isRepositorySlug, normalizeTargetWorkspace } from './binding';
 
 /** Result of a validation attempt: typed value or a list of error messages. */
 export type Validation<T> = { ok: true; value: T } | { ok: false; errors: string[] };
 
 /** Maximum length of a result `reason`. */
 export const REASON_MAX = 1000;
-/** Maximum length of task `repository` (`owner/name`). */
+/** Maximum length of a repository slug (`owner/name`). */
 export const REPOSITORY_MAX = 256;
 /** Hard per-file size cap: 512 KB (anti-oversized defense). */
 export const MAX_FILE_BYTES = 512 * 1024;
@@ -91,7 +92,7 @@ function checkUnknownKeys(raw: Obj, allowed: readonly string[], what: string, er
 
 function checkRequiredKeys(raw: Obj, required: readonly string[], what: string, errors: string[]): void {
   for (const key of required) {
-    if (!(key in raw)) {
+    if (!(key in raw) || raw[key] === undefined) {
       errors.push(`${what}: missing required key "${key}"`);
     }
   }
@@ -135,6 +136,29 @@ function checkNull(value: unknown, what: string, errors: string[]): void {
   if (value === undefined) return;
   if (value !== null) {
     errors.push(`${what}: must be null, got ${JSON.stringify(value)}`);
+  }
+}
+
+function checkRepository(value: unknown, what: string, errors: string[], nullable = false): void {
+  if (value === undefined) return;
+  if (nullable && value === null) return;
+  if (!isRepositorySlug(value)) {
+    errors.push(`${what}: must be a GitHub owner/name slug, got ${JSON.stringify(value)}`);
+  } else if (value.length > REPOSITORY_MAX) {
+    errors.push(`${what}: exceeds maximum length of ${REPOSITORY_MAX}`);
+  }
+}
+
+function checkTargetWorkspace(value: unknown, what: string, errors: string[]): void {
+  if (value === undefined) return;
+  if (value === null) return;
+  try {
+    const normalized = normalizeTargetWorkspace(value);
+    if (normalized !== value) {
+      errors.push(`${what}: must be a normalized absolute path, got ${JSON.stringify(value)}`);
+    }
+  } catch (err) {
+    errors.push(`${what}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -183,10 +207,12 @@ function checkMode(value: unknown, what: string, errors: string[]): Mode | undef
 const TASK_FILE_KEYS = [
   'schema',
   'task_id',
-  'repository',
+  'control_repository',
   'repository_id',
   'issue_number',
   'workflow_epoch',
+  'target_repository',
+  'target_workspace',
   'mode',
   'reason',
   'created_at',
@@ -228,14 +254,26 @@ export function validateTaskFile(raw: unknown): Validation<TaskFile> {
     }
   }
 
-  checkString(raw['repository'], `${what}.repository`, errors, { min: 1, max: REPOSITORY_MAX });
+  checkRepository(raw['control_repository'], `${what}.control_repository`, errors);
   checkPositiveInt(raw['repository_id'], `${what}.repository_id`, errors);
   checkPositiveInt(raw['issue_number'], `${what}.issue_number`, errors);
+  checkRepository(raw['target_repository'], `${what}.target_repository`, errors, true);
+  checkTargetWorkspace(raw['target_workspace'], `${what}.target_workspace`, errors);
   if (raw['workflow_epoch'] !== undefined) {
     if (typeof raw['workflow_epoch'] !== 'string' || !EPOCH_SHAPE.test(raw['workflow_epoch'])) {
       errors.push(
         `${what}.workflow_epoch: must be a workflow epoch ("wf_" + 12 base36 chars), got ${JSON.stringify(raw['workflow_epoch'])}`,
       );
+    }
+  }
+
+  const parsedTaskId = taskId === undefined ? null : parseTaskId(taskId);
+  if (parsedTaskId !== null) {
+    if (typeof raw['repository_id'] === 'number' && parsedTaskId.repositoryId !== raw['repository_id']) {
+      errors.push(`${what}.repository_id does not match the Control Repository id encoded in task_id`);
+    }
+    if (typeof raw['issue_number'] === 'number' && parsedTaskId.issueNumber !== raw['issue_number']) {
+      errors.push(`${what}.issue_number does not match the Control Issue encoded in task_id`);
     }
   }
   checkIsoDate(raw['created_at'], `${what}.created_at`, errors);
@@ -397,7 +435,19 @@ export function validateResultForTask(
   return { ok: true, value };
 }
 
-const CURRENT_KEYS = ['schema', 'task_id', 'mode', 'issue_number', 'updated_at'] as const;
+const CURRENT_KEYS = [
+  'schema',
+  'task_id',
+  'mode',
+  'control_repository',
+  'repository_id',
+  'issue_number',
+  'workflow_epoch',
+  'target_repository',
+  'target_workspace',
+  'updated_at',
+] as const;
+const CURRENT_REQUIRED = CURRENT_KEYS;
 
 /** Validate .gateflow/current.json. */
 export function validateCurrent(raw: unknown): Validation<CurrentPointer> {
@@ -405,12 +455,35 @@ export function validateCurrent(raw: unknown): Validation<CurrentPointer> {
   if (!isRecord(raw)) return fail(what, 'expected a JSON object');
   const errors: string[] = [];
   checkUnknownKeys(raw, CURRENT_KEYS, what, errors);
-  checkRequiredKeys(raw, CURRENT_KEYS, what, errors);
+  checkRequiredKeys(raw, CURRENT_REQUIRED, what, errors);
   checkSchema(raw['schema'], what, errors);
-  checkTaskId(raw['task_id'], `${what}.task_id`, errors);
-  checkMode(raw['mode'], `${what}.mode`, errors);
+  const taskId = checkTaskId(raw['task_id'], `${what}.task_id`, errors);
+  const mode = checkMode(raw['mode'], `${what}.mode`, errors);
+  checkRepository(raw['control_repository'], `${what}.control_repository`, errors);
+  checkPositiveInt(raw['repository_id'], `${what}.repository_id`, errors);
   checkPositiveInt(raw['issue_number'], `${what}.issue_number`, errors);
+  if (raw['workflow_epoch'] !== undefined && (typeof raw['workflow_epoch'] !== 'string' || !EPOCH_SHAPE.test(raw['workflow_epoch']))) {
+    errors.push(`${what}.workflow_epoch: malformed workflow epoch`);
+  }
+  checkRepository(raw['target_repository'], `${what}.target_repository`, errors, true);
+  checkTargetWorkspace(raw['target_workspace'], `${what}.target_workspace`, errors);
   checkIsoDate(raw['updated_at'], `${what}.updated_at`, errors);
+
+  const parsed = taskId === undefined ? null : parseTaskId(taskId);
+  if (parsed !== null) {
+    if (mode !== undefined && parsed.mode !== mode) {
+      errors.push(`${what}.task_id: mode component does not match mode`);
+    }
+    if (typeof raw['repository_id'] === 'number' && parsed.repositoryId !== raw['repository_id']) {
+      errors.push(`${what}.repository_id does not match task_id`);
+    }
+    if (typeof raw['issue_number'] === 'number' && parsed.issueNumber !== raw['issue_number']) {
+      errors.push(`${what}.issue_number does not match task_id`);
+    }
+    if (typeof raw['workflow_epoch'] === 'string' && raw['workflow_epoch'] !== `wf_${parsed.epochCode}`) {
+      errors.push(`${what}.workflow_epoch does not match task_id`);
+    }
+  }
 
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, value: raw as unknown as CurrentPointer };
@@ -421,8 +494,13 @@ const TASK_RECORD_KEYS = [
   'status',
   'attempts',
   'mode',
+  'control_repository',
+  'repository_id',
   'issue_number',
   'workflow_epoch',
+  'target_repository',
+  'target_workspace',
+  'executor_lock_task_id',
   'input_snapshot_sha256',
   'plan_comment_id',
   'approval_comment_id',
@@ -432,7 +510,18 @@ const TASK_RECORD_KEYS = [
   'last_sync_at',
   'error',
 ] as const;
-const TASK_RECORD_REQUIRED = ['task_id', 'status', 'attempts', 'mode', 'issue_number', 'workflow_epoch'] as const;
+const TASK_RECORD_REQUIRED = [
+  'task_id',
+  'status',
+  'attempts',
+  'mode',
+  'control_repository',
+  'repository_id',
+  'issue_number',
+  'workflow_epoch',
+  'target_repository',
+  'target_workspace',
+] as const;
 
 function validateTaskRecord(rawObj: unknown, what: string, errors: string[]): void {
   if (!isRecord(rawObj)) {
@@ -442,17 +531,41 @@ function validateTaskRecord(rawObj: unknown, what: string, errors: string[]): vo
   const raw: Obj = rawObj;
   checkUnknownKeys(raw, TASK_RECORD_KEYS, what, errors);
   checkRequiredKeys(raw, TASK_RECORD_REQUIRED, what, errors);
-  checkTaskId(raw['task_id'], `${what}.task_id`, errors);
   const status = raw['status'];
   if (status !== undefined && !TASK_STATES.includes(status as (typeof TASK_STATES)[number])) {
     errors.push(`${what}.status: must be one of ${TASK_STATES.join('|')}, got ${JSON.stringify(status)}`);
   }
   checkPositiveInt(raw['attempts'], `${what}.attempts`, errors);
   checkMode(raw['mode'], `${what}.mode`, errors);
+  const taskId = checkTaskId(raw['task_id'], `${what}.task_id`, errors);
+  checkRepository(raw['control_repository'], `${what}.control_repository`, errors);
+  checkPositiveInt(raw['repository_id'], `${what}.repository_id`, errors);
   checkPositiveInt(raw['issue_number'], `${what}.issue_number`, errors);
+  checkRepository(raw['target_repository'], `${what}.target_repository`, errors, true);
+  checkTargetWorkspace(raw['target_workspace'], `${what}.target_workspace`, errors);
   if (raw['workflow_epoch'] !== undefined) {
     if (typeof raw['workflow_epoch'] !== 'string' || !EPOCH_SHAPE.test(raw['workflow_epoch'])) {
       errors.push(`${what}.workflow_epoch: malformed epoch string`);
+    }
+  }
+  const parsed = taskId === undefined ? null : parseTaskId(taskId);
+  if (parsed !== null) {
+    if (typeof raw['repository_id'] === 'number' && parsed.repositoryId !== raw['repository_id']) {
+      errors.push(`${what}.repository_id does not match task_id`);
+    }
+    if (typeof raw['issue_number'] === 'number' && parsed.issueNumber !== raw['issue_number']) {
+      errors.push(`${what}.issue_number does not match task_id`);
+    }
+    if (typeof raw['workflow_epoch'] === 'string' && raw['workflow_epoch'] !== `wf_${parsed.epochCode}`) {
+      errors.push(`${what}.workflow_epoch does not match task_id`);
+    }
+    if (typeof raw['mode'] === 'string' && parsed.mode !== raw['mode']) {
+      errors.push(`${what}.mode does not match task_id`);
+    }
+  }
+  if (raw['executor_lock_task_id'] !== undefined) {
+    if (raw['mode'] !== 'execute' || raw['executor_lock_task_id'] !== raw['task_id']) {
+      errors.push(`${what}.executor_lock_task_id: must equal an execute task_id while the lock is held`);
     }
   }
   if (

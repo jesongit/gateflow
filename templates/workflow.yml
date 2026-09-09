@@ -30,7 +30,7 @@ jobs:
           # 缺省使用 workflow 自身 token；要求 permissions.issues: write（上方已授予）。
           github-token: ${{ github.token }}
           # Trusted Humans：除 repo owner（V0 默认）外额外可信的 GitHub login（逗号分隔）。
-          # 只有 Trusted Human 能执行 /ai-plan /approve /choose /change /cancel。
+          # 只有 Trusted Human 能执行 /ai-plan /approve /change /cancel。
           # 留空 = 仅 repo owner 可执行命令。
           trusted-humans: ''
           # Trusted Agents：独立 Bot / GitHub App 身份（逗号分隔）。与 Trusted Human 是

@@ -217,8 +217,8 @@ export const ISSUE = 7;
 export const OWNER = 'octo';
 export const REPO = 'repo';
 
-/** LOGIN-grammar-clean stand-in for `github-actions[bot]` inside record JSON. */
-export const GATE_JSON_LOGIN = 'github-actions-bot';
+/** The record payload must agree with the comment's authenticated Gate author. */
+export const GATE_JSON_LOGIN = 'github-actions[bot]';
 
 /** Inject `schema: 2` so the produced body round-trips through parseRecord. */
 function withSchema(record: Record<string, unknown>): GateRecord {

@@ -6,7 +6,7 @@
 > Issue → Plan → Approve → Execute → Report → Done
 > ```
 
-没有常驻 Server、没有数据库、没有 Web UI、没有消息队列。GitHub 是唯一正式状态来源；Gate 是运行在 GitHub Actions 上的确定性程序；Driver 是运行在你本地机器上的确定性 CLI（`gateflow`）；Agent（ChatGPT / ZCode / 任意客户端）只读写本地 `.gateflow/` 工作区，**不需要任何 GitHub 凭证**。
+没有常驻 Server、没有数据库、没有 Web UI、没有消息队列。GitHub 是唯一正式状态来源；Gate 是运行在 GitHub Actions 上的确定性程序；Driver 是运行在你本地机器上的确定性 CLI（`gateflow`）。标准 Driver 流程中，Agent（ChatGPT / ZCode / 任意客户端）只读写本地 `.gateflow/` 工作区，不需要 GitHub 凭证；Personal Mode 也可以在用户批准的范围内调用本地 `gh`，此时继承的是用户自己的 GitHub 权限，不构成强 Human/Agent 隔离。
 
 ## V1 Architecture & Design Principles
 
@@ -49,7 +49,17 @@ V1 面向个人开发者和少量项目，优先支持本地 ChatGPT、ZCode 等
 | **Gate**（GitHub Action） | 校验事件与身份；解析人类命令；校验 Plan 与审批（Gate-issued 记录）；校验执行授权关联；正式状态迁移；修复可安全恢复的状态投影 | 不启动 AI、不调 LLM、不管理本地 Workspace |
 | **Driver**（本地 CLI） | 拉取当前任务；准备本地任务文件；输出可复制提示词；校验 AI 产出；将 Plan / Report 同步到 GitHub；重试、去重与恢复 | 不调用 LLM；不自行决定 GitHub 正式状态 |
 | **Skill**（`skills/gateflow`） | 指导 AI 如何规划、开发、验证和汇报（`plan` / `execute` 两种模式） | 不含 GitHub API、授权和状态迁移知识 |
-| **Agent** | 实际 AI 工作 | 不直接操作 GateFlow 的 GitHub 协议（无 Token、不发评论、不打标签） |
+| **Agent** | 实际 AI 工作 | 默认不直接操作 GateFlow 协议；若 Personal Mode 在批准范围内允许调用本地 `gh`，则继承用户权限，不形成独立低权限身份 |
+
+### Control Repository 与 Target Repository
+
+在“创建项目”或“接入已有项目”的场景中，需要把三个位置分开：
+
+* **Control Repository**：个人入口仓库，通常由本仓库的 Template 创建。入口 Issue 是这次任务的 Canonical State，Plan、Approval、Tracker、Report 都回到这个 Issue。
+* **Target Repository**：实际要创建或修改的业务仓库。它可以尚不存在，也可以是已有的 `owner/name`。
+* **Target Workspace**：Target Repository 在本地的检出目录，Agent 在批准范围内于此准备文件、开发和验证。
+
+普通的单仓库任务中，Control Repository 与 Target Repository 可以是同一个仓库；项目创建/接入任务中则可能不同。例如 `you/my-gateflow#12` 是 Control，`you/new-project` 是 Target。目标仓库改变，不会改变报告应该回到的入口 Issue。当前 `gateflow run/sync` 仍按配置中的单个 Control Repository 读取和同步；`control_repository` 是 `repository` 的显式别名，目标信息只能通过任务绑定保存，不要自行添加未实现的跨仓库 CLI 参数或配置字段。
 
 ### 确定性优先
 
@@ -127,39 +137,31 @@ Gate 固化 approval 记录，迁 READY
 Driver 准备执行任务（plan.md 作为输入）
   ↓  粘贴到 ChatGPT / ZCode（execute 模式）
 AI 开发、验证，写 report.md + result.json
-  ↓  gateflow sync
-Tracker / Report 评论发布（Gate 迁 WORKING → DONE）
+  ↓  gateflow sync（首轮）
+Tracker 评论发布，等待 Gate 接受 WORKING
+  ↓  再次 gateflow sync
+Report 评论发布（Gate 迁 DONE）
   ↓  人工检查，Close Issue
 ```
 
 人类命令只有三个 + 一个保险：
 
 * `/ai-plan` — 开始规划；
-* `/change <反馈>` — 提交修改意见，重新生成 Plan（V1 将 `/choose` 并入此命令）；
+* `/change <反馈>` — 提交修改意见，重新生成 Plan；
 * `/approve <plan-comment-id>` — 批准当前 Plan；
 * `/cancel` — 退出工作流（保留的简单保险，不做完整取消状态机）。
 
-## 快速开始（五步）
+## 快速开始：Template 入口与第一条任务
 
-> 逐步详细操作见 [docs/integration.md](docs/integration.md)；CLI 细节见 [docs/driver.md](docs/driver.md)。
+> 逐步详细操作见 [docs/usage.md](docs/usage.md) 和 [docs/integration.md](docs/integration.md)；CLI 细节见 [docs/driver.md](docs/driver.md)。
 
-```bash
-# 第 1 步：bootstrap Gate（在目标仓库的检出目录里运行；生成后手动 commit + push）
-node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --token "$GITHUB_TOKEN"
-```
+1. 打开 [Use this template](https://github.com/jesongit/gateflow/generate)，创建个人入口仓库，例如 `you/my-gateflow`。这个仓库是 Control Repository，不要求把所有业务项目都放进来。
+2. 在本地准备 Driver：Node.js **≥ 24**，然后在 GateFlow 检出目录执行 `npm ci && npm run build`；需要直接使用 `gateflow` 命令时再执行 `npm link`。
+3. 登录本地 GitHub CLI：`gh auth login`，用 `gh auth status` 确认账号和目标仓库权限。
+4. 在个人入口仓库检出目录运行 Bootstrap。先用 `--dry-run` 检查计划，再按批准范围使用 `--github-config --yes` 创建缺失标签并生成 Workflow；生成后人工检查并 commit + push。
+5. 把 `skills/gateflow` 这一个 Skill 装入 ChatGPT / ZCode 等 AI 客户端。在入口 Issue 中评论 `/ai-plan`，按提示词完成 `gateflow run → AI → gateflow sync → /approve → gateflow run → AI → gateflow sync（Tracker）→ 等待 WORKING → gateflow sync（Report）`。
 
-1. **bootstrap Gate**：创建 6 个 `ai:*` 标签 + 生成 `.github/workflows/ai-workflow.yml`（幂等）。前提是 GateFlow 本体可被 `uses:` 引用（public 仓库 / 私有 + Access 策略 / 内嵌，三选一）。
-2. **安装本地 Driver**：`npm install && npm run build`，得到 `dist/cli.js`（`gateflow` bin）。
-3. **配置凭证与仓库**：`export GITHUB_TOKEN=…`（**只存在于 Driver 进程环境**）；仓库解析顺序：`gateflow.config.yml` 的 `repository` → `GATEFLOW_REPOSITORY` → git remote `origin`。配置文件可缺省（全部默认值），需要时只保留 `repository` / `trusted_humans` / `gate_logins` / `driver.workspace_dir` / `driver.max_attempts`。
-4. **安装 Skill**：把 `skills/gateflow` 这一个 Skill 装入你的 AI 客户端。
-5. **开始**：在 Issue 上评论 `/ai-plan`，然后：
-
-```bash
-gateflow run     # 准备任务并打印提示词 → 粘贴给 AI
-gateflow sync    # AI 完成后同步结果
-gateflow status  # 查看本地状态（离线）
-gateflow retry <task-id>  # 清除任务状态以便重新准备（离线）
-```
+Bootstrap 只负责目标仓库的确定性初始化：它不会创建、删除或覆盖仓库，也不会覆盖有差异的已有 Workflow。新建项目时先在批准范围内用 `gh` 创建 Target Repository，再对它运行同一个 Bootstrap；已有项目则直接以 `--install-mode existing` 增量接入。
 
 > 运行环境要求：**Node.js ≥ 24**（Action 运行时与本地 Driver 均为 node24 目标）。
 
@@ -251,21 +253,19 @@ npm test           # vitest
 | [docs/architecture.md](docs/architecture.md) | V0 架构文档（历史，仅供追溯） |
 | [docs/plans/](docs/plans/) | 历史计划文档（含本轮 V1 精简重构计划） |
 
-## 从 schema 2 迁移（摘要）
+## V1 运行模型摘要
 
-V1 精简重构是一次破坏性协议升级，核心变化：
+V1 使用 schema 3 的单任务目录、Manual Activation 和一个 `gateflow` Skill：
 
-| 变化点 | schema 2 | schema 3（V1） |
-| --- | --- | --- |
-| Skill | agent / consumer / executor / producer 四个 | **一个 `gateflow` Skill**（plan / execute 两模式） |
-| 工作区 | inbox / outbox 分离 + dispatch.json / receipt | 一个任务目录 `tasks/<task-id>/` + Driver 私有 `driver/state.json` |
-| 唤醒 | Driver 自动派发 + ChatGPT/ZCode Adapter | **Manual Activation**：`gateflow run` 打印提示词，用户粘贴 |
-| CLI | `driver start/once/status/retry` 常驻轮询 | `run / sync / status / retry` 主动命令 |
-| 命令 | /ai-plan /approve /change /choose /cancel | /ai-plan /approve **/change** /cancel（/choose 并入 /change） |
-| Producer | `.gateflow/submit/` 提交协议 | 删除；普通聊天或手动创建 Issue |
-| 执行进度 | status.json + PROGRESS.md + Tracker 进度编辑 | 删除；Tracker 只表达 In Progress / Blocked，完成即报告 |
+| 方面 | 当前 V1 |
+| --- | --- |
+| 工作区 | `.gateflow/tasks/<task-id>/`，Driver 私有状态位于 `.gateflow/driver/` |
+| 激活 | `gateflow run` 打印提示词，用户将提示词粘贴到 AI 客户端 |
+| CLI | `run / sync / status / retry` 主动命令 |
+| 命令 | `/ai-plan`、`/approve`、`/change`、`/cancel` |
+| Skill | 一个 `skills/gateflow`，支持 `plan` / `execute` 两种模式 |
 
-细节见 [docs/migration.md](docs/migration.md)。
+如需了解协议变更，请参阅 [docs/migration.md](docs/migration.md)；日常使用以本文和 [docs/usage.md](docs/usage.md) 为准。
 
 ---
 

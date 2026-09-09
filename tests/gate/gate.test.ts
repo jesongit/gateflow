@@ -13,6 +13,7 @@ import {
   OWNER,
   REPO,
   ISSUE,
+  gateApprovalRecord,
   gateEpochRecord,
   testGateEpoch,
 } from './helpers';
@@ -38,6 +39,48 @@ function gateInput(overrides: Partial<GateInput> = {}): GateInput {
 
 function planBody(taskId: string): string {
   return `${MARKERS.plan}\n\n<!-- gateflow:dispatch-id: ${taskId} -->\n\n# Execution Plan\n\nDo it.\n`;
+}
+
+function planTaskId(epoch: ReturnType<typeof testGateEpoch>, revision = '01'): string {
+  return `gf_r123_i7_w${epoch.slice(3)}_plan_${revision}`;
+}
+
+function executeTaskId(epoch: ReturnType<typeof testGateEpoch>, planId: number): string {
+  return `gf_r123_i7_w${epoch.slice(3)}_execute_p${planId}`;
+}
+
+/** Seed the current approved execution chain used by tracker/report tests. */
+function approvedExecutionChain(
+  client: FakeGateClient,
+  state: 'ready' | 'working' = 'ready',
+): { epoch: ReturnType<typeof testGateEpoch>; planId: number; executeId: string; trackerId?: number } {
+  client.addIssue(ISSUE, [LABELS[state]]);
+  const epoch = testGateEpoch(ISSUE);
+  client.addGateRecord(ISSUE, gateEpochRecord(123, ISSUE, epoch));
+  const plan = client.pushComment(ISSUE, 'gateflow-driver[bot]', planBody(planTaskId(epoch)));
+  const approvalCommand = client.pushComment(ISSUE, OWNER, `/approve ${plan.id}`);
+  client.addGateRecord(
+    ISSUE,
+    gateApprovalRecord({
+      repositoryId: 123,
+      issueNumber: ISSUE,
+      epoch,
+      planCommentId: plan.id,
+      planSha256: planSha256(plan.body),
+      approvalCommandCommentId: approvalCommand.id,
+      approvedByLogin: OWNER,
+    }),
+  );
+  const executeId = executeTaskId(epoch, plan.id);
+  if (state === 'working') {
+    const tracker = client.pushComment(
+      ISSUE,
+      'gateflow-driver[bot]',
+      `${MARKERS.executionTracker}\n\n<!-- gateflow:dispatch-id: ${executeId} -->\n\n**Status:** In Progress\n`,
+    );
+    return { epoch, planId: plan.id, executeId, trackerId: tracker.id };
+  }
+  return { epoch, planId: plan.id, executeId };
 }
 
 async function run(input: GateInput, client: FakeGateClient): Promise<void> {
@@ -114,8 +157,11 @@ describe('T1 / T3 / T6 marker transitions', () => {
   it('T1: plan marker by trusted agent moves PLANNING → REVIEW', async () => {
     const client = new FakeGateClient();
     client.addIssue(ISSUE, [LABELS.planning]);
-    client.pushComment(ISSUE, 'gateflow-driver[bot]', planBody('gf_r123_i7_waaaaaaaaaaaa_plan_01'));
-    await run(gateInput({ commentBody: planBody('x'), commentId: undefined, eventAction: 'created' }), client);
+    const epoch = testGateEpoch(ISSUE);
+    client.addGateRecord(ISSUE, gateEpochRecord(123, ISSUE, epoch));
+    const body = planBody(planTaskId(epoch));
+    const plan = client.pushComment(ISSUE, 'gateflow-driver[bot]', body);
+    await run(gateInput({ actor: 'gateflow-driver[bot]', commentBody: body, commentId: plan.id, eventAction: 'created' }), client);
     expect(client.labelsOf(ISSUE)).toEqual([LABELS.review]);
   });
 
@@ -137,20 +183,22 @@ describe('T1 / T3 / T6 marker transitions', () => {
 
   it('T3: tracker creation moves READY → WORKING', async () => {
     const client = new FakeGateClient();
-    client.addIssue(ISSUE, [LABELS.ready]);
-    const trackerBody = `${MARKERS.executionTracker}\n\n<!-- gateflow:dispatch-id: gf_r123_i7_waaaaaaaaaaaa_execute_p1 -->\n\n**Status:** In Progress\n`;
-    client.pushComment(ISSUE, 'gateflow-driver[bot]', trackerBody);
-    await run(gateInput({ commentBody: trackerBody, commentId: undefined }), client);
+    const { executeId } = approvedExecutionChain(client);
+    const trackerBody = `${MARKERS.executionTracker}\n\n<!-- gateflow:dispatch-id: ${executeId} -->\n\n**Status:** In Progress\n`;
+    const tracker = client.pushComment(ISSUE, 'gateflow-driver[bot]', trackerBody);
+    await run(gateInput({ actor: 'gateflow-driver[bot]', commentBody: trackerBody, commentId: tracker.id }), client);
     expect(client.labelsOf(ISSUE)).toEqual([LABELS.working]);
   });
 
   it('T6: completion report moves WORKING → DONE', async () => {
     const client = new FakeGateClient();
-    client.addIssue(ISSUE, [LABELS.working]);
-    const reportBody = `${MARKERS.completionReport}\n\n<!-- gateflow:dispatch-id: gf_r123_i7_waaaaaaaaaaaa_execute_p1 -->\n\nDone.\n`;
-    client.pushComment(ISSUE, 'gateflow-driver[bot]', reportBody);
-    await run(gateInput({ commentBody: reportBody, commentId: undefined }), client);
+    const { executeId } = approvedExecutionChain(client, 'working');
+    const tracker = client.issues.get(ISSUE)!.comments.at(-1)!;
+    const reportBody = `${MARKERS.completionReport}\n\n<!-- gateflow:dispatch-id: ${executeId} -->\n\nDone.\n`;
+    const report = client.pushComment(ISSUE, 'gateflow-driver[bot]', reportBody);
+    await run(gateInput({ actor: 'gateflow-driver[bot]', commentBody: reportBody, commentId: report.id }), client);
     expect(client.labelsOf(ISSUE)).toEqual([LABELS.done]);
+    expect(tracker.body).toContain('execution-tracker');
   });
 
   it('T6 requires WORKING: a report from READY never completes the issue', async () => {
@@ -164,33 +212,25 @@ describe('T1 / T3 / T6 marker transitions', () => {
 
   it('T4/T5: tracker status edits move WORKING ↔ BLOCKED', async () => {
     const client = new FakeGateClient();
-    client.addIssue(ISSUE, [LABELS.working]);
-    const tracker = client.pushComment(
-      ISSUE,
-      'gateflow-driver[bot]',
-      `${MARKERS.executionTracker}\n\n<!-- gateflow:dispatch-id: gf_r123_i7_waaaaaaaaaaaa_execute_p1 -->\n\n**Status:** In Progress\n`,
-    );
+    const { trackerId } = approvedExecutionChain(client, 'working');
+    const tracker = client.issues.get(ISSUE)!.comments.find((comment) => comment.id === trackerId)!;
     // T4: the tracker Status edit to Blocked arrives while WORKING.
     tracker.body = tracker.body.replace('**Status:** In Progress', '**Status:** Blocked');
-    await run(gateInput({ eventAction: 'edited', commentId: tracker.id, commentBody: tracker.body }), client);
+    await run(gateInput({ actor: 'gateflow-driver[bot]', eventAction: 'edited', commentId: tracker.id, commentBody: tracker.body }), client);
     expect(client.labelsOf(ISSUE)).toEqual([LABELS.blocked]);
 
     // T5: back to In Progress while BLOCKED.
     tracker.body = tracker.body.replace('**Status:** Blocked', '**Status:** In Progress');
-    await run(gateInput({ eventAction: 'edited', commentId: tracker.id, commentBody: tracker.body }), client);
+    await run(gateInput({ actor: 'gateflow-driver[bot]', eventAction: 'edited', commentId: tracker.id, commentBody: tracker.body }), client);
     expect(client.labelsOf(ISSUE)).toEqual([LABELS.working]);
   });
 
   it('"Completed" tracker edits never transition (completion is T6 only)', async () => {
     const client = new FakeGateClient();
-    client.addIssue(ISSUE, [LABELS.working]);
-    const tracker = client.pushComment(
-      ISSUE,
-      'gateflow-driver[bot]',
-      `${MARKERS.executionTracker}\n\n<!-- gateflow:dispatch-id: gf_r123_i7_waaaaaaaaaaaa_execute_p1 -->\n\n**Status:** In Progress\n`,
-    );
+    const { trackerId } = approvedExecutionChain(client, 'working');
+    const tracker = client.issues.get(ISSUE)!.comments.find((comment) => comment.id === trackerId)!;
     tracker.body = tracker.body.replace('**Status:** In Progress', '**Status:** Completed');
-    await run(gateInput({ eventAction: 'edited', commentId: tracker.id, commentBody: tracker.body }), client);
+    await run(gateInput({ actor: 'gateflow-driver[bot]', eventAction: 'edited', commentId: tracker.id, commentBody: tracker.body }), client);
     expect(client.labelsOf(ISSUE)).toEqual([LABELS.working]);
   });
 });
@@ -200,7 +240,7 @@ describe('T2 /approve with a Gate-issued approval record', () => {
     client.addIssue(ISSUE, [LABELS.review]);
     const epoch = testGateEpoch(ISSUE);
     client.addGateRecord(ISSUE, gateEpochRecord(123, ISSUE, epoch));
-    const plan = client.pushComment(ISSUE, 'gateflow-driver[bot]', planBody('gf_r123_i7_waaaaaaaaaaaa_plan_01'));
+    const plan = client.pushComment(ISSUE, 'gateflow-driver[bot]', planBody(planTaskId(epoch)));
     return { planId: plan.id, epoch };
   }
 
@@ -216,7 +256,7 @@ describe('T2 /approve with a Gate-issued approval record', () => {
     if (parsed.ok && parsed.record.kind === 'approval') {
       expect(parsed.record.workflow_epoch).toBe(epoch);
       expect(parsed.record.plan_comment_id).toBe(planId);
-      expect(parsed.record.plan_sha256).toBe(planSha256(planBody('gf_r123_i7_waaaaaaaaaaaa_plan_01')));
+      expect(parsed.record.plan_sha256).toBe(planSha256(planBody(planTaskId(epoch))));
       expect(parsed.record.approved_by_login).toBe(OWNER);
     } else {
       throw new Error('expected an approval record');
@@ -226,7 +266,7 @@ describe('T2 /approve with a Gate-issued approval record', () => {
   it('approving a non-current plan is rejected without a record', async () => {
     const client = new FakeGateClient();
     const { planId } = reviewIssue(client);
-    client.pushComment(ISSUE, 'gateflow-driver[bot]', planBody('gf_r123_i7_waaaaaaaaaaaa_plan_02')); // newer plan
+    client.pushComment(ISSUE, 'gateflow-driver[bot]', planBody(planTaskId(testGateEpoch(ISSUE), '02'))); // newer plan
     const command = client.pushComment(ISSUE, OWNER, `/approve ${planId}`);
     await run(gateInput({ commentId: command.id, commentBody: `/approve ${planId}` }), client);
     expect(client.labelsOf(ISSUE)).toEqual([LABELS.review]);
@@ -252,6 +292,126 @@ describe('T2 /approve with a Gate-issued approval record', () => {
     await run(gateInput({ commentId: command.id, commentBody: `/approve ${planId}` }), client);
     expect(client.gateComments(ISSUE).length).toBe(afterFirst);
     expect(client.labelsOf(ISSUE)).toEqual([LABELS.ready]);
+  });
+});
+
+describe('Task 02 execution-chain fail-closed checks', () => {
+  it('rejects a plan from an old epoch or with the wrong repository/issue task id', async () => {
+    const client = new FakeGateClient();
+    client.addIssue(ISSUE, [LABELS.planning]);
+    const currentEpoch = testGateEpoch(ISSUE);
+    client.addGateRecord(ISSUE, gateEpochRecord(123, ISSUE, currentEpoch));
+
+    const oldBody = planBody('gf_r123_i7_w000000000002_plan_01');
+    const oldPlan = client.pushComment(ISSUE, 'gateflow-driver[bot]', oldBody);
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: oldPlan.id, commentBody: oldBody }),
+      client,
+    );
+    expect(client.labelsOf(ISSUE)).toEqual([LABELS.planning]);
+
+    const wrongBody = planBody(`gf_r999_i7_w${currentEpoch.slice(3)}_plan_01`);
+    const wrongPlan = client.pushComment(ISSUE, 'gateflow-driver[bot]', wrongBody);
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: wrongPlan.id, commentBody: wrongBody }),
+      client,
+    );
+    expect(client.labelsOf(ISSUE)).toEqual([LABELS.planning]);
+  });
+
+  it('rejects a Tracker when the current Plan has no valid Approval', async () => {
+    const client = new FakeGateClient();
+    client.addIssue(ISSUE, [LABELS.ready]);
+    const epoch = testGateEpoch(ISSUE);
+    client.addGateRecord(ISSUE, gateEpochRecord(123, ISSUE, epoch));
+    const plan = client.pushComment(ISSUE, 'gateflow-driver[bot]', planBody(planTaskId(epoch)));
+    const trackerBody = `${MARKERS.executionTracker}\n\n<!-- gateflow:dispatch-id: ${executeTaskId(epoch, plan.id)} -->\n\n**Status:** In Progress\n`;
+    const tracker = client.pushComment(ISSUE, 'gateflow-driver[bot]', trackerBody);
+
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: tracker.id, commentBody: trackerBody }),
+      client,
+    );
+    expect(client.labelsOf(ISSUE)).toEqual([LABELS.ready]);
+  });
+
+  it('rejects an old Tracker and an old Report after a current execution is active', async () => {
+    const client = new FakeGateClient();
+    const { epoch, executeId } = approvedExecutionChain(client, 'working');
+    const oldId = `gf_r123_i7_w000000000002_execute_p1`;
+    const oldTrackerBody = `${MARKERS.executionTracker}\n\n<!-- gateflow:dispatch-id: ${oldId} -->\n\n**Status:** In Progress\n`;
+    const oldTracker = client.pushComment(ISSUE, 'gateflow-driver[bot]', oldTrackerBody);
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: oldTracker.id, commentBody: oldTrackerBody }),
+      client,
+    );
+    expect(client.labelsOf(ISSUE)).toEqual([LABELS.working]);
+
+    const oldReportBody = `${MARKERS.completionReport}\n\n<!-- gateflow:dispatch-id: ${oldId} -->\n\nDone.\n`;
+    const oldReport = client.pushComment(ISSUE, 'gateflow-driver[bot]', oldReportBody);
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: oldReport.id, commentBody: oldReportBody }),
+      client,
+    );
+    expect(client.labelsOf(ISSUE)).toEqual([LABELS.working]);
+    expect(executeId).not.toBe(oldId);
+    expect(epoch).toBe(testGateEpoch(ISSUE));
+  });
+
+  it('requires the current Tracker before accepting a Report', async () => {
+    const client = new FakeGateClient();
+    const { epoch, executeId } = approvedExecutionChain(client);
+    client.issues.get(ISSUE)!.labels = [LABELS.working];
+    const reportBody = `${MARKERS.completionReport}\n\n<!-- gateflow:dispatch-id: ${executeId} -->\n\nDone.\n`;
+    const report = client.pushComment(ISSUE, 'gateflow-driver[bot]', reportBody);
+
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: report.id, commentBody: reportBody }),
+      client,
+    );
+    expect(client.labelsOf(ISSUE)).toEqual([LABELS.working]);
+    expect(epoch).toBe(testGateEpoch(ISSUE));
+  });
+});
+
+describe('normal Plan → Approve → Execute → Report flow', () => {
+  it('completes only after every object in the current chain is present', async () => {
+    const client = new FakeGateClient();
+    client.addIssue(ISSUE);
+
+    const planCommand = client.pushComment(ISSUE, OWNER, '/ai-plan');
+    await run(gateInput({ commentId: planCommand.id }), client);
+    const epochRecord = client.gateComments(ISSUE)[0]!;
+    const parsedEpoch = parseRecord(epochRecord.id, epochRecord.body);
+    if (!parsedEpoch.ok || parsedEpoch.record.kind !== 'workflow_epoch') {
+      throw new Error('expected the Gate-issued epoch record');
+    }
+    const planBodyText = planBody(planTaskId(parsedEpoch.record.workflow_epoch));
+    const plan = client.pushComment(ISSUE, 'gateflow-driver[bot]', planBodyText);
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: plan.id, commentBody: planBodyText }),
+      client,
+    );
+
+    const approveBody = `/approve ${plan.id}`;
+    const approve = client.pushComment(ISSUE, OWNER, approveBody);
+    await run(gateInput({ commentId: approve.id, commentBody: approveBody }), client);
+
+    const executeId = executeTaskId(parsedEpoch.record.workflow_epoch, plan.id);
+    const trackerBody = `${MARKERS.executionTracker}\n\n<!-- gateflow:dispatch-id: ${executeId} -->\n\n**Status:** In Progress\n`;
+    const tracker = client.pushComment(ISSUE, 'gateflow-driver[bot]', trackerBody);
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: tracker.id, commentBody: trackerBody }),
+      client,
+    );
+
+    const reportBody = `${MARKERS.completionReport}\n\n<!-- gateflow:dispatch-id: ${executeId} -->\n\nDone.\n`;
+    const report = client.pushComment(ISSUE, 'gateflow-driver[bot]', reportBody);
+    await run(
+      gateInput({ actor: 'gateflow-driver[bot]', commentId: report.id, commentBody: reportBody }),
+      client,
+    );
+    expect(client.labelsOf(ISSUE)).toEqual([LABELS.done]);
   });
 });
 

@@ -149,18 +149,25 @@ describe('closed loop: plan → review → approve → execute → done', () => 
       }),
     );
 
-    // (8) SYNC creates the tracker (T3 trigger, lawful repair) and publishes
-    // the report in one pass.
+    // (8) SYNC creates the tracker (T3 trigger). The Gate must consume that
+    // comment and move the Issue to WORKING before the Report is eligible.
     const sync4 = await syncCommand(deps);
-    const actions = sync4.outcomes.map((o) => o.action);
-    expect(actions).toContain('completed');
+    expect(sync4.outcomes[0]?.action).toBe('tracker-created');
     expect(issue.comments.some((c) => c.body.includes(MARKERS.executionTracker))).toBe(true);
+    expect(issue.comments.some((c) => c.body.includes(MARKERS.completionReport))).toBe(false);
+
+    // (9) Gate T3 is observed on the next sync; only now may the Driver
+    // publish the Report.
+    issue.labels = ['ai:working'];
+    const sync5 = await syncCommand(deps);
+    expect(sync5.outcomes[0]?.action).toBe('completed');
     expect(issue.comments.some((c) => c.body.includes(MARKERS.completionReport))).toBe(true);
 
-    // (9) Gate consumes: T3 then T6 → ai:done; sync confirms acceptance.
+    // (10) Gate consumes T6 → ai:done; the next sync confirms the exact
+    // Report receipt rather than trusting the label alone.
     issue.labels = ['ai:done'];
-    const sync5 = await syncCommand(deps);
-    expect(sync5.outcomes[0]?.action).toBe('accepted');
+    const sync6 = await syncCommand(deps);
+    expect(sync6.outcomes[0]?.action).toBe('accepted');
     const state = await readDriverState(fixture.paths);
     expect(state.tasks[run2.taskId!]?.status).toBe('accepted');
   });

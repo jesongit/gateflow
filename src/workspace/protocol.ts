@@ -166,12 +166,16 @@ export interface TaskInput {
 export interface TaskFile {
   schema: typeof WORKSPACE_SCHEMA_VERSION;
   task_id: string;
-  /** `owner/name` of the target repository. */
-  repository: string;
+  /** `owner/name` of the Control Repository containing the GateFlow Issue. */
+  control_repository: string;
+  /** GitHub database id of the Control Repository (also encoded in task_id). */
   repository_id: number;
   issue_number: number;
   /** The workflow epoch this task belongs to. */
   workflow_epoch: string;
+  /** Target metadata; both may be null while planning is still exploratory. */
+  target_repository: string | null;
+  target_workspace: string | null;
   mode: Mode;
   reason: TaskReason;
   /** ISO 8601 UTC timestamp. */
@@ -212,7 +216,14 @@ export interface CurrentPointer {
   schema: typeof WORKSPACE_SCHEMA_VERSION;
   task_id: string;
   mode: Mode;
+  /** Control Repository containing the canonical Issue. */
+  control_repository: string;
+  /** GitHub database id of the Control Repository. */
+  repository_id: number;
   issue_number: number;
+  workflow_epoch: string;
+  target_repository: string | null;
+  target_workspace: string | null;
   updated_at: string;
 }
 
@@ -251,8 +262,17 @@ export interface TaskRecord {
   /** Task preparations so far (starts at 1). */
   attempts: number;
   mode: Mode;
+  /** Control Repository containing the canonical Issue. */
+  control_repository: string;
+  /** GitHub database id of the Control Repository. */
+  repository_id: number;
   issue_number: number;
   workflow_epoch: string;
+  /** Target metadata copied from task.json; null means not known/selected. */
+  target_repository: string | null;
+  target_workspace: string | null;
+  /** Present only while this execute task owns the Executor lock lifecycle. */
+  executor_lock_task_id?: string;
   /** sha256 over the input snapshot this task was prepared with. */
   input_snapshot_sha256?: string;
   plan_comment_id?: number;

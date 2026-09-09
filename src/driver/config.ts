@@ -25,12 +25,15 @@ import { readFile } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { parse } from 'yaml';
+import { isRepositorySlug } from '../workspace/binding';
 
 /** Strongly-typed driver configuration. */
 export interface DriverConfig {
   version: 1;
-  /** `owner/name`; optional — resolution order in resolveRepository. */
+  /** `owner/name` Control Repository; retained as the bootstrap config key. */
   repository?: string;
+  /** Explicit spelling for the Control Repository. Takes precedence over `repository`. */
+  controlRepository?: string;
   driver: {
     /** Runtime directory name under the project root. */
     workspaceDir: string;
@@ -78,7 +81,7 @@ export function defaultConfig(): DriverConfig {
 }
 
 /** `owner/name` shape (used for the resolved repository). */
-const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+const REPOSITORY_PATTERN = isRepositorySlug;
 
 type Obj = Record<string, unknown>;
 
@@ -145,11 +148,26 @@ export function parseConfig(raw: unknown): DriverConfig {
 
   const repository = optionalString(raw, 'repository', errors);
   if (repository !== undefined) {
-    if (!REPOSITORY_PATTERN.test(repository)) {
-      errors.push(`repository: must be "owner/name", got ${JSON.stringify(repository)}`);
+    if (!REPOSITORY_PATTERN(repository)) {
+      errors.push(`repository: must be a GitHub owner/name slug, got ${JSON.stringify(repository)}`);
     } else {
       config.repository = repository;
     }
+  }
+  const controlRepository = optionalString(raw, 'control_repository', errors);
+  if (controlRepository !== undefined) {
+    if (!REPOSITORY_PATTERN(controlRepository)) {
+      errors.push(`control_repository: must be a GitHub owner/name slug, got ${JSON.stringify(controlRepository)}`);
+    } else {
+      config.controlRepository = controlRepository;
+    }
+  }
+  if (
+    config.repository !== undefined &&
+    config.controlRepository !== undefined &&
+    config.repository.toLowerCase() !== config.controlRepository.toLowerCase()
+  ) {
+    errors.push('repository and control_repository must identify the same Control Repository');
   }
 
   const driver = section(raw, 'driver', errors);
@@ -241,22 +259,24 @@ export function parseGitRemoteRepository(gitRemoteUrl: string | null): string | 
 
 /**
  * Resolve the target repository as `owner/name` (frozen order):
- * config.repository ?? GATEFLOW_REPOSITORY ?? git remote origin ?? throw.
+ * config.controlRepository ?? config.repository ?? GATEFLOW_REPOSITORY ?? git remote origin ?? throw.
  */
 export function resolveRepository(
   config: DriverConfig,
   env: { GATEFLOW_REPOSITORY?: string },
   gitRemoteUrl: string | null,
 ): string {
-  const candidate = config.repository ?? env.GATEFLOW_REPOSITORY ?? parseGitRemoteRepository(gitRemoteUrl);
+  const candidate =
+    config.controlRepository ?? config.repository ?? env.GATEFLOW_REPOSITORY ?? parseGitRemoteRepository(gitRemoteUrl);
   if (candidate === undefined || candidate === null) {
     throw new ConfigError(
-      'repository could not be resolved: set `repository: owner/name` in gateflow.config.yml, ' +
+      'Control Repository could not be resolved: set `control_repository: owner/name` ' +
+        '(or the bootstrap alias `repository: owner/name`) in gateflow.config.yml, ' +
         'export GATEFLOW_REPOSITORY=owner/name, or add a GitHub git remote named "origin"',
     );
   }
-  if (!REPOSITORY_PATTERN.test(candidate)) {
-    throw new ConfigError(`repository must be "owner/name", got ${JSON.stringify(candidate)}`);
+  if (!REPOSITORY_PATTERN(candidate)) {
+    throw new ConfigError(`Control Repository must be a GitHub owner/name slug, got ${JSON.stringify(candidate)}`);
   }
   return candidate;
 }

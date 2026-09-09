@@ -78,9 +78,15 @@ export function parseCommand(body: string | null | undefined): ParsedCommand | n
 
   const approve = APPROVE_PATTERN.exec(trimmed);
   if (approve !== null) {
+    const planCommentId = Number(approve[1] ?? '0');
+    if (!Number.isSafeInteger(planCommentId) || planCommentId < 1) {
+      // Numeric text that cannot name a real GitHub comment is malformed
+      // protocol input, not an accepted command.
+      return null;
+    }
     return {
       command: COMMANDS.approve,
-      args: { planCommentId: Number(approve[1] ?? '0') },
+      args: { planCommentId },
     };
   }
 

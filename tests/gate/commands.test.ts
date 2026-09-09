@@ -40,6 +40,8 @@ describe('parseCommand — /approve <plan-comment-id>', () => {
     expect(parseCommand('/approve abc')).toBeNull();
     expect(parseCommand('/approve 123 extra')).toBeNull();
     expect(parseCommand('/approve 123\n456')).toBeNull();
+    expect(parseCommand('/approve 999999999999999999999999999999')).toBeNull();
+    expect(parseCommand('/approve 0')).toBeNull();
   });
 });
 

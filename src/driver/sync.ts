@@ -60,8 +60,18 @@ import {
 } from '../workspace/driver-state';
 import { OversizedFileError, validateResultForTask } from '../workspace/validation';
 import { canonicalPlanContent } from '../protocol/plan';
+import { findDispatchId, validateExpectedDispatchId } from '../gate/execution-chain';
+import { MARKERS } from '../gate/protocol';
+import { detectCommentMarker } from '../gate/markers';
+import { findTrackerStatus } from '../github/comments';
 import { runPreflight, type SyncSnapshot } from './preflight';
 import type { DriverDeps } from './driver';
+import {
+  acquireExecutorLock,
+  executorLockFile,
+  releaseExecutorLock,
+} from './workspace-lock';
+import { workspaceKey } from '../workspace/binding';
 
 /** All sync actions. */
 export type SyncAction =
@@ -99,16 +109,63 @@ function noticeKey(body: string): string {
 }
 
 /** Record skeleton preserving prior cache fields. */
-function recordBase(record: TaskRecord | null, taskId: string): TaskRecord {
+function recordBase(record: TaskRecord, taskId: string): TaskRecord {
   return {
-    ...(record ?? {}),
+    ...record,
     task_id: taskId,
-    status: record?.status ?? 'prepared',
-    attempts: record?.attempts ?? 1,
-    mode: record?.mode ?? 'plan',
-    issue_number: record?.issue_number ?? 0,
-    workflow_epoch: record?.workflow_epoch ?? '',
+    status: record.status,
+    attempts: record.attempts,
+    mode: record.mode,
+    control_repository: record.control_repository,
+    repository_id: record.repository_id,
+    issue_number: record.issue_number,
+    workflow_epoch: record.workflow_epoch,
+    target_repository: record.target_repository,
+    target_workspace: record.target_workspace,
   };
+}
+
+function taskRecordBindingFailure(task: TaskFile, record: TaskRecord): string | null {
+  if (
+    record.task_id !== task.task_id ||
+    record.control_repository !== task.control_repository ||
+    record.repository_id !== task.repository_id ||
+    record.issue_number !== task.issue_number ||
+    record.workflow_epoch !== task.workflow_epoch ||
+    record.mode !== task.mode ||
+    record.target_repository !== task.target_repository ||
+    workspaceKey(record.target_workspace) !== workspaceKey(task.target_workspace)
+  ) {
+    return 'task.json and driver-state target/control binding disagree (refusing to sync a possibly cross-wired task)';
+  }
+  if (task.mode === 'plan' && record.executor_lock_task_id !== undefined) {
+    return 'plan task unexpectedly carries an Executor lock lifecycle record';
+  }
+  return null;
+}
+
+/** Remove the private lock marker after a terminal lifecycle transition. */
+function withoutExecutorMarker(record: TaskRecord): TaskRecord {
+  const { executor_lock_task_id: _executorLockTaskId, ...rest } = record;
+  return rest;
+}
+
+/**
+ * Release an Executor lock through the Task 04 API. After a Driver restart,
+ * the original PID is gone; an explicit terminal transition may safely
+ * reacquire the same task lock only when the API proves the old owner is
+ * reclaimable, then release it. A live/unknown owner remains fail-closed.
+ */
+async function releaseExecutorLifecycle(
+  paths: WorkspacePaths,
+  taskId: string,
+  now: () => Date,
+): Promise<boolean> {
+  const file = executorLockFile(paths);
+  if (await releaseExecutorLock(file, taskId)) return true;
+  const reacquired = await acquireExecutorLock(file, taskId, now);
+  if (!reacquired.ok) return false;
+  return releaseExecutorLock(file, taskId);
 }
 
 /**
@@ -175,9 +232,23 @@ function resolveTrackerFrom(
 ): CommentDetail | null {
   if (record?.tracker_comment_id !== undefined) {
     const found = comments.find((comment) => comment.id === record.tracker_comment_id);
-    if (found !== undefined) return found;
+    if (found !== undefined && findTrackerComment([found], taskId) !== null) return found;
   }
   return findTrackerComment(comments, taskId);
+}
+
+function preflightIdentity(
+  deps: DriverDeps,
+  repositoryInfo: RepositoryInfo,
+): Parameters<typeof runPreflight>[3] {
+  return {
+    gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
+    trustedHumans: new Set([
+      repositoryInfo.owner.toLowerCase(),
+      ...deps.config.trustedHumans.map((login) => login.toLowerCase()),
+    ]),
+    repoOwner: repositoryInfo.owner,
+  };
 }
 
 /**
@@ -215,6 +286,12 @@ export async function syncTask(
     };
   }
 
+  const bindingFailure = taskRecordBindingFailure(task, record);
+  if (bindingFailure !== null) {
+    deps.log.warning(`rejected ${taskId}: ${bindingFailure}`);
+    return { taskId, action: 'rejected', detail: bindingFailure };
+  }
+
   // (3) Validation before any sync. Human-only values die here. (The replay
   // guard runs AFTER the acceptance observation so a published-but-
   // unconfirmed record can still advance to `accepted`; a rejected
@@ -243,23 +320,30 @@ export async function syncTask(
   }
 
   // (5) PREFLIGHT: current-task authorization before any GitHub write.
-  const preflight = await runPreflight(deps.client, repositoryInfo, task, {
-    gateLogins: new Set(deps.config.gateLogins.map((login) => login.toLowerCase())),
-    trustedHumans: new Set([
-      repositoryInfo.owner.toLowerCase(),
-      ...deps.config.trustedHumans.map((login) => login.toLowerCase()),
-    ]),
-    repoOwner: repositoryInfo.owner,
-  });
+  const preflight = await runPreflight(
+    deps.client,
+    repositoryInfo,
+    task,
+    preflightIdentity(deps, repositoryInfo),
+    { projectRoot: deps.projectRoot, workspaceDir: deps.config.driver.workspaceDir },
+  );
   if (!preflight.ok) {
     if (preflight.obsolete) {
+      const lockReleased =
+        task.mode === 'execute' ? await releaseExecutorLifecycle(paths, taskId, now) : true;
+      const obsoleteRecord = {
+        ...recordBase(record, taskId),
+        status: 'obsolete' as const,
+        error: lockReleased
+          ? preflight.reason
+          : `${preflight.reason}; Executor lock is still held or unknown and was not reclaimed`,
+        last_sync_at: nowIso,
+      };
       await writeDriverState(paths, {
-        ...withTaskRecord(state, {
-          ...recordBase(record, taskId),
-          status: 'obsolete',
-          error: preflight.reason,
-          last_sync_at: nowIso,
-        }),
+        ...withTaskRecord(
+          state,
+          lockReleased ? withoutExecutorMarker(obsoleteRecord) : obsoleteRecord,
+        ),
       });
       deps.log.warning(`obsolete ${taskId}: ${preflight.reason}`);
       return { taskId, action: 'obsolete', detail: preflight.reason };
@@ -278,30 +362,49 @@ export async function syncTask(
   //   - Plan: the Gate issued an approval record for THIS task's plan
   //     comment (the only durable signal that the specific plan bytes were
   //     accepted — a feedback-round re-plan never re-fires T1).
-  //   - Report: the Gate consumed the completion report (label ai:done).
+  //   - Report: the Gate consumed THIS report after the current Tracker/Plan/
+  //     Approval chain was valid (label ai:done alone is never sufficient).
   if (record.status === 'published' && record.published_comment_id !== undefined) {
-    const isPlanAccepted =
-      task.mode === 'plan' &&
-      snapshot.view.approvals.some(
-        (entry) =>
-          entry.record.workflow_epoch === snapshot.epoch &&
-          entry.record.plan_comment_id === record.published_comment_id,
-      );
-    const isReportAccepted = task.mode === 'execute' && snapshot.aiState === 'ai:done';
+    const isPlanAccepted = await isPublishedPlanAccepted(task, record, snapshot, paths);
+    const isReportAccepted = await isPublishedReportAccepted(task, record, snapshot, paths);
     if (isPlanAccepted || isReportAccepted) {
+      const lockReleased =
+        task.mode === 'execute' ? await releaseExecutorLifecycle(paths, taskId, now) : true;
+      const acceptedRecord = {
+        ...recordBase(record, taskId),
+        status: 'accepted' as const,
+        last_sync_at: nowIso,
+      };
       await writeDriverState(paths, {
-        ...withTaskRecord(state, {
-          ...recordBase(record, taskId),
-          status: 'accepted',
-          last_sync_at: nowIso,
-        }),
+        ...withTaskRecord(state, lockReleased ? withoutExecutorMarker(acceptedRecord) : acceptedRecord),
       });
       return { taskId, action: 'accepted', detail: `Gate accepted the ${task.mode} output (${snapshot.aiState})` };
     }
   }
 
-  // (7) Replay protection: published/accepted records never re-publish;
-  // later result.json overwrites are not accepted.
+  // (7) Replay protection: accepted records never re-publish. A published
+  // execute record is allowed back through the execute reconciler while its
+  // exact Report receipt is still unconfirmed; this is the recovery path for
+  // a Gate event arriving between two syncs.
+  if (
+    record.status === 'published' &&
+    task.mode === 'execute' &&
+    result?.status === 'completed'
+  ) {
+    return syncExecuteMode(
+      deps,
+      repositoryInfo,
+      ref(repositoryInfo, task.issue_number),
+      paths,
+      state,
+      taskId,
+      task,
+      record,
+      result,
+      snapshot,
+      nowIso,
+    );
+  }
   if (record.status === 'published' || record.status === 'accepted') {
     return {
       taskId,
@@ -313,7 +416,19 @@ export async function syncTask(
   if (task.mode === 'plan') {
     return syncPlanMode(deps, ref(repositoryInfo, task.issue_number), paths, state, taskId, task, record, result, snapshot, nowIso);
   }
-  return syncExecuteMode(deps, ref(repositoryInfo, task.issue_number), paths, state, taskId, task, record, result, snapshot, nowIso);
+  return syncExecuteMode(
+    deps,
+    repositoryInfo,
+    ref(repositoryInfo, task.issue_number),
+    paths,
+    state,
+    taskId,
+    task,
+    record,
+    result,
+    snapshot,
+    nowIso,
+  );
 }
 
 function ref(repositoryInfo: RepositoryInfo, issueNumber: number): IssueRef {
@@ -365,7 +480,13 @@ async function syncPlanMode(
       }
 
       // Operation reconciliation: adopt / conflict / publish.
-      const reconciliation = reconcileMarkerComment(snapshot.comments, taskId, plan.content, 'plan');
+      const reconciliation = reconcileMarkerComment(
+        snapshot.comments,
+        taskId,
+        plan.content,
+        'plan',
+        record.status === 'publishing' ? record.published_comment_id : undefined,
+      );
       if (reconciliation.verdict === 'conflict') {
         await persistRecord(paths, state, {
           ...recordBase(record, taskId),
@@ -375,6 +496,13 @@ async function syncPlanMode(
         });
         deps.log.error(`conflict ${taskId}: ${reconciliation.detail}`);
         return { taskId, action: 'rejected', detail: reconciliation.detail };
+      }
+      if (reconciliation.verdict === 'pending') {
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: 'plan publication is awaiting remote confirmation; retry reconciles before creating another comment',
+        };
       }
       let commentId: number;
       if (reconciliation.verdict === 'adopt') {
@@ -387,7 +515,47 @@ async function syncPlanMode(
           last_sync_at: nowIso,
         });
         const published = await publishPlanComment(deps.client, issueRef, plan.content, taskId);
-        commentId = published.id;
+        // Persist the remote id while the operation is still publishing. If
+        // the following read or local state write times out, the next sync
+        // has an id and must reconcile it instead of blindly posting again.
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: 'publishing',
+          published_comment_id: published.id,
+          last_sync_at: nowIso,
+        });
+        const confirmed = reconcileMarkerComment(
+          await deps.client.listComments(issueRef),
+          taskId,
+          plan.content,
+          'plan',
+          published.id,
+        );
+        if (confirmed.verdict === 'conflict') {
+          await persistRecord(paths, state, {
+            ...recordBase(record, taskId),
+            status: 'failed',
+            published_comment_id: published.id,
+            error: confirmed.detail,
+            last_sync_at: nowIso,
+          });
+          return { taskId, action: 'rejected', detail: confirmed.detail };
+        }
+        if (confirmed.verdict === 'pending') {
+          return {
+            taskId,
+            action: 'unchanged',
+            detail: `plan comment #${published.id} was created but is not visible in the fresh remote read; retry will reconcile it`,
+          };
+        }
+        if (confirmed.verdict === 'absent') {
+          return {
+            taskId,
+            action: 'unchanged',
+            detail: `plan comment #${published.id} could not be reconciled after publication; retry will inspect the remote issue`,
+          };
+        }
+        commentId = confirmed.comment.id;
       }
       await persistRecord(paths, state, {
         ...recordBase(record, taskId),
@@ -434,6 +602,7 @@ async function syncPlanMode(
  */
 async function syncExecuteMode(
   deps: DriverDeps,
+  repositoryInfo: RepositoryInfo,
   issueRef: IssueRef,
   paths: WorkspacePaths,
   state: DriverStateFile,
@@ -460,15 +629,20 @@ async function syncExecuteMode(
       // is ensured first so the Gate fires T3 before T6 — comment events are
       // processed in creation order), from WORKING, or from BLOCKED (a T5
       // resume edit precedes the report).
+      const canRecoverDone =
+        snapshot.aiState === 'ai:done' &&
+        snapshot.currentTracker !== null &&
+        snapshot.currentReports.length > 0;
       if (
         snapshot.aiState !== 'ai:ready' &&
         snapshot.aiState !== 'ai:working' &&
-        snapshot.aiState !== 'ai:blocked'
+        snapshot.aiState !== 'ai:blocked' &&
+        !canRecoverDone
       ) {
         return {
           taskId,
           action: 'unchanged',
-          detail: `completion report requires ai:ready|ai:working|ai:blocked, current state is ${snapshot.aiState}`,
+          detail: `completion report requires ai:ready|ai:working|ai:blocked, or a recoverable ai:done chain; current state is ${snapshot.aiState}`,
         };
       }
       const report = await readOutputCapped(paths, taskId, 'report.md');
@@ -479,13 +653,27 @@ async function syncExecuteMode(
         return { taskId, action: 'rejected', detail: 'status=completed but report.md is missing or empty' };
       }
 
-      // The report must not be an orphan: a tracker MUST exist before the
-      // report publishes, so the issue legally traverses T3 (READY→WORKING)
-      // before T6 (WORKING→DONE). A completed claim without a tracker gets
-      // a lawful tracker here, never a bare report that cannot trigger DONE.
-      let tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+      // The report must not be an orphan: a tracker MUST exist and the Gate
+      // must already have accepted T3 (the fresh label is ai:working) before
+      // the report publishes. A completed claim in READY is deliberately
+      // split into two sync cycles so GitHub Actions may process T3 first.
+      let tracker = snapshot.currentTracker ?? resolveTrackerFrom(snapshot.comments, taskId, record);
       let trackerId: number | undefined = tracker?.id;
       if (tracker === null) {
+        if (record.tracker_comment_id !== undefined) {
+          return {
+            taskId,
+            action: 'unchanged',
+            detail: `tracker comment #${record.tracker_comment_id} is not visible or valid yet; retry will reconcile before creating another`,
+          };
+        }
+        if (snapshot.aiState === 'ai:blocked') {
+          return {
+            taskId,
+            action: 'unchanged',
+            detail: 'completion report is waiting for the current execution Tracker while the issue is blocked',
+          };
+        }
         const created = await publishTrackerComment(deps.client, issueRef, {
           taskId,
           issueNumber: issueRef.issueNumber,
@@ -499,25 +687,126 @@ async function syncExecuteMode(
           updatedAt: nowIso,
         };
         deps.log.info(`repaired ${taskId}: lawful tracker #${created.id} created before report publication`);
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          tracker_comment_id: trackerId,
+          last_sync_at: nowIso,
+        });
+        const fresh = await runPreflight(
+          deps.client,
+          repositoryInfo,
+          task,
+          preflightIdentity(deps, repositoryInfo),
+          { projectRoot: deps.projectRoot, workspaceDir: deps.config.driver.workspaceDir },
+        );
+        if (!fresh.ok || fresh.snapshot.currentTracker === null || fresh.snapshot.aiState !== 'ai:working') {
+          return {
+            taskId,
+            action: 'tracker-created',
+            detail: `tracker comment #${created.id} created; waiting for Gate acceptance of WORKING before report publication`,
+          };
+        }
+        const refreshedTracker = fresh.snapshot.currentTracker;
+        snapshot = fresh.snapshot;
+        tracker = refreshedTracker;
+        trackerId = refreshedTracker.id;
       }
 
-      // Blocked → resume first (T5), so T6's from-state (WORKING) holds.
-      if (snapshot.aiState === 'ai:blocked') {
+      if (tracker === null) {
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: 'execution Tracker is not currently visible; retry will reconcile before publishing the Report',
+        };
+      }
+
+      // Blocked → resume first (T5), so T6's from-state (WORKING) holds. An
+      // edit which succeeded before the local process timed out is harmless:
+      // the next sync re-reads the same object and reconciles again.
+      if (
+        snapshot.aiState === 'ai:blocked' ||
+        findTrackerStatus(tracker.body) !== 'In Progress'
+      ) {
         await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: 'In Progress' });
-        deps.log.info(`resumed ${taskId}: tracker #${tracker.id} set back to In Progress before the report (T5)`);
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          tracker_comment_id: tracker.id,
+          last_sync_at: nowIso,
+        });
+        const fresh = await runPreflight(
+          deps.client,
+          repositoryInfo,
+          task,
+          preflightIdentity(deps, repositoryInfo),
+          { projectRoot: deps.projectRoot, workspaceDir: deps.config.driver.workspaceDir },
+        );
+        if (!fresh.ok || fresh.snapshot.currentTracker === null || fresh.snapshot.aiState !== 'ai:working') {
+          return {
+            taskId,
+            action: 'resumed',
+            detail: `tracker #${tracker.id} set to In Progress; waiting for Gate acceptance of WORKING before report publication`,
+          };
+        }
+        const refreshedTracker = fresh.snapshot.currentTracker;
+        snapshot = fresh.snapshot;
+        tracker = refreshedTracker;
+        trackerId = refreshedTracker.id;
+      }
+      if (snapshot.aiState === 'ai:ready') {
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          tracker_comment_id: tracker.id,
+          last_sync_at: nowIso,
+        });
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: `tracker #${tracker.id} exists; waiting for Gate acceptance of WORKING before report publication`,
+        };
       }
 
       // Operation reconciliation for the REPORT.
-      const reconciliation = reconcileMarkerComment(snapshot.comments, taskId, report.content, 'report');
-      if (reconciliation.verdict === 'conflict') {
+      if (snapshot.aiState !== 'ai:working' && snapshot.aiState !== 'ai:done') {
         await persistRecord(paths, state, {
           ...recordBase(record, taskId),
-          status: 'failed',
-          error: reconciliation.detail,
+          tracker_comment_id: tracker.id,
           last_sync_at: nowIso,
         });
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: `tracker #${tracker.id} is present, but the Gate has not accepted WORKING yet`,
+        };
+      }
+
+      // Operation reconciliation for the REPORT. A publishing record with a
+      // remembered id is an in-flight operation, not permission to create a
+      // second Report.
+      const reconciliation = reconcileMarkerComment(
+        snapshot.comments,
+        taskId,
+        report.content,
+        'report',
+        record.status === 'publishing' ? record.published_comment_id : undefined,
+      );
+      if (reconciliation.verdict === 'conflict') {
+        const lockReleased = await releaseExecutorLifecycle(paths, taskId, deps.now ?? (() => new Date()));
+        const failedRecord = {
+          ...recordBase(record, taskId),
+          status: 'failed' as const,
+          error: reconciliation.detail,
+          last_sync_at: nowIso,
+        };
+        await persistRecord(paths, state, lockReleased ? withoutExecutorMarker(failedRecord) : failedRecord);
         deps.log.error(`conflict ${taskId}: ${reconciliation.detail}`);
         return { taskId, action: 'rejected', detail: reconciliation.detail };
+      }
+      if (reconciliation.verdict === 'pending') {
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: 'report publication is awaiting remote confirmation; retry reconciles before creating another comment',
+        };
       }
       let reportId: number;
       if (reconciliation.verdict === 'adopt') {
@@ -530,20 +819,65 @@ async function syncExecuteMode(
           last_sync_at: nowIso,
         });
         const published = await publishCompletionReport(deps.client, issueRef, report.content, taskId);
-        reportId = published.id;
+        await persistRecord(paths, state, {
+          ...recordBase(record, taskId),
+          status: 'publishing',
+          published_comment_id: published.id,
+          tracker_comment_id: trackerId,
+          last_sync_at: nowIso,
+        });
+        const confirmed = reconcileMarkerComment(
+          await deps.client.listComments(issueRef),
+          taskId,
+          report.content,
+          'report',
+          published.id,
+        );
+        if (confirmed.verdict === 'conflict') {
+          const lockReleased = await releaseExecutorLifecycle(paths, taskId, deps.now ?? (() => new Date()));
+          const failedRecord = {
+            ...recordBase(record, taskId),
+            status: 'failed' as const,
+            published_comment_id: published.id,
+            tracker_comment_id: trackerId,
+            error: confirmed.detail,
+            last_sync_at: nowIso,
+          };
+          await persistRecord(paths, state, lockReleased ? withoutExecutorMarker(failedRecord) : failedRecord);
+          return { taskId, action: 'rejected', detail: confirmed.detail };
+        }
+        if (confirmed.verdict === 'pending') {
+          return {
+            taskId,
+            action: 'unchanged',
+            detail: `completion report #${published.id} was created but is not visible in the fresh remote read; retry will reconcile it`,
+          };
+        }
+        if (confirmed.verdict === 'absent') {
+          return {
+            taskId,
+            action: 'unchanged',
+            detail: `completion report #${published.id} could not be reconciled after publication; retry will inspect the remote issue`,
+          };
+        }
+        reportId = confirmed.comment.id;
       }
-      await persistRecord(paths, state, {
+      const lockReleased = await releaseExecutorLifecycle(paths, taskId, deps.now ?? (() => new Date()));
+      const completedRecord = {
         ...recordBase(record, taskId),
-        status: 'published',
+        status: 'published' as const,
         published_comment_id: reportId,
         tracker_comment_id: trackerId,
         last_sync_at: nowIso,
-        error: null,
-      });
+        error: lockReleased ? null : 'report published, but Executor lock remains held or unknown',
+      };
+      await persistRecord(paths, state, lockReleased ? withoutExecutorMarker(completedRecord) : completedRecord);
       return {
         taskId,
         action: 'completed',
-        detail: `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)`,
+        detail:
+          `completion report #${reportId} published for issue #${issueRef.issueNumber} (awaiting Gate acceptance)` +
+          (lockReleased ? '' : '; Executor lock remains held or unknown'),
       };
     }
 
@@ -567,12 +901,19 @@ async function syncExecuteMode(
         detail: 'blocked notice already posted for this task',
       };
     }
-    let tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+    let tracker = snapshot.currentTracker ?? resolveTrackerFrom(snapshot.comments, taskId, record);
     let trackerId: number;
     if (tracker !== null) {
       await updateTracker(deps.client, issueRef, tracker.id, tracker.body, { status: 'Blocked' });
       trackerId = tracker.id;
     } else {
+      if (record.tracker_comment_id !== undefined) {
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: `tracker comment #${record.tracker_comment_id} is not visible or valid yet; retry will reconcile before creating another`,
+        };
+      }
       const created = await publishTrackerComment(deps.client, issueRef, {
         taskId,
         issueNumber: issueRef.issueNumber,
@@ -590,20 +931,35 @@ async function syncExecuteMode(
     }
     const body = pendingBody;
     await deps.client.addIssueComment(issueRef, body);
-    await persistRecord(paths, state, {
+    const lockReleased = await releaseExecutorLifecycle(paths, taskId, deps.now ?? (() => new Date()));
+    const noticeRecord = {
       ...recordBase(record, taskId),
       tracker_comment_id: trackerId,
       last_notice_key: noticeKey(body),
       last_sync_at: nowIso,
-    });
-    return { taskId, action: 'notice', detail: `execute ${result.status}: tracker #${trackerId} set to Blocked, notice posted` };
+    };
+    await persistRecord(paths, state, lockReleased ? withoutExecutorMarker(noticeRecord) : noticeRecord);
+    return {
+      taskId,
+      action: 'notice',
+      detail:
+        `execute ${result.status}: tracker #${trackerId} set to Blocked, notice posted` +
+        (lockReleased ? '' : '; Executor lock remains held or unknown'),
+    };
   }
 
   // No terminal result yet: create the execution tracker as the visible
   // "work started" signal (T3) when the issue sits in READY.
-  if (snapshot.aiState === 'ai:ready') {
-    const tracker = resolveTrackerFrom(snapshot.comments, taskId, record);
+  if (snapshot.aiState === 'ai:ready' || snapshot.aiState === 'ai:working') {
+    const tracker = snapshot.currentTracker ?? resolveTrackerFrom(snapshot.comments, taskId, record);
     if (tracker === null) {
+      if (record.tracker_comment_id !== undefined) {
+        return {
+          taskId,
+          action: 'unchanged',
+          detail: `tracker comment #${record.tracker_comment_id} is not visible or valid yet; retry will reconcile before creating another`,
+        };
+      }
       const created = await publishTrackerComment(deps.client, issueRef, {
         taskId,
         issueNumber: issueRef.issueNumber,
@@ -635,6 +991,59 @@ async function syncExecuteMode(
 }
 
 /**
+ * Plan acceptance is bound to the exact published Plan object and its
+ * Gate-issued approval record.  An approval for a different revision, hash,
+ * or current-plan position is not an acceptance receipt for this task.
+ */
+async function isPublishedPlanAccepted(
+  task: TaskFile,
+  record: TaskRecord,
+  snapshot: SyncSnapshot,
+  paths: WorkspacePaths,
+): Promise<boolean> {
+  if (task.mode !== 'plan' || record.published_comment_id === undefined) return false;
+  const plan = snapshot.comments.find((comment) => comment.id === record.published_comment_id);
+  if (plan === undefined || snapshot.currentPlan?.id !== plan.id) return false;
+  if (detectCommentMarker(plan.body) !== MARKERS.plan) return false;
+  const dispatch = validateExpectedDispatchId(findDispatchId(plan.body), task.task_id);
+  if (!dispatch.ok) return false;
+  if (!snapshot.planAccepted) return false;
+  const local = await readOutputCapped(paths, task.task_id, 'plan.md');
+  return local.content !== null && canonicalPlanContent(plan.body) === canonicalPlanContent(local.content);
+}
+
+/**
+ * Report acceptance requires the exact report receipt to be the latest
+ * current-task report and requires the current Tracker object to be present.
+ * Preflight has already revalidated the current Plan and Approval chain; the
+ * fresh ai:done label is only the final state observation, never the proof by
+ * itself.
+ */
+async function isPublishedReportAccepted(
+  task: TaskFile,
+  record: TaskRecord,
+  snapshot: SyncSnapshot,
+  paths: WorkspacePaths,
+): Promise<boolean> {
+  if (task.mode !== 'execute' || record.published_comment_id === undefined) return false;
+  if (snapshot.aiState !== 'ai:done') return false;
+  const reports = snapshot.currentReports;
+  const report = reports[reports.length - 1];
+  if (report === undefined || report.id !== record.published_comment_id) return false;
+  if (detectCommentMarker(report.body) !== MARKERS.completionReport) return false;
+  if (!validateExpectedDispatchId(findDispatchId(report.body), task.task_id).ok) return false;
+  if (snapshot.currentTracker === null) return false;
+  if (
+    record.tracker_comment_id !== undefined &&
+    snapshot.currentTracker.id !== record.tracker_comment_id
+  ) {
+    return false;
+  }
+  const local = await readOutputCapped(paths, task.task_id, 'report.md');
+  return local.content !== null && canonicalPlanContent(report.body) === canonicalPlanContent(local.content);
+}
+
+/**
  * Operation reconciliation for a PLAN or REPORT comment (hardening Phase 5):
  * search by marker + task id. Found + same canonical content → adopt;
  * found + different content → CONFLICT (fail closed, never overwrite, never
@@ -645,14 +1054,19 @@ function reconcileMarkerComment(
   taskId: string,
   localContent: string,
   kind: 'plan' | 'report',
-): { verdict: 'absent' } | { verdict: 'adopt'; comment: CommentDetail } | { verdict: 'conflict'; detail: string } {
+  pendingCommentId?: number,
+):
+  | { verdict: 'absent' }
+  | { verdict: 'adopt'; comment: CommentDetail }
+  | { verdict: 'pending' }
+  | { verdict: 'conflict'; detail: string } {
   const mine =
     kind === 'plan'
       ? findPlanComments(comments).filter((plan) => plan.dispatchId === taskId)
       : findCompletionReportComments(comments, taskId);
-  if (mine.length === 0) return { verdict: 'absent' };
+  if (mine.length === 0) return pendingCommentId === undefined ? { verdict: 'absent' } : { verdict: 'pending' };
   const latest = mine[mine.length - 1];
-  if (latest === undefined) return { verdict: 'absent' };
+  if (latest === undefined) return pendingCommentId === undefined ? { verdict: 'absent' } : { verdict: 'pending' };
   const remoteHash = canonicalPlanContent(latest.body);
   const localHash = canonicalPlanContent(localContent);
   if (remoteHash !== localHash) {
@@ -662,6 +1076,10 @@ function reconcileMarkerComment(
         `remote ${kind} comment #${latest.id} exists for ${taskId} with DIFFERENT ` +
         'content (fail closed: no overwrite, no duplicate)',
     };
+  }
+  if (pendingCommentId !== undefined) {
+    const pending = mine.find((comment) => comment.id === pendingCommentId);
+    if (pending !== undefined) return { verdict: 'adopt', comment: pending };
   }
   return { verdict: 'adopt', comment: latest };
 }
@@ -691,8 +1109,20 @@ export async function syncAll(
 /** Explicit retry: drop the driver-state record so `run` may re-prepare. */
 export async function clearTask(paths: WorkspacePaths, taskId: string): Promise<boolean> {
   const state = await readDriverState(paths);
-  if (getTaskRecord(state, taskId) === null) {
+  const record = getTaskRecord(state, taskId);
+  if (record === null) {
     return false;
+  }
+  if (record.executor_lock_task_id !== undefined) {
+    // First try the normal owner-checked release. If this is an explicit
+    // retry after a Driver restart, the existing API may reclaim a dead PID;
+    // a live/unknown Executor remains a hard stop and the state is retained.
+    let released = await releaseExecutorLock(executorLockFile(paths), taskId);
+    if (!released) {
+      const reclaimed = await acquireExecutorLock(executorLockFile(paths), taskId);
+      released = reclaimed.ok && (await releaseExecutorLock(executorLockFile(paths), taskId));
+    }
+    if (!released) return false;
   }
   await writeDriverState(paths, withoutTaskRecord(state, taskId));
   return true;

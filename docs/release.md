@@ -11,8 +11,8 @@
 假设发布 `v1.0.0`（V1 首个公开版本）。V1 有**两个消费入口**：
 
 ```text
-Gate Action：  jesongit/gateflow@v1     （目标仓库 workflow 的 uses: 引用）
-Driver CLI：   npm run build:cli → dist/cli.js（bin: gateflow；消费者从仓库检出 / Release 产物获取）
+Gate Action：  action.yml → dist/index.js（目标仓库 workflow 的 `uses:` 引用）
+Driver CLI：   npm run build → dist/cli.js（`bin: gateflow`；消费者从仓库检出源码使用）
 ```
 
 按顺序执行：
@@ -27,7 +27,7 @@ npm run check:dist   # 内存中重建两个产物并与已提交版本逐字节
 git status           # build 之后 dist/ 必须显示"无变化"
 ```
 
-`git status` 若显示 `dist/` 有改动，说明上次提交的产物不新鲜（src 在上次 build 后又变过）：先提交刷新产物，再继续。**GitHub JS Action 运行的是仓库里提交的 `dist/index.js`，Driver 消费者运行的也是提交的 `dist/cli.js`——产物同步是发布正确性的硬前提**。CI（Node 24）已内置 `check:dist` 与 `git diff --exit-code dist` 两道保险，本地不要跳过。
+`git status` 若显示 `dist/` 有改动，说明提交的产物不新鲜：先检查并提交刷新产物，再继续。**GitHub JS Action 运行仓库中提交的 `dist/index.js`，Driver 的 `bin` 指向提交的 `dist/cli.js`，产物同步是发布正确性的硬前提**。CI（Node 24）已内置 `check:dist` 与 `git diff --exit-code dist` 两道保险。
 
 ### Step 2：版本对齐
 
@@ -35,12 +35,12 @@ git status           # build 之后 dist/ 必须显示"无变化"
 - 若本次包含 Gate 行为变更，确认 [src/index.ts](../src/index.ts) 的 `GATE_VERSION` 已提升（V1 首版为 `1.0.0`），且测试中的 `GATE_VERSION` 断言已同步（见 §2）；
 - 确认工作树干净（所有改动已提交）。
 
-### Step 2.5：Schema 2 Hardening 发布门槛（2026-09 起）
+### Step 2.5：当前 V1 发布门槛
 
-- [ ] `action.yml` 为 `using: node24`，`package.json` 构建目标为 `target=node24`、`engines >=24`（CI 有自动断言；Node20 已于 2026-09-23 从 GitHub runner 移除）；
-- [ ] `protocol/github-schema-v2.json` 与 `protocol/workspace-schema-v2.json` 可解析，且与 `src/gate/*`、`src/protocol/records.ts`、`src/workspace/schemas.ts` 的冻结形状一致（协议 JSON 镜像改动 = 协议改动，需同 PR 更新实现与测试向量）；
-- [ ] CI 的 `action-smoke` job（真实 GitHub-hosted runner：Node24 运行时、无 Issue 事件安全 no-op、非 Human 命令拒绝）最近一次运行全绿；
-- [ ] [docs/plans/v1_hardening_decisions.md](plans/v1_hardening_decisions.md) 与实现无漂移：记录格式、Operation ID 语法、receipt 状态机、`published ≠ accepted` 语义如文档所述。
+- [ ] `action.yml` 为 `using: node24`，`package.json` 的构建目标为 `target=node24`，且 `engines` 为 `>=24`；
+- [ ] Gate-issued record 以 `src/protocol/records.ts` 的 schema 2 为准，Workspace 机器文件以 `src/workspace/protocol.ts` / `src/workspace/validation.ts` 的 schema 3 为准；仓库不存在 `protocol/*.json` 镜像，不应为发布伪造该目录；
+- [ ] CI 的本地 Action smoke 只验证无 Issue payload 时安全 no-op；它不等同于真实 `issue_comment`、GitHub 仓库或客户端 E2E；
+- [ ] `published` 与 `accepted` 的分层、Tracker → WORKING → 下一次 sync → Report 顺序，以及 Control/Target 绑定与锁规则与 [protocol.md](protocol.md)、[workspace-protocol.md](workspace-protocol.md) 一致。
 
 ### Step 3：打 tag 并推送
 
@@ -54,31 +54,36 @@ git push origin v1.0.0
 在 GitHub 上基于 `v1.0.0` tag 创建 Release。Release notes 至少包含：
 
 - 本次行为变化摘要（含 `GATE_VERSION` 从 / 到）；
-- 协议状态声明：Gate 协议为 **`schema: 2` 冻结**（[protocol.md](protocol.md) §9：Gate 记录 / epoch / Organization 规则）；Workspace Protocol 为 **`schema: 2` 冻结**（[workspace-protocol.md](workspace-protocol.md)）；`gateflow.config.yml` 为 `version: 1`（`gate_logins` / `env_passthrough` 为增量字段）；
-- Action 输入接口现状（`github-token` / `trusted-humans` / `trusted-agents`，与 [action.yml](../action.yml) 一致）；V1 中 `trusted-agents` 的语义是登记 Driver 的 Bot 身份（如 `gateflow-agent[bot]`）；
-- Driver CLI 契约现状：`gateflow driver start|once|status|retry <dispatchId>`，flags `--root <dir>` / `--config <file>`。
+- 协议状态声明：Gate-issued records 为 **schema 2**，Workspace Protocol 为 **schema 3**，`gateflow.config.yml` 为 `version: 1`；当前实现没有 `protocol/*.json` 镜像；
+- Action 输入接口现状（`github-token` / `trusted-humans` / `trusted-agents` / `require-explicit-humans`，与 [action.yml](../action.yml) 一致）；`trusted-agents` 只登记允许发布 marker 的独立 Bot/App，不授予命令权限；
+- Driver CLI 契约现状：`gateflow run|sync|status|retry <task-id>`，支持 `--root <dir>`、`--config <file>`，`run` 另支持 `--issue`、`--target-repository`、`--target-workspace`。
 
-### Step 5：维护浮动 tag `@v1`（V1 起）
+### Step 5：固定 Action 引用
 
-V1 起消费者统一写 `uses: <owner>/gateflow@v1`（bootstrap 用 `--action-ref <owner>/gateflow@v1` 生成）。`v1` 是一个**浮动 tag**：始终指向最新的 `v1.x` release commit，每次发布后手动移动：
+Bootstrap 当前默认生成 `uses: jesongit/gateflow@v0`，这是脚本中的真实默认值，不代表本轮已完成真实发布。实际发布前应在批准的发布流程中显式传入已存在且可访问的 ref，例如：
 
 ```bash
-git tag -f v1 v1.0.0         # 指向本次 release commit
-git push -f origin v1        # 强制更新远端 v1
+node scripts/bootstrap.mjs \
+  --repo owner/target \
+  --workdir /path/to/target \
+  --action-ref jesongit/gateflow@v1.0.0 \
+  --generate-only --yes
 ```
 
-策略说明：
+当前按显式 Action ref 发布；Bootstrap 的默认值仍是脚本中的 `jesongit/gateflow@v0`。
 
-- **v1.x 期间**：每个 patch / minor 发布后都把 `v1` 重新指到新 release commit。由于 Gate 协议（`schema: 1`）与 Workspace Protocol（`schema: 1`）均冻结（§2），minor / patch 更新对消费者是兼容的，浮动跟随是安全的；
+> 下方保留的旧 tag 策略仅作发布历史，不是当前 V1 的接入指引；当前消费者应使用上面的显式 `--action-ref`，并先确认远端 ref 确实存在。
+
+- 发布 tag 或浮动 tag 的创建、移动和可访问性必须在实际发布变更中单独验证，本文不预先宣称任何远端 tag 已存在。
 - **`@v0` 的处置**：`v0` **停留在最后一个 V0 release commit 不再移动**——V1 引入了新的组件（Driver）与新的交互边界（Workspace Protocol），属于消费者可感知的架构变更，不应该静默浮动给仍按 V0 文档接入的仓库。仍写 `@v0` 的消费者拿到的是最后的 V0 行为；迁移到 V1 按 [usage.md](usage.md) "从 V0 迁移"与 [integration.md](integration.md) Part 2 执行；
 - **消费者写法**：`uses: <owner>/gateflow@v1`（自动获得 v1.x 内的全部修复与新能力）。想锁死版本可以把 ref 写成完整 tag（如 `@v1.0.0`），但常规使用不需要；
 - **何时引入 `@v2`**：只有发生协议升级（Gate schema / Workspace schema → 2、marker 后缀变更、命令 / 迁移表 / config 语义破坏性变更）时冻结被打破——届时引入新浮动 tag，`v1` 停留在最后一个冻结版本。
 
 ### Step 6：发布后确认
 
-- 在 GitHub 上确认 `v1` tag 指向了新 release commit（仓库的 tags 页）；
-- 在一个目标仓库跑一次 Gate workflow（或重新执行一次历史 run），确认 `uses: <owner>/gateflow@v1` 解析到新版本、Action 正常启动（log 首行含 `gateflow <GATE_VERSION>`）；
-- 在一个目标仓库检出目录跑 `node dist/cli.js driver once`（或 `gateflow driver once`），确认 Driver CLI 正常执行一轮 Discovery（无任务时 no-op 退出）。
+- 在 GitHub 上确认本次实际使用的 Action ref 指向预期 commit，并确认目标仓库可以访问它；
+- 在一个目标仓库按实际 `on:` 事件运行 Gate workflow，确认 Action 日志出现 `gateflow <GATE_VERSION>`；本地 CI smoke 只覆盖无 Issue payload 的安全 no-op；
+- 在一个目标仓库的 Control Workspace 运行 `gateflow run`，再按当前状态运行 `gateflow sync`；用 `gateflow status` 检查本地状态。不要使用旧的 `driver start/once` 子命令。
 
 > 本仓库 `package.json` 为 `"private": true`：**不发布 npm 包**，npm 只承担开发依赖与脚本；`version` 字段纯粹作为仓库发布版本与 git tag 对应，`bin: gateflow` 指向提交在仓库内的 `dist/cli.js`。
 
@@ -92,8 +97,8 @@ git push -f origin v1        # 强制更新远端 v1
 | --- | --- | --- | --- |
 | **仓库版本** | `package.json` `version`（V1 起为 `1.0.0`） | 仓库的发布版本，与 git tag `v<version>` 一一对应；V1 起同时覆盖 Gate Action 与 Driver CLI 两个入口 | 每次对外发布（tag + Release） |
 | **Gate 行为版本** | [src/index.ts](../src/index.ts) `GATE_VERSION`（V1 首版 `1.0.0`） | Gate 实现的行为版本，打进 `dist/index.js`，出现在每次 Actions run 的 log 首行 | Gate 的**判定行为**发生变化时（新增命令路径、迁移 / 审批校验逻辑修正等）；纯文档/注释/测试改动不动它 |
-| **Gate 协议 schema** | [docs/protocol.md](protocol.md)（`schema: 1`、marker `:v1` 后缀）与 `src/gate/protocol.ts` | 冻结的 wire 格式：Issue body schema 块与 comment marker 的版本后缀 | **冻结期内永不提升**。任何协议本体变更都是协议升级，必须同步文档 + 常量 + 提升版本 |
-| **Workspace Protocol schema** | [docs/workspace-protocol.md](workspace-protocol.md)（所有机器 JSON 的 `"schema": 1`）与 `protocol/workspace-schema-v1.json` | V1 新增：`.gateflow/` 下机器文件的 wire 格式（dispatch / status / result / current / receipts / submit） | 同上，冻结；变更 = 协议升级 |
+| **Gate record schema** | [docs/protocol.md](protocol.md) 与 `src/protocol/records.ts`（`schema: 2`） | Gate-issued workflow epoch / approval / feedback records | 记录字段或 marker 破坏性变化时升级协议 |
+| **Workspace Protocol schema** | [docs/workspace-protocol.md](workspace-protocol.md) 与 `src/workspace/protocol.ts`（所有机器 JSON 的 `schema: 3`） | `.gateflow/tasks/<task-id>/`、current、Driver 私有 state 与结果文件 | 机器文件字段或 task-id 语义破坏性变化时升级协议 |
 | **Driver 配置版本** | `gateflow.config.yml` 的 `version: 1`（[workspace-protocol.md](workspace-protocol.md) §10） | V1 新增：目标仓库 Driver 配置的格式版本 | 不匹配 = 配置校验失败；破坏性变更必须提升并保留旧版解析说明 |
 
 三者（或多者）的关系：
@@ -110,7 +115,7 @@ git push -f origin v1        # 强制更新远端 v1
 | **minor**（`1.x.0`） | 向后兼容的新能力：新增带默认值的 Action input、新增 Driver 可观察性、`GATE_VERSION` 行为版本提升（行为增强但不改协议）、新增可选的 config 字段 | 新增可选 input（缺省行为不变）；`driver status` 输出新增一列 |
 | **major**（`2.0.0+`） | 破坏性变更：任一协议 schema 升级、marker 后缀变更、命令 / 标签 / 迁移表 / dispatch_id 规则变化、已有 input 或 config 字段语义变化 | `schema: 2`；`trusted-agents` 语义改变。**V1 冻结期内不发生** |
 
-`action.yml` 本身没有版本号字段：`runs.using: node20` + `main: dist/index.js` 是发布机制（要求 dist 已提交）；`package.json` 的 `bin: gateflow → dist/cli.js` 是 Driver 的发布机制（同样要求产物已提交）。对 inputs 或 config 字段的任何变更都按上表定级（新增带默认值 = minor；改既有语义 = major）。
+`action.yml` 本身没有版本号字段：`runs.using: node24` + `main: dist/index.js` 是发布机制（要求 dist 已提交）；`package.json` 的 `bin: gateflow → dist/cli.js` 是 Driver 的发布机制（同样要求产物已提交）。对 inputs 或 config 字段的任何变更都按上表定级（新增带默认值 = minor；改既有语义 = major）。
 
 ---
 
@@ -118,12 +123,12 @@ git push -f origin v1        # 强制更新远端 v1
 
 完整六步流程见 [usage.md §2](usage.md#2-安装v1-六步摘要)，逐步操作见 [integration.md](integration.md)，此处只列清单：
 
-1. **bootstrap 一键初始化**：在目标仓库检出目录运行 `node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --action-ref <owner>/gateflow@v1`（幂等；创建 6 个 `ai:*` 标签 + 生成 `.github/workflows/ai-workflow.yml`，已有同名标签 / workflow 一律跳过绝不覆盖；`--dry-run` 可预览）；
+1. **Bootstrap 初始化**：在目标仓库检出目录运行 `node /path/to/gateflow/scripts/bootstrap.mjs --repo owner/target --action-ref <owner>/gateflow@ref --dry-run`（幂等；缺失标签可在显式 `--github-config` 下创建，已有同名标签跳过；已有 Workflow 有差异时告警且不覆盖）；
 2. **检查并提交 workflow 文件**：确认生成的 `.github/workflows/ai-workflow.yml`（事件矩阵 / 串行并发组 / Action 输入，`trusted-agents` 填 Driver Bot 身份），提交并推送；
-3. **构建本地 Driver**：`npm install && npm run build:cli` → `dist/cli.js`；
+3. **构建本地 Driver**：`npm ci && npm run build` → `dist/cli.js`；
 4. **配置**：`GITHUB_TOKEN` 环境变量（只给 Driver 进程）+ 目标仓库根目录 `gateflow.config.yml`；
-5. **安装四个 Skills**：`skills/agent`、`skills/consumer`、`skills/executor`、`skills/producer` 装入你的 AI 客户端；
-6. **启动**：`gateflow driver start`，按 [integration.md](integration.md) 冒烟闭环验收。
+5. **安装唯一 Skill**：将 `skills/gateflow` 装入 AI 客户端，按 `plan` / `execute` 两种模式使用；
+6. **手动运行**：按 [integration.md](integration.md) 使用 `gateflow run`、`gateflow sync`、`gateflow status` 和 `gateflow retry <task-id>` 验收闭环。
 
 `uses:` 的可引用性仍遵循三种模式：public 发布 / 私有仓库 + Access 共享策略 / 内嵌进目标仓库（`--action-ref ./.github/actions/gateflow`）。私有检出 / fork 默认无法被其他仓库引用，模式选择与操作见 [integration.md](integration.md) 第 2 章。
 
@@ -143,3 +148,10 @@ git push -f origin v1        # 强制更新远端 v1
 | 6 | YAML 可解析 | `python -c "import yaml; yaml.safe_load(open('templates/workflow.yml', encoding='utf-8')); yaml.safe_load(open('action.yml', encoding='utf-8'))"` | 两个 YAML（workflow 模板与 Action 清单）均严格解析通过 |
 
 另加版本对齐两查：`package.json` `version` == 待打 tag（V1 为 `1.0.0`）；`GATE_VERSION` 与测试断言一致（V1 首版 `1.0.0`）。
+
+## 5. 已知限制与发布阻塞
+
+- Task 10 的真实已有项目 E2E 因缺少明确隔离仓库、Control Repository 和入口 Issue，状态为 **blocked**；不得把本地 fake E2E 当成真实 GitHub 接入通过。
+- 真实新建项目的 GitHub 写入闭环尚未完成验证；本地 `gh auth status` 只能证明登录状态，不能证明 Bootstrap、Actions 排队、Issue 回写或目标仓库接入成功。
+- ChatGPT/ZCode 客户端驱动的真实任务尚未验证；发布说明不得声称两种客户端已通过验收。
+- 以上验证需要用户提供隔离资源、明确批准的 GitHub 写权限和可用客户端环境；在此之前只能发布本地工程验证结果。

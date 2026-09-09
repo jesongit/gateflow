@@ -51,10 +51,12 @@ function taskFile(overrides: Partial<TaskFile> = {}): TaskFile {
   return {
     schema: 3,
     task_id: TASK_ID,
-    repository: 'octo/repo',
+    control_repository: 'octo/repo',
     repository_id: 123,
     issue_number: 7,
     workflow_epoch: 'wf_abc123def456',
+    target_repository: null,
+    target_workspace: null,
     mode: 'plan',
     reason: 'planning',
     created_at: '2026-09-06T10:00:00Z',
@@ -131,7 +133,12 @@ describe('current pointer', () => {
       schema: 3,
       task_id: TASK_ID,
       mode: 'plan',
+      control_repository: 'octo/repo',
+      repository_id: 123,
       issue_number: 7,
+      workflow_epoch: 'wf_abc123def456',
+      target_repository: null,
+      target_workspace: null,
       updated_at: '2026-09-06T10:00:00Z',
     });
     expect((await readCurrent(paths))?.task_id).toBe(TASK_ID);
@@ -144,8 +151,12 @@ describe('driver state', () => {
     status: 'prepared' as const,
     attempts: 1,
     mode: 'plan' as const,
+    control_repository: 'octo/repo',
+    repository_id: 123,
     issue_number: 7,
     workflow_epoch: 'wf_abc123def456',
+    target_repository: null,
+    target_workspace: null,
   };
 
   it('missing/corrupt state reads as empty (rebuildable cache)', async () => {

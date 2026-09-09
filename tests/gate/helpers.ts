@@ -143,7 +143,7 @@ export function gateEpochRecord(
     issue_number: issueNumber,
     workflow_epoch: epoch,
     created_at: '2026-09-06T11:00:00Z',
-    issued_by: 'github-actions-bot',
+    issued_by: 'github-actions[bot]',
     operation_id: `epoch:${repositoryId}:${issueNumber}:${epoch}`,
   } as unknown as GateRecord;
 }
@@ -168,7 +168,7 @@ export function gateApprovalRecord(input: {
     approval_command_comment_id: input.approvalCommandCommentId,
     approved_by_id: 1001,
     approved_by_login: input.approvedByLogin,
-    gate_login: 'github-actions-bot',
+    gate_login: 'github-actions[bot]',
     gate_user_id: 41898282,
     created_at: '2026-09-06T12:00:00Z',
     operation_id: `approval:${input.repositoryId}:${input.issueNumber}:${input.epoch}:p${input.planCommentId}`,

@@ -18,8 +18,8 @@ import {
 const PLAN_MARKER = '<!-- ai-workflow:plan:v1 -->';
 const TRACKER_MARKER = '<!-- ai-workflow:execution-tracker:v1 -->';
 const COMPLETION_MARKER = '<!-- ai-workflow:completion-report:v1 -->';
-const DISPATCH_01 = 'gf_r1_i2_consumer_01';
-const DISPATCH_EXE = 'gf_r1_i2_executor_p5';
+const DISPATCH_01 = 'gf_r1_i2_w000000000001_plan_01';
+const DISPATCH_EXE = 'gf_r1_i2_w000000000001_execute_p5';
 const dispatchComment = (id: string) => `<!-- gateflow:dispatch-id: ${id} -->`;
 
 describe('comment body builders', () => {
@@ -154,26 +154,38 @@ describe('setTrackerStatus', () => {
 describe('dispatch-id comment detection', () => {
   it('DISPATCH_ID_COMMENT_PATTERN captures the frozen dispatch_id shape', () => {
     expect(
-      DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('gf_r123_i42_consumer_01')),
+      DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('gf_r123_i42_wabc123def456_plan_01')),
     ).toBe(true);
     expect(
-      DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('gf_r1_i2_executor_p3472198451')),
+      DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('gf_r1_i2_w000000000001_execute_p3472198451')),
     ).toBe(true);
-    expect(DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('gf_r1_i2_producer_01'))).toBe(false);
+    expect(DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('gf_r1_i2_w000000000001_consumer_01'))).toBe(false);
+    expect(DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('gf_r1_i2_w000000000001_executor_p5'))).toBe(false);
+    expect(DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('gf_r1_i2_plan_01'))).toBe(false);
     expect(DISPATCH_ID_COMMENT_PATTERN.test(dispatchComment('hello'))).toBe(false);
   });
 
   it('findDispatchIdInComment accepts valid ids, even inline among other text', () => {
     expect(
-      findDispatchIdInComment(`see below\n${dispatchComment('gf_r123_i42_consumer_01')}\nend`),
-    ).toBe('gf_r123_i42_consumer_01');
+      findDispatchIdInComment(`see below\n${dispatchComment('gf_r123_i42_wabc123def456_plan_01')}\nend`),
+    ).toBe('gf_r123_i42_wabc123def456_plan_01');
     expect(
-      findDispatchIdInComment(`prefix ${dispatchComment('gf_r1_i2_executor_p3472198451')} suffix`),
-    ).toBe('gf_r1_i2_executor_p3472198451');
+      findDispatchIdInComment(`prefix ${dispatchComment('gf_r1_i2_w000000000001_execute_p3472198451')} suffix`),
+    ).toBe('gf_r1_i2_w000000000001_execute_p3472198451');
+  });
+
+  it('matches the Gate rule: fenced or duplicate dispatch anchors are not bindings', () => {
+    const valid = dispatchComment(DISPATCH_EXE);
+    expect(findDispatchIdInComment(`\`\`\`\n${valid}\n\`\`\``)).toBeNull();
+    expect(findDispatchIdInComment(`${valid}\n${valid}`)).toBeNull();
+    expect(findDispatchIdInComment(dispatchComment('gf_r0_i2_w000000000001_execute_p1'))).toBeNull();
+    expect(findDispatchIdInComment(dispatchComment('gf_r1_i2_w000000000001_execute_p0'))).toBeNull();
   });
 
   it('findDispatchIdInComment rejects junk', () => {
-    expect(findDispatchIdInComment(dispatchComment('gf_r_i42_consumer_01'))).toBeNull(); // missing repo digits
+    expect(findDispatchIdInComment(dispatchComment('gf_r_i42_w000000000001_plan_01'))).toBeNull(); // missing repo digits
+    expect(findDispatchIdInComment(dispatchComment('gf_r1_i42_w000000000001_consumer_01'))).toBeNull();
+    expect(findDispatchIdInComment(dispatchComment('gf_r1_i42_w000000000001_executor_p1'))).toBeNull();
     expect(findDispatchIdInComment(dispatchComment('not-a-dispatch'))).toBeNull();
     expect(findDispatchIdInComment('no comment here')).toBeNull();
     expect(findDispatchIdInComment('')).toBeNull();

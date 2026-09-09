@@ -3,7 +3,8 @@
  * v1-simplification-plan.md §7).
  *
  * Usage:
- *   gateflow run    [--issue <n>] [--root <dir>] [--config <file>]
+ *   gateflow run    [--issue <n>] [--target-repository <owner/name>]
+ *                  [--target-workspace <absolute-path>] [--root <dir>] [--config <file>]
  *   gateflow sync   [--root <dir>] [--config <file>]
  *   gateflow status [--root <dir>] [--config <file>]
  *   gateflow retry  <task-id> [--root <dir>] [--config <file>]
@@ -45,7 +46,8 @@ import { clearTask } from './driver/sync';
 const USAGE = `gateflow — local GateFlow driver (Manual Activation)
 
 Usage:
-  gateflow run    [--issue <n>] [--root <dir>] [--config <file>]
+  gateflow run    [--issue <n>] [--target-repository <owner/name>]
+                  [--target-workspace <absolute-path>] [--root <dir>] [--config <file>]
                   discover GitHub state, prepare the active task, print the AI prompt
   gateflow sync   [--root <dir>] [--config <file>]
                   validate task results and publish them to GitHub
@@ -56,12 +58,20 @@ Usage:
 
 Environment:
   GITHUB_TOKEN          required for run/sync; never written to disk
-  GATEFLOW_REPOSITORY   optional owner/name fallback for repository resolution`;
+  GATEFLOW_REPOSITORY   optional owner/name fallback for Control Repository resolution
+
+Target flags:
+  --target-repository   explicit Target Repository metadata (may not exist yet)
+  --target-workspace    explicit absolute local Target Workspace path`;
 
 interface CliArgs {
   command: 'run' | 'sync' | 'status' | 'retry';
   taskId: string | null;
   issue: number | null;
+  targetRepository: string | null;
+  targetWorkspace: string | null;
+  targetRepositorySet: boolean;
+  targetWorkspaceSet: boolean;
   root: string;
   config: string;
 }
@@ -71,17 +81,33 @@ function parseArgs(argv: string[]): { ok: true; args: CliArgs } | { ok: false; e
   let root = process.cwd();
   let config = 'gateflow.config.yml';
   let issue: number | null = null;
+  let targetRepository: string | null = null;
+  let targetWorkspace: string | null = null;
+  let targetRepositorySet = false;
+  let targetWorkspaceSet = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? '';
-    if (arg === '--root' || arg === '--config' || arg === '--issue') {
+    if (
+      arg === '--root' ||
+      arg === '--config' ||
+      arg === '--issue' ||
+      arg === '--target-repository' ||
+      arg === '--target-workspace'
+    ) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith('--')) {
         return { ok: false, error: `flag ${arg} requires a value` };
       }
       if (arg === '--root') root = value;
       else if (arg === '--config') config = value;
-      else {
+      else if (arg === '--target-repository') {
+        targetRepository = value;
+        targetRepositorySet = true;
+      } else if (arg === '--target-workspace') {
+        targetWorkspace = value;
+        targetWorkspaceSet = true;
+      } else {
         const parsed = Number(value);
         if (!Number.isSafeInteger(parsed) || parsed < 1) {
           return { ok: false, error: `--issue must be a positive integer, got ${JSON.stringify(value)}` };
@@ -107,6 +133,18 @@ function parseArgs(argv: string[]): { ok: true; args: CliArgs } | { ok: false; e
       issue = parsed;
       continue;
     }
+    if (arg.startsWith('--target-repository=')) {
+      targetRepository = arg.slice('--target-repository='.length);
+      if (targetRepository.length === 0) return { ok: false, error: '--target-repository requires a value' };
+      targetRepositorySet = true;
+      continue;
+    }
+    if (arg.startsWith('--target-workspace=')) {
+      targetWorkspace = arg.slice('--target-workspace='.length);
+      if (targetWorkspace.length === 0) return { ok: false, error: '--target-workspace requires a value' };
+      targetWorkspaceSet = true;
+      continue;
+    }
     if (arg.startsWith('--')) {
       return { ok: false, error: `unknown flag "${arg}"` };
     }
@@ -121,7 +159,20 @@ function parseArgs(argv: string[]): { ok: true; args: CliArgs } | { ok: false; e
   if (command === 'retry' && taskId === null) {
     return { ok: false, error: 'retry requires a <task-id> argument' };
   }
-  return { ok: true, args: { command, taskId, issue, root, config } };
+  return {
+    ok: true,
+    args: {
+      command,
+      taskId,
+      issue,
+      root,
+      config,
+      targetRepository,
+      targetWorkspace,
+      targetRepositorySet,
+      targetWorkspaceSet,
+    },
+  };
 }
 
 /** Timestamped console logger mirrored into <workspace>/driver/logs/driver.log. */
@@ -195,7 +246,11 @@ async function runOnline(args: CliArgs, command: 'run' | 'sync'): Promise<number
   deps.log.info(`gateflow ${command}: root=${args.root}`);
 
   if (command === 'run') {
-    const result = await runCommand(deps, { issue: args.issue ?? undefined });
+    const result = await runCommand(deps, {
+      issue: args.issue ?? undefined,
+      ...(args.targetRepositorySet ? { targetRepository: args.targetRepository } : {}),
+      ...(args.targetWorkspaceSet ? { targetWorkspace: args.targetWorkspace } : {}),
+    });
     if (result.taskId !== null) {
       console.log(`task: ${result.taskId} (${result.mode ?? '?'}, issue #${result.issueNumber ?? '?'})`);
     }
